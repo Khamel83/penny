@@ -1,0 +1,206 @@
+/* Penny - Simple, clean styling */
+
+:root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --text: #eaeaea;
+    --text-muted: #8892b0;
+    --accent: #64ffda;
+    --shopping: #f59e0b;
+    --work: #3b82f6;
+    --personal: #8b5cf6;
+    --unknown: #6b7280;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+header {
+    text-align: center;
+    padding: 2rem 1rem;
+    border-bottom: 1px solid var(--surface);
+}
+
+header h1 {
+    font-size: 2.5rem;
+    font-weight: 300;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+}
+
+.subtitle {
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+
+main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+.stats {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-box {
+    background: var(--surface);
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stat-number {
+    font-size: 2rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.stat-label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.filters {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.filter-btn {
+    background: var(--surface);
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 0.9rem;
+}
+
+.filter-btn:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+}
+
+.filter-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 500;
+}
+
+.items {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.item {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    transition: transform 0.2s;
+}
+
+.item:hover {
+    transform: translateX(4px);
+}
+
+.item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.badge-shopping { background: var(--shopping); color: #000; }
+.badge-work { background: var(--work); color: #fff; }
+.badge-personal { background: var(--personal); color: #fff; }
+.badge-unknown { background: var(--unknown); color: #fff; }
+
+time {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.item-text {
+    color: var(--text);
+    margin-bottom: 0.75rem;
+}
+
+.item-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.reclassify-select {
+    background: var(--bg);
+    border: 1px solid var(--text-muted);
+    color: var(--text-muted);
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.reclassify-select:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-muted);
+}
+
+.empty-state p {
+    margin-bottom: 0.5rem;
+}
+
+.hint {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+}
+
+@media (max-width: 600px) {
+    header h1 {
+        font-size: 2rem;
+    }
+
+    .filters {
+        justify-content: center;
+    }
+
+    .item-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+}

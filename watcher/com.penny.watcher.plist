@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.penny.watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/macmini/penny/watcher.py</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini/penny</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PENNY_URL</key>
+        <string>https://penny.khamel.com</string>
+        <key>WHISPER_MODEL</key>
+        <string>mlx-community/whisper-large-v3-mlx</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macmini/penny/watcher.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini/penny/watcher.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
