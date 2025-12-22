@@ -141,3 +141,15 @@ async def update_classification(item_id: str, classification: str) -> Optional[I
         await db.commit()
 
     return await get_item(item_id)
+
+
+async def update_routed_to(item_id: str, routed_to: str) -> Optional[Item]:
+    """Update an item's routing destination."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE items SET routed_to = ? WHERE id = ?",
+            (routed_to, item_id),
+        )
+        await db.commit()
+
+    return await get_item(item_id)

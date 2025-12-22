@@ -17,14 +17,18 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+import urllib3
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+# Suppress SSL warnings for self-signed certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # Configuration
-VOICE_MEMOS_PATH = Path.home() / "Library/Mobile Documents/com~apple~VoiceMemos/Recordings"
+VOICE_MEMOS_PATH = Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 PROCESSED_PATH = Path.home() / "penny/processed"
 FAILED_PATH = Path.home() / "penny/failed"
-PENNY_URL = os.environ.get("PENNY_URL", "https://penny.khamel.com")
+PENNY_URL = os.environ.get("PENNY_URL", "http://192.168.7.10:8250")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 
 # Logging
@@ -73,6 +77,7 @@ def send_to_penny(text: str, source_file: str, timestamp: datetime) -> bool:
                 "timestamp": timestamp.isoformat(),
             },
             timeout=30,
+            verify=False,  # Skip SSL verification for self-signed certs
         )
         response.raise_for_status()
 

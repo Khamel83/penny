@@ -11,7 +11,10 @@ RUN pip install --no-cache-dir \
     uvicorn[standard]>=0.27.0 \
     python-multipart>=0.0.6 \
     aiosqlite>=0.19.0 \
-    pydantic>=2.5.0
+    pydantic>=2.5.0 \
+    requests>=2.31.0 \
+    httpx>=0.27.0 \
+    gkeepapi>=0.16.0
 
 # Copy application
 COPY penny/ ./penny/

@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/Users/macmini/penny/venv/bin/python3</string>
         <string>/Users/macmini/penny/watcher.py</string>
     </array>
 
@@ -22,8 +22,10 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>PENNY_URL</key>
-        <string>https://penny.khamel.com</string>
+        <string>http://192.168.7.10:8250</string>
         <key>WHISPER_MODEL</key>
         <string>mlx-community/whisper-large-v3-mlx</string>
     </dict>

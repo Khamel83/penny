@@ -47,9 +47,11 @@ async def health():
 
 @app.post("/api/ingest", response_model=ItemResponse)
 async def ingest(request: IngestRequest):
-    """Ingest transcribed text and classify it."""
-    # Classify the text
-    classification, confidence = classifier.classify(request.text)
+    """Ingest transcribed text, classify it, and route to appropriate service."""
+    # Classify the text (returns dict with classification + routing data)
+    result = classifier.classify(request.text)
+    classification = result.get("classification", "unknown")
+    confidence = result.get("confidence", 0.0)
 
     # Create the item
     item = Item(
@@ -60,17 +62,42 @@ async def ingest(request: IngestRequest):
         created_at=request.timestamp or datetime.utcnow(),
     )
 
-    # Save to database
+    # Save to database first
     saved_item = await database.save_item(item)
 
-    return ItemResponse(item=saved_item, message=f"Classified as {classification}")
+    # Route to appropriate service (if router is available)
+    routed_to = None
+    route_error = None
+    try:
+        from . import router
+        route_result = await router.route(classification, request.text, result)
+        if route_result.get("routed"):
+            routed_to = route_result.get("service")
+            # Update item with routing info
+            await database.update_routed_to(saved_item.id, routed_to)
+            saved_item.routed_to = routed_to
+        elif route_result.get("error"):
+            route_error = route_result.get("error")
+    except ImportError:
+        # Router not yet implemented, that's OK
+        pass
+    except Exception as e:
+        route_error = str(e)
+
+    message = f"Classified as {classification}"
+    if routed_to:
+        message += f", routed to {routed_to}"
+    elif route_error:
+        message += f" (routing failed: {route_error})"
+
+    return ItemResponse(item=saved_item, message=message)
 
 
 @app.get("/api/items", response_model=ItemsResponse)
 async def get_items(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
-    classification: Optional[str] = Query(None, pattern="^(work|personal|shopping|unknown)$"),
+    classification: Optional[str] = Query(None, pattern="^(work|personal|shopping|media|smart_home|unknown)$"),
 ):
     """Get paginated list of items."""
     items, total = await database.get_items(page, per_page, classification)
@@ -99,13 +126,21 @@ async def index(request: Request):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Penny</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <header>
-        <h1>Penny</h1>
-        <p class="subtitle">Your personal voice assistant</p>
+        <div class="header-content">
+            <div class="logo">P</div>
+            <div>
+                <h1>Penny</h1>
+                <p class="subtitle">Your personal voice assistant</p>
+            </div>
+        </div>
     </header>
 
     <main>
@@ -118,10 +153,20 @@ async def index(request: Request):
 
         <section class="filters">
             <button class="filter-btn active" onclick="filterItems('')">All</button>
-            <button class="filter-btn" onclick="filterItems('shopping')">Shopping</button>
-            <button class="filter-btn" onclick="filterItems('work')">Work</button>
-            <button class="filter-btn" onclick="filterItems('personal')">Personal</button>
-            <button class="filter-btn" onclick="filterItems('unknown')">Unknown</button>
+            <button class="filter-btn" onclick="filterItems('shopping')">🛒 Shopping</button>
+            <button class="filter-btn" onclick="filterItems('media')">🎬 Media</button>
+            <button class="filter-btn" onclick="filterItems('work')">📋 Work</button>
+            <button class="filter-btn" onclick="filterItems('smart_home')">🏠 Home</button>
+            <button class="filter-btn" onclick="filterItems('personal')">💭 Personal</button>
+        </section>
+
+        <section class="add-form">
+            <form onsubmit="addItem(event)">
+                <div class="add-form-row">
+                    <input type="text" id="new-item-text" placeholder="Add a note..." class="add-input" required>
+                    <button type="submit" class="add-btn">Add</button>
+                </div>
+            </form>
         </section>
 
         <section id="items-list" class="items">
@@ -130,18 +175,27 @@ async def index(request: Request):
     if not items:
         html += """
             <div class="empty-state">
-                <p>No voice memos yet.</p>
-                <p class="hint">Record a voice memo on your iPhone or Apple Watch to get started.</p>
+                <div class="empty-state-icon">🎙️</div>
+                <h2>No voice memos yet</h2>
+                <p>Record a voice memo on your iPhone or Apple Watch to get started.</p>
+                <p class="hint">Make sure iCloud Voice Memos sync is enabled</p>
             </div>
 """
     else:
         for item in items:
             badge_class = f"badge-{item.classification}"
             created = item.created_at.strftime("%b %d, %H:%M")
+            # Build routing indicator
+            routed_html = ""
+            if item.routed_to:
+                routed_html = f'<span class="routed-to {item.routed_to}">{item.routed_to}</span>'
             html += f"""
-            <article class="item" data-id="{item.id}">
+            <article class="item {item.classification}" data-id="{item.id}">
                 <div class="item-header">
-                    <span class="badge {badge_class}">{item.classification}</span>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                        <span class="badge {badge_class}">{item.classification}</span>
+                        {routed_html}
+                    </div>
                     <time>{created}</time>
                 </div>
                 <p class="item-text">{item.text}</p>
@@ -149,7 +203,9 @@ async def index(request: Request):
                     <select onchange="reclassify('{item.id}', this.value)" class="reclassify-select">
                         <option value="">Reclassify...</option>
                         <option value="shopping">Shopping</option>
+                        <option value="media">Media</option>
                         <option value="work">Work</option>
+                        <option value="smart_home">Smart Home</option>
                         <option value="personal">Personal</option>
                         <option value="unknown">Unknown</option>
                     </select>
@@ -189,6 +245,28 @@ async def index(request: Request):
             })
             .then(r => r.json())
             .then(() => location.reload());
+        }
+
+        function addItem(event) {
+            event.preventDefault();
+            const input = document.getElementById('new-item-text');
+            const text = input.value.trim();
+            if (!text) return;
+
+            fetch('/api/ingest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    text: text,
+                    source_file: 'manual-entry',
+                    timestamp: new Date().toISOString()
+                })
+            })
+            .then(r => r.json())
+            .then(() => {
+                input.value = '';
+                location.reload();
+            });
         }
     </script>
 </body>
