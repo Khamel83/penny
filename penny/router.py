@@ -160,16 +160,16 @@ async def route_reminder(text: str, data: dict[str, Any]) -> dict[str, Any]:
     """Route reminders to Apple Reminders."""
     try:
         from .integrations import reminders
+        from .utils import parse_datetime
+
         task = data.get("task", text)
         due_date = data.get("due_date")
         due_time = data.get("due_time")
 
-        # Parse date if provided (basic handling - could use dateparser for more robust parsing)
+        # Parse natural language date/time
         parsed_date = None
         if due_date or due_time:
-            # For now, just pass to the integration which handles it
-            # A more robust solution would use dateparser library
-            pass
+            parsed_date = parse_datetime(date_str=due_date, time_str=due_time)
 
         result = await reminders.create_reminder(
             title=task,
@@ -180,8 +180,10 @@ async def route_reminder(text: str, data: dict[str, Any]) -> dict[str, Any]:
             return {"routed": True, "service": "reminders", "result": result}
         else:
             raise Exception(result.get("error", "Unknown error"))
-    except ImportError:
-        return await send_telegram(f"⏰ REMINDER: {data.get('task', text)}")
+    except ImportError as e:
+        if "reminders" in str(e):
+            return await send_telegram(f"⏰ REMINDER: {data.get('task', text)}")
+        raise
     except Exception as e:
         return await send_telegram(f"⏰ REMINDER (Apple Reminders failed): {data.get('task', text)}")
 
@@ -190,17 +192,23 @@ async def route_calendar(text: str, data: dict[str, Any]) -> dict[str, Any]:
     """Route calendar events to Apple Calendar."""
     try:
         from .integrations import calendar as cal
-        from datetime import datetime
+        from .utils import parse_datetime
 
         title = data.get("title", text)
         date_str = data.get("date")
         time_str = data.get("time")
         location = data.get("location")
+        duration = data.get("duration")  # e.g., "1 hour", "30 minutes"
 
-        # For now, calendar events need manual date parsing
-        # This is a simplified version - a production version would use dateparser
-        # If we can't parse, fall back to Telegram
-        if not date_str:
+        # Parse date/time
+        start_date = None
+        if date_str or time_str:
+            # Try combined first, then separate
+            combined = f"{date_str or ''} {time_str or ''}".strip()
+            start_date = parse_datetime(combined=combined) if combined else None
+
+        if not start_date:
+            # Can't create event without a date - send to Telegram instead
             return await send_telegram(
                 f"📅 CALENDAR: {title}\n"
                 f"Date: {date_str or 'not specified'}\n"
@@ -208,16 +216,20 @@ async def route_calendar(text: str, data: dict[str, Any]) -> dict[str, Any]:
                 f"Location: {location or 'not specified'}"
             )
 
-        # Placeholder - would need real date parsing
-        result = await send_telegram(
-            f"📅 CALENDAR: {title}\n"
-            f"Date: {date_str or 'not specified'}\n"
-            f"Time: {time_str or 'not specified'}\n"
-            f"Location: {location or 'not specified'}"
+        result = await cal.create_event(
+            title=title,
+            start_date=start_date,
+            location=location,
+            notes=text if text != title else None,
         )
-        return result
-    except ImportError:
-        return await send_telegram(f"📅 CALENDAR: {data.get('title', text)}")
+        if result.get("success"):
+            return {"routed": True, "service": "calendar", "result": result}
+        else:
+            raise Exception(result.get("error", "Unknown error"))
+    except ImportError as e:
+        if "calendar" in str(e):
+            return await send_telegram(f"📅 CALENDAR: {data.get('title', text)}")
+        raise
     except Exception as e:
         return await send_telegram(f"📅 CALENDAR (failed): {data.get('title', text)}")
 
