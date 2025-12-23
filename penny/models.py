@@ -17,16 +17,16 @@ class Item(BaseModel):
     """A transcribed and classified item."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     text: str
-    classification: str = "unknown"  # work | personal | shopping | unknown
+    classification: str = "unknown"  # work | personal | shopping | media | smart_home | unknown
     confidence: float = 0.0
     source_file: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    routed_to: Optional[str] = None  # atlas | trojanhorse | shopping | None
+    routed_to: Optional[str] = None  # google_keep | jellyseerr | telegram | home_assistant | None
 
 
 class ReclassifyRequest(BaseModel):
     """Request to reclassify an item."""
-    classification: str = Field(..., pattern="^(work|personal|shopping|unknown)$")
+    classification: str = Field(..., pattern="^(work|personal|shopping|media|smart_home|unknown)$")
 
 
 class ItemResponse(BaseModel):

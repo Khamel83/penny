@@ -1,5 +1,6 @@
 """SQLite database for Penny."""
 
+import os
 import aiosqlite
 from pathlib import Path
 from typing import Optional
@@ -7,7 +8,7 @@ from datetime import datetime
 
 from .models import Item
 
-DATABASE_PATH = Path("/app/data/penny.db")
+DATABASE_PATH = Path(os.environ.get("PENNY_DB_PATH", "/app/data/penny.db"))
 
 
 async def init_db():

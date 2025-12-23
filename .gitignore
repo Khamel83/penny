@@ -45,3 +45,15 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# ONE_SHOT
+.env
+.env.local
+*.key
+.age/
+!.env.example
+!*.encrypted
+# Beads local cache (JSONL is tracked)
+.beads/beads.db
+.beads/bd.sock
+.beads/export_hashes.db

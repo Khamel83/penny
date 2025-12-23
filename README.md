@@ -40,15 +40,33 @@ iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → Penny (h
 
 ## Quick Start
 
+### Local Development
+
+```bash
+# Create venv
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]" pytest-asyncio requests httpx
+
+# Run server (note: PENNY_DB_PATH required for local dev)
+PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8000
+
+# Run tests (42 tests)
+.venv/bin/pytest -v
+```
+
 ### Homelab (Docker)
 
 ```bash
-docker compose -f services/penny/docker-compose.yml up -d --build
+docker build -t penny .
+docker run -p 8000:8000 -v $(pwd)/data:/app/data penny
 ```
 
 ### Environment Variables
 
 ```bash
+# Database path (required for local dev, defaults to /app/data/penny.db in Docker)
+PENNY_DB_PATH=./data/penny.db
+
 # OpenRouter LLM (optional - falls back to keywords)
 OPENROUTER_API_KEY=sk-or-v1-...
 
