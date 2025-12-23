@@ -175,6 +175,33 @@ def process_existing():
         process_file(file_path)
 
 
+def retry_failed():
+    """Retry any files in the failed folder."""
+    failed_files = list(FAILED_PATH.glob("*.m4a"))
+    if not failed_files:
+        return
+
+    logger.info(f"Retrying {len(failed_files)} failed files...")
+
+    for file_path in failed_files:
+        try:
+            stat = file_path.stat()
+            timestamp = datetime.fromtimestamp(stat.st_ctime)
+
+            text = transcribe(file_path)
+            if not text:
+                continue
+
+            if send_to_penny(text, file_path.name, timestamp):
+                dest = PROCESSED_PATH / file_path.name
+                shutil.move(str(file_path), str(dest))
+                logger.info(f"Retry succeeded: {file_path.name}")
+            else:
+                logger.warning(f"Retry still failing: {file_path.name}")
+        except Exception as e:
+            logger.error(f"Retry error for {file_path.name}: {e}")
+
+
 def main():
     """Main entry point."""
     logger.info("=" * 50)
@@ -206,9 +233,18 @@ def main():
 
     logger.info("Watching for new Voice Memos... Press Ctrl+C to stop")
 
+    RETRY_INTERVAL = 300  # Retry failed files every 5 minutes
+    last_retry = time.time()
+
     try:
         while True:
             time.sleep(1)
+
+            # Periodically retry failed files
+            if time.time() - last_retry >= RETRY_INTERVAL:
+                retry_failed()
+                last_retry = time.time()
+
     except KeyboardInterrupt:
         logger.info("Stopping watcher...")
         observer.stop()
