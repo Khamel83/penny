@@ -90,7 +90,7 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 - `work` → Telegram notification
 - `smart_home` → Home Assistant (not yet implemented)
 - `reminder` → Apple Reminders
-- `calendar` → Apple Calendar (falls back to Telegram until date parsing implemented)
+- `calendar` → Apple Calendar (with natural language date parsing via dateparser)
 - `notes` → Apple Notes (daily note append or new note)
 - `personal` → Stored in Penny only
 
@@ -133,3 +133,39 @@ python3 -m venv .venv
 # Run all tests (52 tests)
 .venv/bin/pytest -v
 ```
+
+## Setup Checklist
+
+**See TODO.md for detailed setup tasks.** Quick reference:
+
+### 1. Apple Integrations (Mac mini) - ONE TIME
+```bash
+# Connect via Screen Sharing (vnc://macmini) and run:
+~/penny/grant_permissions.sh
+# Approve all permission dialogs that appear
+```
+
+### 2. Google Keep - ONE TIME
+```bash
+# On Penny server:
+pip install gkeepapi
+python scripts/setup_google_keep.py
+# Follow prompts, requires App Password from https://myaccount.google.com/apppasswords
+```
+
+### 3. Required Environment Variables
+See `.env.example` for full list. Minimum required:
+- `OPENROUTER_API_KEY` - LLM classification
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` - Notifications/fallback
+
+### Integration Status
+
+| Integration | Setup Script | Status |
+|-------------|--------------|--------|
+| Telegram | Create bot via @BotFather | Required |
+| Google Keep | `scripts/setup_google_keep.py` | Optional |
+| Apple Reminders | `~/penny/grant_permissions.sh` on Mac mini | Optional |
+| Apple Calendar | `~/penny/grant_permissions.sh` on Mac mini | Optional |
+| Apple Notes | `~/penny/grant_permissions.sh` on Mac mini | Optional |
+| Jellyseerr | Just set env vars | Optional |
+| Home Assistant | Not yet implemented | Backlog |
