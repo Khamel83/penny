@@ -21,7 +21,7 @@ class TestKeywordClassifier:
         assert result["classification"] == "media"
 
     def test_work_keywords(self):
-        result = classify_keywords("Remind me about the meeting tomorrow")
+        result = classify_keywords("Finish the project report for the client")
         assert result["classification"] == "work"
 
     def test_smart_home_keywords(self):
@@ -29,8 +29,20 @@ class TestKeywordClassifier:
         assert result["classification"] == "smart_home"
 
     def test_personal_keywords(self):
-        result = classify_keywords("I had a great idea for a vacation")
+        result = classify_keywords("Just testing this out")
         assert result["classification"] == "personal"
+
+    def test_reminder_keywords(self):
+        result = classify_keywords("Remind me about the appointment tomorrow")
+        assert result["classification"] == "reminder"
+
+    def test_calendar_keywords(self):
+        result = classify_keywords("Schedule a meeting with the team")
+        assert result["classification"] == "calendar"
+
+    def test_notes_keywords(self):
+        result = classify_keywords("Write down this great idea for the app")
+        assert result["classification"] == "notes"
 
     def test_unknown_classification(self):
         result = classify_keywords("xyz abc 123")
@@ -44,7 +56,7 @@ class TestKeywordClassifier:
         assert "apples" in result["items"]
 
     def test_work_extracts_task(self):
-        result = classify_keywords("remind me to call the dentist")
+        result = classify_keywords("need to finish the project deadline for client")
         assert result["classification"] == "work"
         assert "task" in result
 

@@ -22,11 +22,23 @@ class Item(BaseModel):
     source_file: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     routed_to: Optional[str] = None  # google_keep | jellyseerr | telegram | home_assistant | None
+    status: str = "processed"  # pending_confirmation | confirmed | processed | failed
+    routing_data: Optional[dict] = None  # Extracted data for routing (items, title, task, etc.)
 
 
 class ReclassifyRequest(BaseModel):
     """Request to reclassify an item."""
-    classification: str = Field(..., pattern="^(work|personal|shopping|media|smart_home|unknown)$")
+    classification: str = Field(..., pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|unknown)$")
+
+
+class ConfirmRequest(BaseModel):
+    """Request to confirm or correct a pending classification."""
+    confirmed: bool = Field(..., description="True to confirm, False to reclassify")
+    classification: Optional[str] = Field(
+        None,
+        pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|unknown)$",
+        description="New classification if not confirmed"
+    )
 
 
 class ItemResponse(BaseModel):

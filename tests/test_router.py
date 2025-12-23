@@ -11,6 +11,8 @@ from penny.router import (
     route_work,
     route_smart_home,
     send_telegram,
+    request_confirmation,
+    CONFIDENCE_THRESHOLD,
 )
 
 
@@ -21,46 +23,111 @@ class TestRouteDispatcher:
     async def test_routes_shopping(self):
         with patch("penny.router.route_shopping", new_callable=AsyncMock) as mock:
             mock.return_value = {"routed": True, "service": "google_keep"}
-            result = await route("shopping", "buy milk", {"items": ["milk"]})
+            result = await route("shopping", "buy milk", {"items": ["milk"]}, confidence=0.9)
             mock.assert_called_once()
             assert result["routed"] is True
 
     async def test_routes_media(self):
         with patch("penny.router.route_media", new_callable=AsyncMock) as mock:
             mock.return_value = {"routed": True, "service": "jellyseerr"}
-            result = await route("media", "request Dune", {"title": "Dune"})
+            result = await route("media", "request Dune", {"title": "Dune"}, confidence=0.9)
             mock.assert_called_once()
             assert result["routed"] is True
 
     async def test_routes_work(self):
         with patch("penny.router.route_work", new_callable=AsyncMock) as mock:
             mock.return_value = {"routed": True, "service": "telegram"}
-            result = await route("work", "call dentist", {"task": "call dentist"})
+            result = await route("work", "call dentist", {"task": "call dentist"}, confidence=0.9)
             mock.assert_called_once()
             assert result["routed"] is True
 
     async def test_routes_smart_home(self):
         with patch("penny.router.route_smart_home", new_callable=AsyncMock) as mock:
             mock.return_value = {"routed": True, "service": "home_assistant"}
-            result = await route("smart_home", "turn off lights", {"action": "turn_off"})
+            result = await route("smart_home", "turn off lights", {"action": "turn_off"}, confidence=0.9)
             mock.assert_called_once()
             assert result["routed"] is True
 
     async def test_personal_not_routed(self):
-        result = await route("personal", "great idea", {})
+        result = await route("personal", "great idea", {}, confidence=0.9)
         assert result["routed"] is False
         assert "Stored in Penny" in result["reason"]
 
     async def test_unknown_not_routed(self):
-        result = await route("unknown", "xyz", {})
+        result = await route("unknown", "xyz", {}, confidence=0.9)
         assert result["routed"] is False
 
     async def test_handles_exception(self):
         with patch("penny.router.route_shopping", new_callable=AsyncMock) as mock:
             mock.side_effect = Exception("test error")
-            result = await route("shopping", "buy milk", {})
+            result = await route("shopping", "buy milk", {}, confidence=0.9)
             assert result["routed"] is False
             assert "error" in result
+
+
+@pytest.mark.asyncio
+class TestConfidenceThreshold:
+    """Tests for low-confidence confirmation flow."""
+
+    async def test_low_confidence_requests_confirmation(self):
+        """Low confidence should trigger confirmation request."""
+        with patch("penny.router.request_confirmation", new_callable=AsyncMock) as mock:
+            mock.return_value = {"needs_confirmation": True, "routed": False}
+            result = await route("shopping", "buy milk", {"items": ["milk"]}, item_id="123", confidence=0.5)
+            mock.assert_called_once()
+            assert result["needs_confirmation"] is True
+
+    async def test_high_confidence_routes_directly(self):
+        """High confidence should route directly without confirmation."""
+        with patch("penny.router.route_shopping", new_callable=AsyncMock) as mock:
+            mock.return_value = {"routed": True, "service": "google_keep"}
+            result = await route("shopping", "buy milk", {"items": ["milk"]}, confidence=0.9)
+            mock.assert_called_once()
+            assert result["routed"] is True
+
+    async def test_personal_skips_confirmation(self):
+        """Personal items should never need confirmation."""
+        result = await route("personal", "great idea", {}, confidence=0.3)
+        assert result["routed"] is False
+        assert "needs_confirmation" not in result
+        assert "Stored in Penny" in result["reason"]
+
+    async def test_unknown_skips_confirmation(self):
+        """Unknown items should never need confirmation."""
+        result = await route("unknown", "xyz", {}, confidence=0.3)
+        assert result["routed"] is False
+        assert "needs_confirmation" not in result
+
+
+@pytest.mark.asyncio
+class TestRequestConfirmation:
+    """Tests for the confirmation request function."""
+
+    async def test_sends_telegram_message(self):
+        with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock:
+            mock.return_value = {"routed": True, "service": "telegram"}
+            result = await request_confirmation("item-123", "shopping", "buy milk", 0.5)
+            mock.assert_called_once()
+            message = mock.call_args[0][0]
+            assert "50%" in message
+            assert "shopping" in message
+            assert "item-123" in message
+
+    async def test_returns_needs_confirmation(self):
+        with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock:
+            mock.return_value = {"routed": True, "service": "telegram"}
+            result = await request_confirmation("item-123", "shopping", "buy milk", 0.5)
+            assert result["needs_confirmation"] is True
+            assert result["routed"] is False
+
+    async def test_truncates_long_text(self):
+        with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock:
+            mock.return_value = {"routed": True, "service": "telegram"}
+            long_text = "A" * 200
+            await request_confirmation("item-123", "shopping", long_text, 0.5)
+            message = mock.call_args[0][0]
+            assert "..." in message
+            assert len(long_text) > 100  # Original was long
 
 
 @pytest.mark.asyncio

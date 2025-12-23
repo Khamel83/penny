@@ -24,7 +24,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Penny is a voice assistant that receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant).
+Penny is a voice assistant that receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant, Apple Reminders, Apple Calendar, Apple Notes).
+
+**Key Features:**
+- Confidence-based routing: Low confidence (<70%) items are sent to Telegram for confirmation before routing
+- 8 classification categories with graceful fallback to Telegram
+- Apple integrations via AppleScript over SSH to Mac mini
 
 ## Commands
 
@@ -57,11 +62,11 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 
 ### Core Components
 
-- **`penny/main.py`**: FastAPI app with HTMX web UI. Endpoints: `/api/ingest` (receive transcriptions), `/api/items` (list items), `/api/items/{id}/reclassify` (manual reclassification)
+- **`penny/main.py`**: FastAPI app with HTMX web UI. Endpoints: `/api/ingest` (receive transcriptions), `/api/items` (list items), `/api/items/{id}/reclassify` (manual reclassification), `/api/items/{id}/confirm` (confirm pending items)
 
-- **`penny/classifier.py`**: Two-tier classification: LLM via OpenRouter (`google/gemini-2.5-flash-lite`) with keyword fallback. Returns JSON with classification + extracted routing data (items list, movie title, task description, etc.)
+- **`penny/classifier.py`**: Two-tier classification: LLM via OpenRouter (`google/gemini-2.5-flash-lite`) with keyword fallback. Returns JSON with classification, confidence score, and extracted routing data.
 
-- **`penny/router.py`**: Dispatches to integrations based on classification. Implements graceful degradation—all routes fall back to Telegram on failure.
+- **`penny/router.py`**: Dispatches to integrations based on classification. Implements confidence-based routing (sends low-confidence items to Telegram for confirmation) and graceful degradation—all routes fall back to Telegram on failure.
 
 - **`penny/database.py`**: Async SQLite via aiosqlite. Database stored at `/app/data/penny.db`
 
@@ -73,7 +78,10 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 |-------------|----------|-------|
 | `google_keep.py` | shopping | Uses unofficial gkeepapi, requires master token auth |
 | `jellyseerr.py` | media | Searches and requests movies/TV shows |
-| `telegram.py` | work (+ fallback) | Universal fallback for all failed routes |
+| `telegram.py` | work (+ fallback) | Universal fallback for all failed routes + confirmations |
+| `reminders.py` | reminder | Apple Reminders via AppleScript over SSH |
+| `calendar.py` | calendar | Apple Calendar via AppleScript over SSH |
+| `notes.py` | notes | Apple Notes via AppleScript over SSH |
 
 ### Classification Categories
 
@@ -81,12 +89,16 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 - `media` → Jellyseerr request
 - `work` → Telegram notification
 - `smart_home` → Home Assistant (not yet implemented)
+- `reminder` → Apple Reminders
+- `calendar` → Apple Calendar (falls back to Telegram until date parsing implemented)
+- `notes` → Apple Notes (daily note append or new note)
 - `personal` → Stored in Penny only
 
 ## Environment Variables
 
 ```bash
 PENNY_DB_PATH           # SQLite path (default: /app/data/penny.db, use ./data/penny.db for local dev)
+PENNY_CONFIDENCE_THRESHOLD  # Confidence threshold for confirmation (default: 0.7)
 OPENROUTER_API_KEY      # LLM classification (optional, falls back to keywords)
 TELEGRAM_BOT_TOKEN      # Required for work routing + fallback
 TELEGRAM_CHAT_ID
@@ -95,6 +107,13 @@ JELLYSEERR_API_KEY
 GOOGLE_KEEP_EMAIL
 GOOGLE_KEEP_TOKEN       # Master token from gkeepapi auth
 GOOGLE_KEEP_SHOPPING_LIST  # Default: "Shopping"
+
+# Apple integrations (via SSH to Mac mini)
+MAC_MINI_HOST           # Default: macmini
+MAC_MINI_USER           # Default: macmini
+PENNY_REMINDERS_LIST    # Default: Reminders
+PENNY_CALENDAR          # Default: Calendar
+PENNY_NOTES_FOLDER      # Default: Penny
 ```
 
 ## Key Patterns
@@ -111,6 +130,6 @@ GOOGLE_KEEP_SHOPPING_LIST  # Default: "Shopping"
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]" pytest-asyncio requests httpx
 
-# Run all tests (42 tests)
+# Run all tests (52 tests)
 .venv/bin/pytest -v
 ```

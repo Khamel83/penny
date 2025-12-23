@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import classifier, database
 from .models import (
+    ConfirmRequest,
     IngestRequest,
     Item,
     ItemResponse,
@@ -53,13 +54,14 @@ async def ingest(request: IngestRequest):
     classification = result.get("classification", "unknown")
     confidence = result.get("confidence", 0.0)
 
-    # Create the item
+    # Create the item with routing data stored for later use
     item = Item(
         text=request.text,
         classification=classification,
         confidence=confidence,
         source_file=request.source_file,
         created_at=request.timestamp or datetime.utcnow(),
+        routing_data=result,  # Store LLM extraction for later routing
     )
 
     # Save to database first
@@ -68,14 +70,26 @@ async def ingest(request: IngestRequest):
     # Route to appropriate service (if router is available)
     routed_to = None
     route_error = None
+    needs_confirmation = False
     try:
         from . import router
-        route_result = await router.route(classification, request.text, result)
+        route_result = await router.route(
+            classification,
+            request.text,
+            result,
+            item_id=saved_item.id,
+            confidence=confidence,
+        )
         if route_result.get("routed"):
             routed_to = route_result.get("service")
             # Update item with routing info
-            await database.update_routed_to(saved_item.id, routed_to)
+            await database.update_routed_to(saved_item.id, routed_to, status="processed")
             saved_item.routed_to = routed_to
+            saved_item.status = "processed"
+        elif route_result.get("needs_confirmation"):
+            needs_confirmation = True
+            await database.update_status(saved_item.id, "pending_confirmation")
+            saved_item.status = "pending_confirmation"
         elif route_result.get("error"):
             route_error = route_result.get("error")
     except ImportError:
@@ -84,9 +98,11 @@ async def ingest(request: IngestRequest):
     except Exception as e:
         route_error = str(e)
 
-    message = f"Classified as {classification}"
+    message = f"Classified as {classification} ({int(confidence * 100)}% confidence)"
     if routed_to:
         message += f", routed to {routed_to}"
+    elif needs_confirmation:
+        message += ", awaiting confirmation via Telegram"
     elif route_error:
         message += f" (routing failed: {route_error})"
 
@@ -111,6 +127,51 @@ async def reclassify(item_id: str, request: ReclassifyRequest):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return ItemResponse(item=item, message=f"Reclassified to {request.classification}")
+
+
+@app.post("/api/items/{item_id}/confirm", response_model=ItemResponse)
+async def confirm_item(item_id: str, request: ConfirmRequest):
+    """Confirm or correct a pending classification and route the item."""
+    item = await database.get_item(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # If not confirmed, reclassify first
+    if not request.confirmed:
+        if not request.classification:
+            raise HTTPException(status_code=400, detail="Classification required when not confirming")
+        item = await database.update_classification(item_id, request.classification)
+
+    # Now route the item with high confidence (it's confirmed)
+    routing_data = item.routing_data or {}
+    try:
+        from . import router
+        route_result = await router.route(
+            item.classification,
+            item.text,
+            routing_data,
+            item_id=item.id,
+            confidence=1.0,  # Confirmed = full confidence
+        )
+        if route_result.get("routed"):
+            routed_to = route_result.get("service")
+            item = await database.update_routed_to(item.id, routed_to, status="confirmed")
+        else:
+            # Mark as confirmed even if routing fails
+            item = await database.update_status(item.id, "confirmed")
+    except Exception as e:
+        # Mark as confirmed even if routing fails
+        item = await database.update_status(item.id, "confirmed")
+
+    action = "confirmed" if request.confirmed else f"reclassified to {request.classification}"
+    return ItemResponse(item=item, message=f"Item {action} and routed")
+
+
+@app.get("/api/items/pending", response_model=ItemsResponse)
+async def get_pending_items():
+    """Get all items pending confirmation."""
+    items = await database.get_pending_items()
+    return ItemsResponse(items=items, total=len(items), page=1, per_page=len(items))
 
 
 @app.get("/", response_class=HTMLResponse)

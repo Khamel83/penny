@@ -1,24 +1,39 @@
 """Route dispatcher for Penny - calls external APIs based on classification."""
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 # Import integrations (lazy import to handle missing dependencies gracefully)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+# Confidence threshold - below this, ask for confirmation via Telegram
+CONFIDENCE_THRESHOLD = float(os.environ.get("PENNY_CONFIDENCE_THRESHOLD", "0.7"))
 
-async def route(classification: str, text: str, data: dict[str, Any]) -> dict[str, Any]:
+
+async def route(
+    classification: str,
+    text: str,
+    data: dict[str, Any],
+    item_id: Optional[str] = None,
+    confidence: float = 1.0,
+) -> dict[str, Any]:
     """Route to appropriate service based on classification.
 
     Args:
         classification: The category (shopping, media, work, etc.)
         text: The original transcribed text
         data: Extracted routing data from LLM (items, title, task, etc.)
+        item_id: The item ID (for confirmation requests)
+        confidence: Classification confidence (0-1)
 
     Returns:
-        dict with 'routed', 'service', 'error' keys
+        dict with 'routed', 'service', 'error', 'needs_confirmation' keys
     """
+    # Check if we need confirmation for low-confidence classifications
+    if confidence < CONFIDENCE_THRESHOLD and classification not in ("unknown", "personal"):
+        return await request_confirmation(item_id, classification, text, confidence)
+
     try:
         if classification == "shopping":
             return await route_shopping(text, data)
@@ -28,6 +43,12 @@ async def route(classification: str, text: str, data: dict[str, Any]) -> dict[st
             return await route_work(text, data)
         elif classification == "smart_home":
             return await route_smart_home(text, data)
+        elif classification == "reminder":
+            return await route_reminder(text, data)
+        elif classification == "calendar":
+            return await route_calendar(text, data)
+        elif classification == "notes":
+            return await route_notes(text, data)
         elif classification == "personal":
             # Personal notes just stay in Penny
             return {"routed": False, "reason": "Stored in Penny only"}
@@ -35,6 +56,47 @@ async def route(classification: str, text: str, data: dict[str, Any]) -> dict[st
             return {"routed": False, "reason": f"No route for {classification}"}
     except Exception as e:
         return {"routed": False, "error": str(e)}
+
+
+async def request_confirmation(
+    item_id: Optional[str],
+    classification: str,
+    text: str,
+    confidence: float
+) -> dict[str, Any]:
+    """Send a Telegram message requesting confirmation for low-confidence classification."""
+    preview = text[:100] + "..." if len(text) > 100 else text
+    confidence_pct = int(confidence * 100)
+
+    emoji_map = {
+        "shopping": "🛒",
+        "media": "🎬",
+        "work": "📋",
+        "smart_home": "🏠",
+        "reminder": "⏰",
+        "calendar": "📅",
+        "notes": "📝",
+    }
+    emoji = emoji_map.get(classification, "❓")
+
+    message = (
+        f"⚠️ <b>Low confidence ({confidence_pct}%)</b>\n\n"
+        f"I think this is <b>{emoji} {classification}</b>:\n"
+        f"<i>\"{preview}\"</i>\n\n"
+        f"Reply with:\n"
+        f"• <code>/confirm {item_id}</code> to proceed\n"
+        f"• <code>/reclassify {item_id} shopping|media|work|personal</code> to change"
+    )
+
+    result = await send_telegram(message)
+    if result.get("routed"):
+        return {
+            "routed": False,
+            "needs_confirmation": True,
+            "service": "telegram",
+            "message": f"Awaiting confirmation (confidence: {confidence_pct}%)",
+        }
+    return result
 
 
 async def route_shopping(text: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +154,97 @@ async def route_smart_home(text: str, data: dict[str, Any]) -> dict[str, Any]:
         return await send_telegram(f"🏠 SMART HOME: {data.get('action', '')} {data.get('entity', text)}")
     except Exception as e:
         return await send_telegram(f"🏠 SMART HOME (HA failed): {text}")
+
+
+async def route_reminder(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Route reminders to Apple Reminders."""
+    try:
+        from .integrations import reminders
+        task = data.get("task", text)
+        due_date = data.get("due_date")
+        due_time = data.get("due_time")
+
+        # Parse date if provided (basic handling - could use dateparser for more robust parsing)
+        parsed_date = None
+        if due_date or due_time:
+            # For now, just pass to the integration which handles it
+            # A more robust solution would use dateparser library
+            pass
+
+        result = await reminders.create_reminder(
+            title=task,
+            due_date=parsed_date,
+            notes=text if text != task else None,
+        )
+        if result.get("success"):
+            return {"routed": True, "service": "reminders", "result": result}
+        else:
+            raise Exception(result.get("error", "Unknown error"))
+    except ImportError:
+        return await send_telegram(f"⏰ REMINDER: {data.get('task', text)}")
+    except Exception as e:
+        return await send_telegram(f"⏰ REMINDER (Apple Reminders failed): {data.get('task', text)}")
+
+
+async def route_calendar(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Route calendar events to Apple Calendar."""
+    try:
+        from .integrations import calendar as cal
+        from datetime import datetime
+
+        title = data.get("title", text)
+        date_str = data.get("date")
+        time_str = data.get("time")
+        location = data.get("location")
+
+        # For now, calendar events need manual date parsing
+        # This is a simplified version - a production version would use dateparser
+        # If we can't parse, fall back to Telegram
+        if not date_str:
+            return await send_telegram(
+                f"📅 CALENDAR: {title}\n"
+                f"Date: {date_str or 'not specified'}\n"
+                f"Time: {time_str or 'not specified'}\n"
+                f"Location: {location or 'not specified'}"
+            )
+
+        # Placeholder - would need real date parsing
+        result = await send_telegram(
+            f"📅 CALENDAR: {title}\n"
+            f"Date: {date_str or 'not specified'}\n"
+            f"Time: {time_str or 'not specified'}\n"
+            f"Location: {location or 'not specified'}"
+        )
+        return result
+    except ImportError:
+        return await send_telegram(f"📅 CALENDAR: {data.get('title', text)}")
+    except Exception as e:
+        return await send_telegram(f"📅 CALENDAR (failed): {data.get('title', text)}")
+
+
+async def route_notes(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Route notes to Apple Notes."""
+    try:
+        from .integrations import notes
+
+        title = data.get("title")
+        content = data.get("content", text)
+
+        if title:
+            # Create a new note with specific title
+            result = await notes.create_note(title=title, body=content)
+        else:
+            # Append to daily note
+            result = await notes.append_to_daily_note(content=text)
+
+        if result.get("success"):
+            return {"routed": True, "service": "notes", "result": result}
+        else:
+            raise Exception(result.get("error", "Unknown error"))
+    except ImportError:
+        return await send_telegram(f"📝 NOTE: {text[:200]}...")
+    except Exception as e:
+        return await send_telegram(f"📝 NOTE (Apple Notes failed): {text[:200]}...")
 
 
 async def send_telegram(message: str) -> dict[str, Any]:

@@ -16,8 +16,11 @@ CATEGORIES:
 - shopping: Items to buy. Extract individual items as a list.
 - media: Movie/TV show requests. Extract title and type (movie/tv).
 - smart_home: Light/thermostat/device control. Extract action and entity.
-- work: Tasks, deadlines, meetings. Extract task description and due date if mentioned.
-- personal: Ideas, notes, journal entries. Just summarize.
+- reminder: Tasks with due dates, things to remember. Extract task and due date/time.
+- calendar: Meetings, appointments, scheduled events. Extract title, date, time, duration, location.
+- work: Work-related tasks without specific dates. Extract task description.
+- notes: Longer thoughts, ideas, journal entries to save. Extract title and content.
+- personal: Quick thoughts that just need to be stored.
 
 EXAMPLES:
 
@@ -33,11 +36,20 @@ EXAMPLES:
 "Turn off all the lights"
 {"classification": "smart_home", "confidence": 0.95, "action": "turn_off", "entity": "all_lights"}
 
-"Remember to call the dentist tomorrow"
-{"classification": "work", "confidence": 0.8, "task": "Call the dentist", "due": "tomorrow"}
+"Remind me to call the dentist tomorrow at 2pm"
+{"classification": "reminder", "confidence": 0.95, "task": "Call the dentist", "due_date": "tomorrow", "due_time": "2pm"}
 
-"I had a great idea for a new app feature"
-{"classification": "personal", "confidence": 0.9, "summary": "New app feature idea"}
+"Schedule a meeting with John next Tuesday at 3pm at the coffee shop"
+{"classification": "calendar", "confidence": 0.9, "title": "Meeting with John", "date": "next Tuesday", "time": "3pm", "location": "coffee shop"}
+
+"I need to finish that report for the client"
+{"classification": "work", "confidence": 0.8, "task": "Finish report for client"}
+
+"I had a great idea for a new app feature that could help users track their habits"
+{"classification": "notes", "confidence": 0.85, "title": "App feature idea", "content": "New feature to help users track their habits"}
+
+"Just testing, one two three"
+{"classification": "personal", "confidence": 0.9, "summary": "Test message"}
 
 Respond with ONLY valid JSON. No explanation, no markdown, just JSON.
 """
@@ -85,7 +97,7 @@ def classify_with_llm(text: str) -> dict[str, Any]:
             data["confidence"] = 0.8
 
         # Validate classification category
-        valid_categories = {"shopping", "media", "smart_home", "work", "personal"}
+        valid_categories = {"shopping", "media", "smart_home", "reminder", "calendar", "work", "notes", "personal"}
         if data["classification"] not in valid_categories:
             data["classification"] = "unknown"
 
@@ -113,14 +125,25 @@ KEYWORDS = {
         "lights", "light", "turn on", "turn off", "thermostat", "temperature",
         "blinds", "curtains", "fan", "ac", "heater",
     ],
+    "reminder": [
+        "remind me", "reminder", "don't forget", "remember to",
+        "tomorrow", "next week", "at noon", "at midnight",
+    ],
+    "calendar": [
+        "meeting", "schedule", "appointment", "calendar", "event",
+        "conference", "block time", "book",
+    ],
     "work": [
-        "meeting", "meetings", "HR", "project", "deadline", "client",
-        "work", "email", "call", "conference", "presentation", "report",
-        "remind me", "task", "todo",
+        "work", "project", "deadline", "client", "report",
+        "email", "presentation", "task", "todo",
+    ],
+    "notes": [
+        "idea", "thought", "journal", "note", "write down",
+        "document", "save this", "log",
     ],
     "personal": [
-        "idea", "thought", "journal", "note to self", "remember",
-        "don't forget", "family", "birthday", "vacation",
+        "test", "testing", "thank you", "thanks",
+        "family", "birthday", "vacation",
     ],
 }
 
