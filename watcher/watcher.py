@@ -4,6 +4,19 @@ Penny Watcher - Watches for Voice Memos and sends them to Penny.
 
 This script runs on the Mac mini, watching for new Voice Memos synced via iCloud,
 transcribes them using mlx-whisper, and sends the transcription to Penny.
+
+IMPORTANT: macOS TCC Workaround
+-------------------------------
+Voice Memos are stored in a macOS-protected folder:
+  ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/
+
+When running as a launchd service, Python CAN read these files, but ffmpeg
+(spawned by mlx-whisper) CANNOT access them due to TCC (Transparency, Consent,
+and Control) restrictions. The launchd service doesn't inherit Terminal's
+Full Disk Access permissions.
+
+The workaround: Copy files to ~/penny/temp/ before transcribing, then clean up.
+This is handled in process_file() with the from_protected_folder parameter.
 """
 
 import json
@@ -28,7 +41,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VOICE_MEMOS_PATH = Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 PROCESSED_PATH = Path.home() / "penny/processed"
 FAILED_PATH = Path.home() / "penny/failed"
-PENNY_URL = os.environ.get("PENNY_URL", "http://${PENNY_URL:-localhost:8000}")
+TEMP_PATH = Path.home() / "penny/temp"
+PENNY_URL = os.environ.get("PENNY_URL", "http://192.168.7.10:8250")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 
 # Logging
@@ -91,31 +105,48 @@ def send_to_penny(text: str, source_file: str, timestamp: datetime) -> bool:
         return False
 
 
-def process_file(file_path: Path) -> bool:
-    """Process a single audio file."""
+def process_file(file_path: Path, from_protected_folder: bool = True) -> bool:
+    """Process a single audio file.
+
+    Args:
+        file_path: Path to the audio file
+        from_protected_folder: If True, copy to temp first (for macOS protected folders)
+    """
     logger.info(f"Processing: {file_path.name}")
 
+    temp_file = None
     try:
-        # Get file creation time
+        # Get file creation time from original
         stat = file_path.stat()
         timestamp = datetime.fromtimestamp(stat.st_ctime)
 
+        # For files in protected folders, copy to temp first
+        # (Python can read protected folders, but ffmpeg subprocess cannot)
+        if from_protected_folder:
+            TEMP_PATH.mkdir(parents=True, exist_ok=True)
+            temp_file = TEMP_PATH / file_path.name
+            logger.info(f"Copying to temp: {temp_file}")
+            shutil.copy2(str(file_path), str(temp_file))
+            transcribe_path = temp_file
+        else:
+            transcribe_path = file_path
+
         # Transcribe
-        text = transcribe(file_path)
+        text = transcribe(transcribe_path)
         if not text:
             logger.warning(f"Empty transcription for {file_path.name}")
             return False
 
         # Send to Penny
         if send_to_penny(text, file_path.name, timestamp):
-            # Move to processed folder
+            # Move original to processed folder
             PROCESSED_PATH.mkdir(parents=True, exist_ok=True)
             dest = PROCESSED_PATH / file_path.name
             shutil.move(str(file_path), str(dest))
             logger.info(f"Moved to processed: {dest}")
             return True
         else:
-            # Move to failed folder for retry
+            # Move original to failed folder for retry
             FAILED_PATH.mkdir(parents=True, exist_ok=True)
             dest = FAILED_PATH / file_path.name
             shutil.move(str(file_path), str(dest))
@@ -125,6 +156,14 @@ def process_file(file_path: Path) -> bool:
     except Exception as e:
         logger.error(f"Error processing {file_path.name}: {e}")
         return False
+
+    finally:
+        # Clean up temp file
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
 
 
 class VoiceMemoHandler(FileSystemEventHandler):
@@ -158,7 +197,7 @@ class VoiceMemoHandler(FileSystemEventHandler):
             if not file_path.exists():
                 return
 
-            process_file(file_path)
+            process_file(file_path, from_protected_folder=True)
 
         finally:
             self.processing.discard(file_path)
@@ -172,7 +211,7 @@ def process_existing():
         return
 
     for file_path in VOICE_MEMOS_PATH.glob("*.m4a"):
-        process_file(file_path)
+        process_file(file_path, from_protected_folder=True)
 
 
 def retry_failed():
@@ -188,6 +227,7 @@ def retry_failed():
             stat = file_path.stat()
             timestamp = datetime.fromtimestamp(stat.st_ctime)
 
+            # Failed folder is not protected, no need for temp copy
             text = transcribe(file_path)
             if not text:
                 continue
@@ -214,6 +254,7 @@ def main():
     # Ensure directories exist
     PROCESSED_PATH.mkdir(parents=True, exist_ok=True)
     FAILED_PATH.mkdir(parents=True, exist_ok=True)
+    TEMP_PATH.mkdir(parents=True, exist_ok=True)
 
     # Process any existing files first
     logger.info("Checking for existing files...")

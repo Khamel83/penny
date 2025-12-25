@@ -160,15 +160,32 @@ pytest -v
 
 ## Current State
 
-- **Status**: Production
+- **Status**: Production (Voice-to-Build Pipeline Operational)
 - **Last Updated**: 2025-12-25
 - **Tests**: 87 passing
 - **Categories**: 9 (shopping, media, work, personal, reminder, calendar, notes, smart_home, build)
 
+### Recent Fixes (2025-12-25)
+
+| Issue | Root Cause | Fix |
+|-------|------------|-----|
+| Watcher ffmpeg permission denied | macOS TCC blocks subprocess access to protected folders | Copy to temp before transcribing |
+| Claude CLI exit code 1 | CLI refuses `--dangerously-skip-permissions` as root | Non-root user in Docker (UID 1001) |
+| Missing `ps` command | Python slim image lacks procps | Added `procps` to Dockerfile |
+| SDK empty output | Wrong message type checking (`.type` vs class name) | Check `type(message).__name__` |
+| Database read-only | Container user can't write to volume | Set group ownership to 1001 |
+
+### Known Workarounds
+
+**Mac mini watcher**: Files in `~/Library/Group Containers/.../VoiceMemos.shared/Recordings/` are protected by macOS TCC. Python can read them, but ffmpeg (spawned by mlx-whisper) cannot. The watcher copies files to `~/penny/temp/` before transcribing.
+
 ## Important Context
 
+- **Permission model**: `bypassPermissions` is intentional - Penny is an autonomous voice-to-build pipeline. Docker + non-root user provide isolation. Don't add approval prompts.
 - Router uses graceful degradation: all failures fall back to Telegram
 - Confidence < 70% triggers Telegram confirmation before routing
 - Claude Code builds run autonomously with optional Q&A
 - Z.AI provides Anthropic-compatible API at ~$3/month
 - Public access via Cloudflare Tunnel (penny.example.com)
+- Docker container runs as non-root user (UID/GID 1001) for Claude CLI compatibility
+- Claude Agent SDK uses class-based message types (`AssistantMessage`, `ResultMessage`)

@@ -31,7 +31,15 @@ Project task tracking following [todo.md](https://github.com/todomd/todo.md) spe
 ## In Progress
 
 
-## Done
+## Done (2025-12-25 - Voice-to-Build Pipeline Fixed)
+- [x] Fix watcher ffmpeg permission denied (temp copy workaround for macOS TCC)
+- [x] Fix Claude CLI root privileges error (non-root user in Docker, UID 1001)
+- [x] Fix missing `ps` command (added procps to Dockerfile)
+- [x] Fix SDK empty output (class-based message type checking)
+- [x] Fix database read-only (group permissions on mounted volume)
+- [x] End-to-end voice-to-build pipeline verified working
+
+## Done (Previous)
 - [x] Claude Code integration (voice-to-build pipeline with Z.AI GLM-4.7 / Opus)
 - [x] Add confidence-based routing with Telegram confirmation (<70%)
 - [x] Add Apple Reminders integration via AppleScript

@@ -8,9 +8,45 @@ This document describes how to complete the Claude Code build integration for Pe
 |-----------|--------|-------|
 | Z.AI API Key | ✅ Configured | `ZAI_API_KEY` in homelab .env |
 | Telegram Webhook Secret | ✅ Generated | `TELEGRAM_WEBHOOK_SECRET` in homelab .env |
-| Penny Container | ✅ Deployed | Running with all env vars |
+| Penny Container | ✅ Deployed | Running as non-root user (UID 1001) |
 | Cloudflare Tunnel | ✅ Configured | penny-tunnel container + CNAME record |
 | Telegram Webhook | ✅ Active | https://penny.example.com/api/telegram/webhook |
+| Claude Agent SDK | ✅ Working | SDK message handling with class-based types |
+
+## Critical Requirements
+
+### Non-Root User in Docker
+
+**Claude CLI refuses to run with `--dangerously-skip-permissions` as root.** The Dockerfile creates a `penny` user (UID/GID 1001) and runs the application as that user.
+
+```dockerfile
+# Create non-root user for Claude CLI
+RUN groupadd -g 1001 penny && useradd -u 1001 -g penny -m penny
+
+# Set ownership
+RUN mkdir -p /app/data /app/builds && chown -R penny:penny /app
+
+# Switch to non-root user
+USER penny
+```
+
+### Data Directory Permissions
+
+The mounted `./data` volume must be writable by the container user (UID 1001). On the host:
+
+```bash
+# Set group ownership to match container user
+sudo chgrp -R 1001 ./data
+sudo chmod -R g+w ./data
+```
+
+### Required System Packages
+
+The Docker image must include `procps` for Claude CLI process management:
+
+```dockerfile
+RUN apt-get install -y procps
+```
 
 ## Architecture
 
@@ -70,6 +106,36 @@ Test Penny health via public URL:
 curl https://penny.example.com/health
 ```
 
+## Permission Model
+
+### Why `bypassPermissions` is Appropriate
+
+The Claude Agent SDK uses `permission_mode="bypassPermissions"` which allows all tool operations without prompts. This is intentional for Penny's autonomous voice-to-build pipeline.
+
+**The whole point is first-pass automation** - saying "build me X" should produce a deliverable without approving 12 individual steps.
+
+| Concern | Mitigation |
+|---------|------------|
+| Delete system files | Docker isolation - container only sees `/app/` |
+| Write to sensitive paths | Non-root user (UID 1001) - no access to `/etc/`, `~/.ssh/` |
+| Network attacks | Container network is controlled by Docker |
+| Host filesystem access | Sandboxed - builds isolated to `/app/builds/` |
+| Runaway API costs | Model selector picks cheap GLM-4.7 by default |
+
+The `bypassPermissions` mode exists specifically for **autonomous agents in controlled environments** - which is exactly what Penny is.
+
+### Alternative Permission Modes
+
+If you need more control (e.g., running outside Docker):
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `bypassPermissions` | All tools auto-approved | Sandboxed autonomous builds (current) |
+| `acceptEdits` | File edits auto-approved, prompts for others | Semi-autonomous with some oversight |
+| `default` | Prompts for all dangerous operations | Interactive development |
+
+See [Claude Agent SDK Permissions](https://platform.claude.com/docs/en/agent-sdk/permissions) for details.
+
 ## How It Works
 
 ### Build Flow
@@ -115,6 +181,57 @@ OPENROUTER_API_KEY=<existing>        # For classification
 - `pending_questions` - Telegram Q&A state
 
 ## Troubleshooting
+
+### Claude CLI refuses to run (exit code 1)
+
+**Error**: `--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons`
+
+**Cause**: Docker container is running as root.
+
+**Fix**: Ensure Dockerfile creates and uses non-root user:
+```dockerfile
+RUN groupadd -g 1001 penny && useradd -u 1001 -g penny -m penny
+USER penny
+```
+
+### Database is read-only
+
+**Error**: `sqlite3.OperationalError: attempt to write a readonly database`
+
+**Cause**: Container user (UID 1001) cannot write to mounted volume.
+
+**Fix**: Set proper permissions on host:
+```bash
+sudo chgrp -R 1001 ./data
+sudo chmod -R g+w ./data
+docker restart penny
+```
+
+### Claude CLI missing 'ps' command
+
+**Error**: `Executable not found in $PATH: "ps"`
+
+**Cause**: Python slim image doesn't include procps.
+
+**Fix**: Add to Dockerfile:
+```dockerfile
+RUN apt-get install -y procps
+```
+
+### SDK returns empty output
+
+**Error**: Build completes but output is empty.
+
+**Cause**: Incorrect message type checking. SDK uses class names (`AssistantMessage`, `ResultMessage`), not a `.type` attribute.
+
+**Fix**: Check message types by class name:
+```python
+message_type = type(message).__name__
+if message_type == "AssistantMessage":
+    # Extract from content blocks
+elif message_type == "ResultMessage":
+    # Extract from .result attribute
+```
 
 ### Webhook not receiving messages
 

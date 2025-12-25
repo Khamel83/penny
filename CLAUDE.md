@@ -28,8 +28,14 @@ Penny is a voice assistant that receives transcribed voice memos, classifies the
 
 **Key Features:**
 - Confidence-based routing: Low confidence (<70%) items are sent to Telegram for confirmation before routing
-- 8 classification categories with graceful fallback to Telegram
+- 9 classification categories with graceful fallback to Telegram
+- Voice-to-build pipeline via Claude Code (GLM-4.7 or Opus)
 - Apple integrations via AppleScript over SSH to Mac mini
+
+**Critical Docker Notes:**
+- Container runs as non-root user (UID 1001) - Claude CLI requires this
+- Data directory must be writable by UID 1001: `sudo chgrp -R 1001 ./data && sudo chmod -R g+w ./data`
+- Dockerfile includes `procps` for Claude CLI process management
 
 ## Commands
 
@@ -82,6 +88,8 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 | `reminders.py` | reminder | Apple Reminders via AppleScript over SSH |
 | `calendar.py` | calendar | Apple Calendar via AppleScript over SSH |
 | `notes.py` | notes | Apple Notes via AppleScript over SSH |
+| `claude_code.py` | build | Voice-to-project via Claude Agent SDK |
+| `telegram_qa.py` | build | Q&A with user during builds |
 
 ### Classification Categories
 
@@ -92,6 +100,7 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 - `reminder` → Apple Reminders
 - `calendar` → Apple Calendar (with natural language date parsing via dateparser)
 - `notes` → Apple Notes (daily note append or new note)
+- `build` → Claude Code (GLM-4.7 for simple, Opus for critical builds)
 - `personal` → Stored in Penny only
 
 ## Environment Variables
@@ -130,7 +139,7 @@ PENNY_NOTES_FOLDER      # Default: Penny
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]" pytest-asyncio requests httpx
 
-# Run all tests (52 tests)
+# Run all tests (87 tests)
 .venv/bin/pytest -v
 ```
 

@@ -195,7 +195,7 @@ async def _run_with_agent_sdk(
         options = ClaudeAgentOptions(
             allowed_tools=ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
-            working_directory=BUILDS_WORK_DIR,
+            cwd=BUILDS_WORK_DIR,
         )
 
         # Collect output
@@ -205,26 +205,33 @@ async def _run_with_agent_sdk(
 
         # Run the agent
         async for message in query(prompt=prompt, options=options):
-            # Check message type and collect output
-            if hasattr(message, "type"):
-                if message.type == "assistant":
-                    if hasattr(message, "content"):
-                        output_parts.append(str(message.content))
+            # Check message type by class name (SDK uses typed message classes)
+            message_type = type(message).__name__
 
-                elif message.type == "result":
-                    if hasattr(message, "result"):
-                        output_parts.append(str(message.result))
+            if message_type == "AssistantMessage":
+                if hasattr(message, "content"):
+                    # content is a list of TextBlock objects
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            output_parts.append(block.text)
 
-                # Detect if agent needs input (this is a simplified check)
-                # Real implementation would need to detect specific patterns
-                if hasattr(message, "content") and "?" in str(message.content):
-                    # Check if this looks like a question needing user input
-                    content = str(message.content)
-                    if _looks_like_question(content) and questions_asked < 1:
+            elif message_type == "ResultMessage":
+                if hasattr(message, "result") and message.result:
+                    output_parts.append(str(message.result))
+
+            # Detect if agent needs input (this is a simplified check)
+            if hasattr(message, "content"):
+                content_text = ""
+                if hasattr(message.content, "__iter__"):
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            content_text += block.text
+                if "?" in content_text and _looks_like_question(content_text):
+                    if questions_asked < 1:
                         questions_asked += 1
                         # Ask Omar via Telegram
                         answer = await telegram_qa.ask_omar(
-                            question=content,
+                            question=content_text,
                             build_id=build_id,
                             context=f"Building: {transcript[:100]}",
                         )

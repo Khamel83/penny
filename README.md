@@ -76,9 +76,18 @@ PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8
 ### Homelab (Docker)
 
 ```bash
+# Build
 docker build -t penny .
+
+# Set data directory permissions (required for non-root container)
+sudo chgrp -R 1001 ./data
+sudo chmod -R g+w ./data
+
+# Run
 docker run -p 8000:8000 -v $(pwd)/data:/app/data penny
 ```
+
+**Note**: The container runs as a non-root user (UID 1001) because Claude CLI refuses to run with elevated privileges. The data directory must be writable by this user.
 
 ## Environment Variables
 
@@ -145,8 +154,8 @@ penny/
   model_selector.py    # GLM vs Opus selection
   database.py          # SQLite storage
   integrations/
-    claude_code.py     # Build execution
-    telegram_qa.py     # Async Q&A
+    claude_code.py     # Build execution (SDK + CLI fallback)
+    telegram_qa.py     # Async Q&A for builds
     telegram.py        # Notifications
     jellyseerr.py      # Media requests
     google_keep.py     # Shopping lists
@@ -154,10 +163,18 @@ penny/
     calendar.py        # Apple Calendar
     notes.py           # Apple Notes
 watcher/
-  watcher.py           # Mac mini transcription
+  watcher.py           # Mac mini transcription (with TCC workaround)
 data/
   omar-preferences.md  # Build preferences
+docs/
+  CLAUDE_CODE_SETUP.md # Build integration setup + troubleshooting
 ```
+
+## Mac mini Watcher
+
+The watcher runs on a Mac mini and handles Voice Memo transcription via mlx-whisper.
+
+**Important**: Voice Memos are in a macOS-protected folder. The watcher copies files to `~/penny/temp/` before transcribing because ffmpeg (used by mlx-whisper) cannot access protected folders when running as a launchd service.
 
 ## License
 
