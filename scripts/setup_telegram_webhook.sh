@@ -1,13 +1,13 @@
 #!/bin/bash
 # Setup Telegram webhook for Penny Claude Code builds
-# Run this AFTER adding penny.zoheri.com to Cloudflare tunnel
+# Run this AFTER adding penny.example.com to Cloudflare tunnel
 
 set -e
 
 # Load environment
 source /home/khamel83/homelab/.env
 
-WEBHOOK_URL="https://penny.zoheri.com/api/telegram/webhook"
+WEBHOOK_URL="https://penny.example.com/api/telegram/webhook"
 
 echo "=== Penny Telegram Webhook Setup ==="
 echo ""
@@ -15,10 +15,10 @@ echo ""
 # Check if public URL is accessible
 echo "1. Testing public URL accessibility..."
 if curl -sf "${WEBHOOK_URL%/api/telegram/webhook}/health" > /dev/null 2>&1; then
-    echo "   ✅ penny.zoheri.com is accessible"
+    echo "   ✅ penny.example.com is accessible"
 else
-    echo "   ❌ penny.zoheri.com is NOT accessible"
-    echo "   → Please add penny.zoheri.com to your Cloudflare tunnel first"
+    echo "   ❌ penny.example.com is NOT accessible"
+    echo "   → Please add penny.example.com to your Cloudflare tunnel first"
     echo "   → See docs/CLAUDE_CODE_SETUP.md for instructions"
     exit 1
 fi
@@ -59,6 +59,6 @@ echo "Test by sending a voice memo that says:"
 echo "  'Build me a simple hello world website'"
 echo ""
 echo "Or test directly:"
-echo "  curl -X POST https://penny.zoheri.com/api/ingest \\"
+echo "  curl -X POST https://penny.example.com/api/ingest \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"text\": \"build me a hello world page\", \"source_file\": \"test\"}'"

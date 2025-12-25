@@ -10,17 +10,17 @@ This document describes how to complete the Claude Code build integration for Pe
 | Telegram Webhook Secret | ✅ Generated | `TELEGRAM_WEBHOOK_SECRET` in homelab .env |
 | Penny Container | ✅ Deployed | Running with all env vars |
 | Cloudflare Tunnel | ✅ Configured | penny-tunnel container + CNAME record |
-| Telegram Webhook | ✅ Active | https://penny.zoheri.com/api/telegram/webhook |
+| Telegram Webhook | ✅ Active | https://penny.example.com/api/telegram/webhook |
 
 ## Architecture
 
 ```
-Telegram → penny.zoheri.com (Cloudflare) → penny-tunnel container → penny:8000
+Telegram → penny.example.com (Cloudflare) → penny-tunnel container → penny:8000
 ```
 
 ## Setup Reference (Already Completed)
 
-### Step 1: Add penny.zoheri.com to Cloudflare Tunnel
+### Step 1: Add penny.example.com to Cloudflare Tunnel
 
 The Telegram webhook requires a public URL. Your tunnel uses dashboard-managed configuration.
 
@@ -34,7 +34,7 @@ The Telegram webhook requires a public URL. Your tunnel uses dashboard-managed c
    | Field | Value |
    |-------|-------|
    | Subdomain | `penny` |
-   | Domain | `zoheri.com` |
+   | Domain | `example.com` |
    | Type | `HTTP` |
    | URL | `penny:8000` |
 
@@ -48,7 +48,7 @@ After the tunnel hostname is active, run:
 source /home/khamel83/homelab/.env
 
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=https://penny.zoheri.com/api/telegram/webhook" \
+  -d "url=https://penny.example.com/api/telegram/webhook" \
   -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 
@@ -67,7 +67,7 @@ curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | pyt
 
 Test Penny health via public URL:
 ```bash
-curl https://penny.zoheri.com/health
+curl https://penny.example.com/health
 ```
 
 ## How It Works
@@ -120,7 +120,7 @@ OPENROUTER_API_KEY=<existing>        # For classification
 
 1. Verify tunnel hostname is active:
    ```bash
-   curl -I https://penny.zoheri.com/health
+   curl -I https://penny.example.com/health
    ```
 
 2. Check webhook info:
@@ -154,14 +154,14 @@ docker compose -f services/penny/docker-compose.yml --env-file .env up -d --forc
 
 Send a test build request:
 ```bash
-curl -X POST https://penny.zoheri.com/api/ingest \
+curl -X POST https://penny.example.com/api/ingest \
   -H "Content-Type: application/json" \
   -d '{"text": "build me a simple hello world website", "source_file": "test"}'
 ```
 
 For critical builds (will use Opus if ANTHROPIC_API_KEY is set):
 ```bash
-curl -X POST https://penny.zoheri.com/api/ingest \
+curl -X POST https://penny.example.com/api/ingest \
   -H "Content-Type: application/json" \
   -d '{"text": "critical: fix the production authentication bug", "source_file": "test"}'
 ```

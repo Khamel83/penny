@@ -41,7 +41,7 @@ services:
       - PENNY_PREFERENCES_FILE=/app/data/omar-preferences.md
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.penny.rule=Host(`penny.khamel.com`)"
+      - "traefik.http.routers.penny.rule=Host(`penny.example.com`)"
       - "traefik.http.routers.penny.entrypoints=websecure"
       - "traefik.http.routers.penny.tls.certresolver=cloudflare"
       - "traefik.http.services.penny.loadbalancer.server.port=8000"

@@ -171,4 +171,4 @@ pytest -v
 - Confidence < 70% triggers Telegram confirmation before routing
 - Claude Code builds run autonomously with optional Q&A
 - Z.AI provides Anthropic-compatible API at ~$3/month
-- Public access via Cloudflare Tunnel (penny.zoheri.com)
+- Public access via Cloudflare Tunnel (penny.example.com)

@@ -28,7 +28,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VOICE_MEMOS_PATH = Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 PROCESSED_PATH = Path.home() / "penny/processed"
 FAILED_PATH = Path.home() / "penny/failed"
-PENNY_URL = os.environ.get("PENNY_URL", "http://192.168.7.10:8250")
+PENNY_URL = os.environ.get("PENNY_URL", "http://${PENNY_URL:-localhost:8000}")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 
 # Logging
