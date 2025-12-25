@@ -30,6 +30,17 @@ Project task tracking following [todo.md](https://github.com/todomd/todo.md) spe
 
 ## In Progress
 
+### Claude Code Integration (Build Category)
+- [x] Add "build" classification category
+- [x] Create model_selector.py (GLM-4.7 vs Opus logic)
+- [x] Create claude_code.py integration
+- [x] Create telegram_qa.py for build Q&A
+- [x] Add database tables (claude_sessions, learned_preferences, pending_questions)
+- [x] Add ZAI_API_KEY to environment
+- [x] Generate TELEGRAM_WEBHOOK_SECRET
+- [ ] Add `penny.zoheri.com` to Cloudflare tunnel (see docs/CLAUDE_CODE_SETUP.md)
+- [ ] Run `scripts/setup_telegram_webhook.sh` to configure webhook
+
 ## Done
 - [x] Add confidence-based routing with Telegram confirmation (<70%)
 - [x] Add Apple Reminders integration via AppleScript

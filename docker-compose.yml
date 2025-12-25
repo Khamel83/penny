@@ -9,6 +9,36 @@ services:
       - ./data:/app/data
     environment:
       - TZ=America/New_York
+      # Core Penny
+      - PENNY_DB_PATH=/app/data/penny.db
+      - PENNY_CONFIDENCE_THRESHOLD=${PENNY_CONFIDENCE_THRESHOLD:-0.7}
+      # LLM Classification
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
+      # Google Keep
+      - GOOGLE_KEEP_EMAIL=${GOOGLE_KEEP_EMAIL}
+      - GOOGLE_KEEP_TOKEN=${GOOGLE_KEEP_TOKEN}
+      - GOOGLE_KEEP_SHOPPING_LIST=${GOOGLE_KEEP_SHOPPING_LIST:-Shopping}
+      # Jellyseerr
+      - JELLYSEERR_URL=${JELLYSEERR_URL}
+      - JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY}
+      # Apple Integrations
+      - MAC_MINI_HOST=${MAC_MINI_HOST:-macmini}
+      - MAC_MINI_USER=${MAC_MINI_USER:-macmini}
+      - PENNY_REMINDERS_LIST=${PENNY_REMINDERS_LIST:-Reminders}
+      - PENNY_CALENDAR=${PENNY_CALENDAR:-Calendar}
+      - PENNY_NOTES_FOLDER=${PENNY_NOTES_FOLDER:-Penny}
+      # Z.AI Configuration (GLM builds - default)
+      - ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}
+      - ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+      # Anthropic Configuration (Opus builds - critical only)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Claude Code Build Settings
+      - PENNY_BUILDS_WORK_DIR=/app/builds
+      - PENNY_PREFERENCES_FILE=/app/data/omar-preferences.md
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.penny.rule=Host(`penny.khamel.com`)"

@@ -28,7 +28,7 @@ class Item(BaseModel):
 
 class ReclassifyRequest(BaseModel):
     """Request to reclassify an item."""
-    classification: str = Field(..., pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|unknown)$")
+    classification: str = Field(..., pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|build|unknown)$")
 
 
 class ConfirmRequest(BaseModel):
@@ -36,7 +36,7 @@ class ConfirmRequest(BaseModel):
     confirmed: bool = Field(..., description="True to confirm, False to reclassify")
     classification: Optional[str] = Field(
         None,
-        pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|unknown)$",
+        pattern="^(work|personal|shopping|media|smart_home|reminder|calendar|notes|build|unknown)$",
         description="New classification if not confirmed"
     )
 

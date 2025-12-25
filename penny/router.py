@@ -49,6 +49,8 @@ async def route(
             return await route_calendar(text, data)
         elif classification == "notes":
             return await route_notes(text, data)
+        elif classification == "build":
+            return await route_build(text, data)
         elif classification == "personal":
             # Personal notes just stay in Penny
             return {"routed": False, "reason": "Stored in Penny only"}
@@ -76,6 +78,7 @@ async def request_confirmation(
         "reminder": "⏰",
         "calendar": "📅",
         "notes": "📝",
+        "build": "🔧",
     }
     emoji = emoji_map.get(classification, "❓")
 
@@ -257,6 +260,29 @@ async def route_notes(text: str, data: dict[str, Any]) -> dict[str, Any]:
         return await send_telegram(f"📝 NOTE: {text[:200]}...")
     except Exception as e:
         return await send_telegram(f"📝 NOTE (Apple Notes failed): {text[:200]}...")
+
+
+async def route_build(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Route build requests to Claude Code."""
+    try:
+        from .integrations import claude_code
+
+        description = data.get("description", text)
+        result = await claude_code.handle_build(description, data)
+
+        if result.get("success"):
+            return {"routed": True, "service": "claude_code", "result": result}
+        else:
+            # Build failed - notify via Telegram
+            error = result.get("error", "Unknown error")
+            await send_telegram(f"🔧 BUILD FAILED: {description[:100]}...\n\nError: {error}")
+            return {"routed": False, "service": "claude_code", "error": error}
+    except ImportError:
+        # Claude Code not available - send to Telegram
+        return await send_telegram(f"🔧 BUILD REQUEST: {text[:200]}...")
+    except Exception as e:
+        # Any other error - send to Telegram
+        return await send_telegram(f"🔧 BUILD (failed): {text[:100]}...\n\nError: {str(e)}")
 
 
 async def send_telegram(message: str) -> dict[str, Any]:

@@ -21,6 +21,7 @@ CATEGORIES:
 - work: Work-related tasks without specific dates. Extract task description.
 - notes: Longer thoughts, ideas, journal entries to save. Extract title and content.
 - personal: Quick thoughts that just need to be stored.
+- build: Complex creation/building requests like websites, apps, scripts. Extract description and urgency (normal/critical).
 
 EXAMPLES:
 
@@ -50,6 +51,15 @@ EXAMPLES:
 
 "Just testing, one two three"
 {"classification": "personal", "confidence": 0.9, "summary": "Test message"}
+
+"Build me a website called blackpunter where you pick from a list of NFL punters and it tells you if they're black"
+{"classification": "build", "confidence": 0.95, "description": "Website called blackpunter to identify black NFL punters", "urgency": "normal"}
+
+"Critical: fix the authentication bug in production immediately"
+{"classification": "build", "confidence": 0.9, "description": "Fix authentication bug in production", "urgency": "critical"}
+
+"Create a countdown timer app that shows days until Christmas"
+{"classification": "build", "confidence": 0.9, "description": "Countdown timer app for Christmas", "urgency": "normal"}
 
 Respond with ONLY valid JSON. No explanation, no markdown, just JSON.
 """
@@ -97,7 +107,7 @@ def classify_with_llm(text: str) -> dict[str, Any]:
             data["confidence"] = 0.8
 
         # Validate classification category
-        valid_categories = {"shopping", "media", "smart_home", "reminder", "calendar", "work", "notes", "personal"}
+        valid_categories = {"shopping", "media", "smart_home", "reminder", "calendar", "work", "notes", "personal", "build"}
         if data["classification"] not in valid_categories:
             data["classification"] = "unknown"
 
@@ -145,6 +155,12 @@ KEYWORDS = {
         "test", "testing", "thank you", "thanks",
         "family", "birthday", "vacation",
     ],
+    "build": [
+        "build", "build me", "create", "make", "make me", "set up", "setup",
+        "deploy", "implement", "develop", "code", "write me", "program",
+        "website", "app", "application", "script", "api", "server",
+        "critical", "urgent", "production", "fix",
+    ],
 }
 
 
@@ -174,6 +190,22 @@ def classify_keywords(text: str) -> dict[str, Any]:
                          {"the", "and", "for", "add", "get", "buy", "some", "need", "list", "shopping"}]
     elif best_category == "work":
         result["task"] = text
+    elif best_category == "build":
+        result["description"] = text
+        # Check for urgency keywords
+        urgency_keywords = {"critical", "urgent", "asap", "immediately", "production", "emergency"}
+        result["urgency"] = "critical" if any(kw in text_lower for kw in urgency_keywords) else "normal"
+
+    # Escalation: low confidence on known categories → escalate to build
+    # This catches ambiguous requests that might be build requests
+    if best_category == "unknown" or (best_score < 0.3 and best_category not in {"build", "personal"}):
+        # Check if it looks like a build request
+        build_indicators = {"build", "create", "make", "deploy", "set up", "implement"}
+        if any(ind in text_lower for ind in build_indicators):
+            result["classification"] = "build"
+            result["description"] = text
+            result["urgency"] = "normal"
+            result["confidence"] = 0.6  # Lower confidence for escalated items
 
     return result
 

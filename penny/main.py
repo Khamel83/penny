@@ -1,5 +1,6 @@
 """Penny - Your personal voice assistant."""
 
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,9 @@ from .models import (
     ItemsResponse,
     ReclassifyRequest,
 )
+
+# Telegram webhook secret for build Q&A
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 
 @asynccontextmanager
@@ -172,6 +176,49 @@ async def get_pending_items():
     """Get all items pending confirmation."""
     items = await database.get_pending_items()
     return ItemsResponse(items=items, total=len(items), page=1, per_page=len(items))
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Receive Telegram bot updates for build Q&A.
+
+    This endpoint receives replies to build questions sent via Telegram.
+    When Omar replies to a question, this webhook resolves the pending future
+    and the build can continue.
+    """
+    # Validate Telegram's secret token
+    if TELEGRAM_WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token != TELEGRAM_WEBHOOK_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid webhook token")
+
+    data = await request.json()
+
+    # Extract message info
+    message = data.get("message", {})
+    reply_to = message.get("reply_to_message", {})
+    text = message.get("text", "")
+    message_id = reply_to.get("message_id")
+
+    if not message_id or not text:
+        # Not a reply or no text - ignore
+        return {"ok": True}
+
+    # Check if this is a reply to a pending build question
+    pending = await database.get_pending_question_by_message_id(str(message_id))
+    if pending:
+        build_id = pending["build_id"]
+
+        # Try to resolve the pending question
+        try:
+            from .integrations import telegram_qa
+            resolved = telegram_qa.resolve_answer(build_id, text)
+            if resolved:
+                await database.mark_question_answered(pending["id"], text)
+        except ImportError:
+            pass  # telegram_qa not available
+
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)

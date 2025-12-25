@@ -2,10 +2,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install curl for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install system dependencies including Node.js for Claude Code runtime
+RUN apt-get update && apt-get install -y \
+    curl \
+    gnupg \
+    openssh-client \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies directly
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install Python dependencies
 RUN pip install --no-cache-dir \
     fastapi>=0.109.0 \
     uvicorn[standard]>=0.27.0 \
@@ -14,14 +23,16 @@ RUN pip install --no-cache-dir \
     pydantic>=2.5.0 \
     requests>=2.31.0 \
     httpx>=0.27.0 \
-    gkeepapi>=0.16.0
+    gkeepapi>=0.16.0 \
+    claude-agent-sdk>=0.1.0 \
+    dateparser>=1.1.0
 
 # Copy application
 COPY penny/ ./penny/
 COPY static/ ./static/
 
-# Create data directory
-RUN mkdir -p /app/data
+# Create data and builds directories
+RUN mkdir -p /app/data /app/builds
 
 # Run the app
 EXPOSE 8000
