@@ -9,10 +9,16 @@ This document describes how to complete the Claude Code build integration for Pe
 | Z.AI API Key | ✅ Configured | `ZAI_API_KEY` in homelab .env |
 | Telegram Webhook Secret | ✅ Generated | `TELEGRAM_WEBHOOK_SECRET` in homelab .env |
 | Penny Container | ✅ Deployed | Running with all env vars |
-| Cloudflare Tunnel | ⏳ Pending | Need to add public hostname |
-| Telegram Webhook | ⏳ Pending | Waiting for public URL |
+| Cloudflare Tunnel | ✅ Configured | penny-tunnel container + CNAME record |
+| Telegram Webhook | ✅ Active | https://penny.zoheri.com/api/telegram/webhook |
 
-## Remaining Setup Steps
+## Architecture
+
+```
+Telegram → penny.zoheri.com (Cloudflare) → penny-tunnel container → penny:8000
+```
+
+## Setup Reference (Already Completed)
 
 ### Step 1: Add penny.zoheri.com to Cloudflare Tunnel
 
