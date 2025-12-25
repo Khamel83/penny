@@ -3,6 +3,8 @@
 Routes build requests to Claude Code via the Claude Agent SDK,
 using Z.AI's GLM-4.7 for most builds or Anthropic's Opus for critical ones.
 
+Integrates with ONE_SHOT build system for autonomous project development.
+
 After build completes, automatically deploys:
 - Static sites → penny-builds nginx → <project>.builds.khamel.com
 - Backend services → OCI-Dev → <project>.deer-panga.ts.net
@@ -25,6 +27,10 @@ from . import deploy, telegram_qa
 
 logger = logging.getLogger(__name__)
 
+# ONE_SHOT paths
+ONESHOT_AGENTS_MD = Path.home() / "github/oneshot/AGENTS.md"
+ONESHOT_SKILLS_DIR = Path.home() / ".claude/skills/oneshot"
+
 
 def load_preferences() -> str:
     """Load Omar's preferences from file.
@@ -41,37 +47,89 @@ def load_preferences() -> str:
     return ""
 
 
+def load_oneshot_agents() -> str:
+    """Load the ONE_SHOT AGENTS.md orchestrator.
+
+    Returns:
+        AGENTS.md content, or empty string if not found
+    """
+    try:
+        if ONESHOT_AGENTS_MD.exists():
+            return ONESHOT_AGENTS_MD.read_text()
+    except Exception as e:
+        logger.warning(f"Failed to load AGENTS.md: {e}")
+    return ""
+
+
+def load_oneshot_skill(skill_name: str) -> str:
+    """Load a specific ONE_SHOT skill.
+
+    Args:
+        skill_name: Name of the skill directory (e.g., 'oneshot-core')
+
+    Returns:
+        Skill content, or empty string if not found
+    """
+    try:
+        skill_path = ONESHOT_SKILLS_DIR / skill_name / "SKILL.md"
+        if skill_path.exists():
+            return skill_path.read_text()
+    except Exception as e:
+        logger.warning(f"Failed to load skill {skill_name}: {e}")
+    return ""
+
+
 def build_prompt(transcript: str, preferences: str) -> str:
-    """Build the prompt for Claude Code.
+    """Build the prompt for Claude Code using ONE_SHOT methodology.
+
+    Integrates AGENTS.md skill router and oneshot-core skill for
+    autonomous project development.
 
     Args:
         transcript: The voice memo transcription
         preferences: Omar's preferences content
 
     Returns:
-        Full prompt string for Claude
+        Full prompt string for Claude with ONE_SHOT context
     """
     prompt_parts = []
 
-    # Add preferences context
+    # Load ONE_SHOT orchestrator (AGENTS.md)
+    agents_md = load_oneshot_agents()
+    if agents_md:
+        prompt_parts.append("# ONE_SHOT Build System\n\n")
+        prompt_parts.append(agents_md)
+        prompt_parts.append("\n\n---\n\n")
+
+    # Load oneshot-core skill for build requests
+    oneshot_skill = load_oneshot_skill("oneshot-core")
+    if oneshot_skill:
+        prompt_parts.append("# Active Skill: oneshot-core\n\n")
+        prompt_parts.append(oneshot_skill)
+        prompt_parts.append("\n\n---\n\n")
+
+    # Add Omar's preferences
     if preferences:
-        prompt_parts.append("# Omar's Preferences\n")
+        prompt_parts.append("# Omar's Preferences\n\n")
         prompt_parts.append(preferences)
         prompt_parts.append("\n\n---\n\n")
 
-    # Add the build request
-    prompt_parts.append("# Build Request\n\n")
+    # Add the build request with ONE_SHOT trigger
+    prompt_parts.append("# Build Request (ONE_SHOT)\n\n")
     prompt_parts.append(transcript)
     prompt_parts.append("\n\n---\n\n")
 
-    # Add instructions
-    prompt_parts.append("# Instructions\n\n")
-    prompt_parts.append("1. Build what Omar requested based on his preferences above.\n")
-    prompt_parts.append("2. Use the simplest approach that meets the requirements.\n")
-    prompt_parts.append("3. Follow Omar's tech stack preferences (FastAPI, Tailwind, etc.).\n")
-    prompt_parts.append("4. Deploy according to his deployment rules.\n")
-    prompt_parts.append("5. If you need clarification, ask ONE specific question.\n")
-    prompt_parts.append("6. Return a summary of what was built and any deliverables (URLs, files).\n")
+    # Add Penny-specific instructions
+    prompt_parts.append("# Penny Integration Instructions\n\n")
+    prompt_parts.append("You are being invoked via Penny (Omar's voice assistant).\n\n")
+    prompt_parts.append("**Important context:**\n")
+    prompt_parts.append("- This request came from a voice memo transcription\n")
+    prompt_parts.append("- Follow the ONE_SHOT methodology above\n")
+    prompt_parts.append("- Use YOLO mode for faster execution when appropriate\n")
+    prompt_parts.append("- Deploy static sites to penny-builds (*.builds.khamel.com)\n")
+    prompt_parts.append("- Deploy backend services to OCI-Dev\n")
+    prompt_parts.append("- If you need clarification, ask ONE specific question\n")
+    prompt_parts.append("- Return a summary of what was built and deliverables (URLs)\n")
 
     return "".join(prompt_parts)
 
