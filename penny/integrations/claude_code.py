@@ -2,8 +2,13 @@
 
 Routes build requests to Claude Code via the Claude Agent SDK,
 using Z.AI's GLM-4.7 for most builds or Anthropic's Opus for critical ones.
+
+After build completes, automatically deploys:
+- Static sites → penny-builds nginx → <project>.builds.khamel.com
+- Backend services → OCI-Dev → <project>.deer-panga.ts.net
 """
 
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -16,7 +21,9 @@ from ..config.claude_code import (
     PREFERENCES_FILE,
 )
 from ..model_selector import get_model_reason, select_model
-from . import telegram_qa
+from . import deploy, telegram_qa
+
+logger = logging.getLogger(__name__)
 
 
 def load_preferences() -> str:
@@ -143,6 +150,18 @@ async def handle_build(
         deliverables=result.get("deliverables", []),
     )
 
+    # Deploy the build if successful
+    deployed_url = None
+    if result.get("success"):
+        deployed_url = await _deploy_build_output(build_id, result)
+        if deployed_url:
+            # Add deployed URL to deliverables
+            deliverables = result.get("deliverables", [])
+            if deployed_url not in deliverables:
+                deliverables.insert(0, deployed_url)
+                result["deliverables"] = deliverables
+                result["deployed_url"] = deployed_url
+
     # Notify completion
     try:
         await telegram_qa.notify_build_complete(
@@ -150,11 +169,53 @@ async def handle_build(
             success=result.get("success", False),
             summary=result.get("output", "Build completed"),
             deliverables=result.get("deliverables"),
+            deployed_url=deployed_url,
         )
     except Exception:
         pass
 
     return result
+
+
+async def _deploy_build_output(build_id: str, result: dict) -> Optional[str]:
+    """Deploy the build output and return the accessible URL.
+
+    Args:
+        build_id: The build session ID
+        result: The build result containing output and deliverables
+
+    Returns:
+        The deployed URL, or None if deployment failed
+    """
+    builds_dir = Path(BUILDS_WORK_DIR)
+    if not builds_dir.exists():
+        logger.warning(f"Builds directory does not exist: {builds_dir}")
+        return None
+
+    # Find project directories (exclude hidden and common non-project dirs)
+    project_dirs = [
+        d for d in builds_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    ]
+
+    if not project_dirs:
+        logger.warning("No project directories found in builds folder")
+        return None
+
+    # Use the most recently modified directory
+    project_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    project_path = project_dirs[0]
+
+    logger.info(f"Deploying project: {project_path.name}")
+
+    try:
+        deployed_url = await deploy.deploy_build(project_path)
+        if deployed_url:
+            logger.info(f"Deployed to: {deployed_url}")
+        return deployed_url
+    except Exception as e:
+        logger.error(f"Deployment failed: {e}")
+        return None
 
 
 async def _run_with_agent_sdk(

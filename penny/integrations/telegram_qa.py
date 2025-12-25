@@ -160,6 +160,7 @@ async def notify_build_complete(
     success: bool,
     summary: str,
     deliverables: Optional[list[str]] = None,
+    deployed_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Send build completion notification to Omar.
 
@@ -168,6 +169,7 @@ async def notify_build_complete(
         success: Whether the build succeeded
         summary: Summary of what was built
         deliverables: List of deliverables (URLs, files, etc.)
+        deployed_url: The URL where the build is deployed and accessible
 
     Returns:
         Telegram send result
@@ -176,6 +178,11 @@ async def notify_build_complete(
     status = "completed" if success else "failed"
 
     message_parts = [f"{emoji} <b>Build {status}</b>"]
+
+    # Show deployed URL prominently if available
+    if deployed_url:
+        message_parts.append(f"\n\n🌐 <b>Live at:</b> {deployed_url}")
+
     message_parts.append(f"\n\n{summary}")
 
     if deliverables:

@@ -38,6 +38,8 @@ Project task tracking following [todo.md](https://github.com/todomd/todo.md) spe
 - [x] Fix SDK empty output (class-based message type checking)
 - [x] Fix database read-only (group permissions on mounted volume)
 - [x] End-to-end voice-to-build pipeline verified working
+- [x] Add post-build auto-deployment (penny-builds nginx + OCI-Dev)
+- [x] Send deployed URL via Telegram notification
 
 ## Done (Previous)
 - [x] Claude Code integration (voice-to-build pipeline with Z.AI GLM-4.7 / Opus)

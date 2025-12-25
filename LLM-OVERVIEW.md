@@ -92,7 +92,17 @@ Voice Memo → iCloud → Mac mini (watcher) → mlx-whisper transcription
                                         ↓
                                Q&A via Telegram (if needed)
                                         ↓
-                               Deliverables → User
+                               Auto-Deploy
+                    ┌───────────────┴───────────────┐
+                    ↓                               ↓
+              [Static Site]                   [Backend]
+                    ↓                               ↓
+            penny-builds nginx              OCI-Dev systemd
+                    ↓                               ↓
+        <project>.builds.khamel.com    <project>.deer-panga.ts.net
+                    └───────────────┬───────────────┘
+                                    ↓
+                         Telegram: "Live at: <URL>"
 ```
 
 ## Claude Code Integration (NEW)

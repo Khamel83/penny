@@ -57,6 +57,18 @@ Say "build me a website" and Penny will:
 "Deploy a new FastAPI service to my homelab"
 ```
 
+### Auto-Deployment
+
+Builds are automatically deployed after completion:
+
+| Build Type | Deployment | URL Pattern |
+|------------|------------|-------------|
+| Static (React/Vite) | penny-builds nginx | `<project>.builds.khamel.com` |
+| Python backend | OCI-Dev systemd | `<project>.deer-panga.ts.net` |
+| Node backend | OCI-Dev systemd | `<project>.deer-panga.ts.net` |
+
+The final URL is sent to you via Telegram automatically.
+
 ## Quick Start
 
 ### Local Development
