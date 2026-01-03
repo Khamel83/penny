@@ -22,6 +22,7 @@ CATEGORIES:
 - notes: Longer thoughts, ideas, journal entries to save. Extract title and content.
 - personal: Quick thoughts that just need to be stored.
 - build: Complex creation/building requests like websites, apps, scripts. Extract description and urgency (normal/critical).
+- url: URLs to read later, save, or add to knowledge base. Extract the URL.
 
 EXAMPLES:
 
@@ -60,6 +61,12 @@ EXAMPLES:
 
 "Create a countdown timer app that shows days until Christmas"
 {"classification": "build", "confidence": 0.9, "description": "Countdown timer app for Christmas", "urgency": "normal"}
+
+"Save this article https://example.com/interesting-read for later"
+{"classification": "url", "confidence": 0.95, "url": "https://example.com/interesting-read"}
+
+"Read this later stratechery.com/2025/ai-news"
+{"classification": "url", "confidence": 0.9, "url": "stratechery.com/2025/ai-news"}
 
 Respond with ONLY valid JSON. No explanation, no markdown, just JSON.
 """
@@ -107,7 +114,7 @@ def classify_with_llm(text: str) -> dict[str, Any]:
             data["confidence"] = 0.8
 
         # Validate classification category
-        valid_categories = {"shopping", "media", "smart_home", "reminder", "calendar", "work", "notes", "personal", "build"}
+        valid_categories = {"shopping", "media", "smart_home", "reminder", "calendar", "work", "notes", "personal", "build", "url"}
         if data["classification"] not in valid_categories:
             data["classification"] = "unknown"
 
@@ -161,6 +168,11 @@ KEYWORDS = {
         "website", "app", "application", "script", "api", "server",
         "critical", "urgent", "production", "fix",
     ],
+    "url": [
+        "http", "https", ".com", ".org", ".io", ".net", ".dev",
+        "save this article", "read later", "read this later", "bookmark",
+        "add to atlas", "save link", "save url", "check out",
+    ],
 }
 
 
@@ -195,6 +207,16 @@ def classify_keywords(text: str) -> dict[str, Any]:
         # Check for urgency keywords
         urgency_keywords = {"critical", "urgent", "asap", "immediately", "production", "emergency"}
         result["urgency"] = "critical" if any(kw in text_lower for kw in urgency_keywords) else "normal"
+    elif best_category == "url":
+        # Try to extract URL from text
+        url_match = re.search(r'https?://[^\s]+', text)
+        if url_match:
+            result["url"] = url_match.group(0)
+        else:
+            # Try to find a domain pattern
+            domain_match = re.search(r'[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s]*', text)
+            if domain_match:
+                result["url"] = domain_match.group(0)
 
     # Escalation: low confidence on known categories → escalate to build
     # This catches ambiguous requests that might be build requests

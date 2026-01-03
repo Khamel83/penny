@@ -51,6 +51,8 @@ async def route(
             return await route_notes(text, data)
         elif classification == "build":
             return await route_build(text, data)
+        elif classification == "url":
+            return await route_url(text, data)
         elif classification == "personal":
             # Personal notes just stay in Penny
             return {"routed": False, "reason": "Stored in Penny only"}
@@ -79,6 +81,7 @@ async def request_confirmation(
         "calendar": "📅",
         "notes": "📝",
         "build": "🔧",
+        "url": "🔗",
     }
     emoji = emoji_map.get(classification, "❓")
 
@@ -135,14 +138,31 @@ async def route_media(text: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def route_work(text: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Route work tasks to Telegram."""
-    task = data.get("task", text)
-    due = data.get("due", "")
-    if due:
-        message = f"📋 WORK TASK: {task}\n⏰ Due: {due}"
-    else:
-        message = f"📋 WORK TASK: {task}"
-    return await send_telegram(message)
+    """Route work tasks to TrojanHorse for processing and storage."""
+    try:
+        from .integrations import trojanhorse
+
+        task = data.get("task", text)
+        tags = data.get("tags", ["work", "voice-note"])
+
+        result = await trojanhorse.add_work_note(
+            content=task,
+            tags=tags if isinstance(tags, list) else [tags],
+        )
+        if result.get("success"):
+            # Also notify via Telegram
+            await send_telegram(f"📋 WORK NOTE saved to TrojanHorse: {task[:100]}...")
+            return {"routed": True, "service": "trojanhorse", "result": result}
+        else:
+            raise Exception(result.get("error", "Unknown error"))
+    except ImportError:
+        # Fall back to Telegram only
+        task = data.get("task", text)
+        return await send_telegram(f"📋 WORK TASK: {task}")
+    except Exception as e:
+        # Fall back to Telegram on any error
+        task = data.get("task", text)
+        return await send_telegram(f"📋 WORK (TrojanHorse failed): {task}")
 
 
 async def route_smart_home(text: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -260,6 +280,36 @@ async def route_notes(text: str, data: dict[str, Any]) -> dict[str, Any]:
         return await send_telegram(f"📝 NOTE: {text[:200]}...")
     except Exception as e:
         return await send_telegram(f"📝 NOTE (Apple Notes failed): {text[:200]}...")
+
+
+async def route_url(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Route URLs to Atlas for ingestion."""
+    try:
+        from .integrations import atlas
+
+        url = data.get("url", "")
+        if not url:
+            # Try to extract URL from text
+            import re
+            url_match = re.search(r'https?://[^\s]+', text)
+            if url_match:
+                url = url_match.group(0)
+
+        if not url:
+            return await send_telegram(f"🔗 URL not found in: {text[:100]}...")
+
+        tags = data.get("tags", [])
+        result = await atlas.submit_url(url, tags=tags)
+
+        if result.get("success"):
+            await send_telegram(f"🔗 URL queued for Atlas: {url}")
+            return {"routed": True, "service": "atlas", "result": result}
+        else:
+            raise Exception(result.get("error", "Unknown error"))
+    except ImportError:
+        return await send_telegram(f"🔗 URL (Atlas not available): {data.get('url', text)}")
+    except Exception as e:
+        return await send_telegram(f"🔗 URL (Atlas failed): {data.get('url', text)[:100]}...")
 
 
 async def route_build(text: str, data: dict[str, Any]) -> dict[str, Any]:

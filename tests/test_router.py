@@ -162,22 +162,34 @@ class TestRouteMedia:
 
 @pytest.mark.asyncio
 class TestRouteWork:
-    """Tests for work route."""
+    """Tests for work route - routes to TrojanHorse with Telegram notification."""
 
-    async def test_sends_task_to_telegram(self):
+    async def test_routes_to_trojanhorse(self):
+        mock_th = AsyncMock(return_value={"success": True, "file": "/inbox/test.md"})
+        with patch("penny.integrations.trojanhorse.add_work_note", mock_th):
+            with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock_tg:
+                mock_tg.return_value = {"routed": True, "service": "telegram"}
+                result = await route_work("call dentist", {"task": "Call the dentist"})
+                mock_th.assert_called_once()
+                assert result["service"] == "trojanhorse"
+
+    async def test_falls_back_to_telegram_on_import_error(self):
         with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock_tg:
             mock_tg.return_value = {"routed": True, "service": "telegram"}
+            # TrojanHorse not installed - falls back to Telegram
             result = await route_work("call dentist", {"task": "Call the dentist"})
-            mock_tg.assert_called_once()
+            mock_tg.assert_called()
             assert "Call the dentist" in mock_tg.call_args[0][0]
 
-    async def test_includes_due_date(self):
-        with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock_tg:
-            mock_tg.return_value = {"routed": True, "service": "telegram"}
-            await route_work("call dentist", {"task": "Call dentist", "due": "tomorrow"})
-            call_args = mock_tg.call_args[0][0]
-            assert "tomorrow" in call_args
-            assert "Due:" in call_args
+    async def test_notifies_telegram_on_success(self):
+        mock_th = AsyncMock(return_value={"success": True, "file": "/inbox/test.md"})
+        with patch("penny.integrations.trojanhorse.add_work_note", mock_th):
+            with patch("penny.router.send_telegram", new_callable=AsyncMock) as mock_tg:
+                mock_tg.return_value = {"routed": True, "service": "telegram"}
+                await route_work("call dentist", {"task": "Call the dentist"})
+                # Should notify via Telegram after saving
+                mock_tg.assert_called_once()
+                assert "TrojanHorse" in mock_tg.call_args[0][0]
 
 
 @pytest.mark.asyncio
