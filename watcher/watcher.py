@@ -42,7 +42,7 @@ VOICE_MEMOS_PATH = Path.home() / "Library/Group Containers/group.com.apple.Voice
 PROCESSED_PATH = Path.home() / "penny/processed"
 FAILED_PATH = Path.home() / "penny/failed"
 TEMP_PATH = Path.home() / "penny/temp"
-PENNY_URL = os.environ.get("PENNY_URL", "http://192.168.7.10:8250")
+PENNY_URL = os.environ.get("PENNY_URL", "http://100.126.13.70:8888")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 
 # Logging

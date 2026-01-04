@@ -1,14 +1,20 @@
-"""Penny - Your personal voice assistant."""
+"""Penny - Your personal voice assistant.
 
+An intelligent orchestrator that implements the "gather signal cheap,
+reason expensive" pattern for voice-driven automation.
+"""
+
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import classifier, database
 from .models import (
@@ -19,16 +25,33 @@ from .models import (
     ItemsResponse,
     ReclassifyRequest,
 )
+from .orchestrator import BackgroundOrchestrator
 
-# Telegram webhook secret for build Q&A
+logger = logging.getLogger(__name__)
+
+# Configuration
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+ORCHESTRATOR_ENABLED = os.environ.get("PENNY_ORCHESTRATOR_ENABLED", "true").lower() == "true"
+
+# Orchestrator instance
+orchestrator = BackgroundOrchestrator()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup."""
+    """Initialize database and orchestrator on startup."""
     await database.init_db()
+    logger.info("Database initialized")
+
+    if ORCHESTRATOR_ENABLED:
+        await orchestrator.start()
+        logger.info("Background orchestrator started")
+
     yield
+
+    if ORCHESTRATOR_ENABLED:
+        await orchestrator.stop()
+        logger.info("Background orchestrator stopped")
 
 
 app = FastAPI(
@@ -219,6 +242,127 @@ async def telegram_webhook(request: Request):
             pass  # telegram_qa not available
 
     return {"ok": True}
+
+
+# =============================================================================
+# Background Task API
+# =============================================================================
+
+
+class BackgroundTaskRequest(BaseModel):
+    """Request to create a background task."""
+
+    task_type: str = "probe"
+    query: Optional[str] = None
+    text: Optional[str] = None
+    input_data: Optional[dict[str, Any]] = None
+    item_id: Optional[str] = None
+    priority: int = 0
+
+
+class BackgroundTaskResponse(BaseModel):
+    """Response for background task operations."""
+
+    task_id: str
+    status: str
+    message: str
+    task: Optional[dict[str, Any]] = None
+
+
+@app.post("/api/tasks/background", response_model=BackgroundTaskResponse)
+async def create_background_task(request: BackgroundTaskRequest):
+    """Create a background task for async processing.
+
+    Use this to submit queries that should be processed asynchronously
+    using the "gather signal cheap, reason expensive" pattern.
+    """
+    # Build input data
+    input_data = request.input_data or {}
+    if request.query:
+        input_data["query"] = request.query
+    if request.text:
+        input_data["text"] = request.text
+
+    if not input_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Either query, text, or input_data required"
+        )
+
+    task = await database.create_background_task(
+        task_type=request.task_type,
+        input_data=input_data,
+        item_id=request.item_id,
+        priority=request.priority,
+    )
+
+    # Optionally notify via Telegram
+    try:
+        from .integrations import telegram
+        query_text = input_data.get("query") or input_data.get("text", "")
+        await telegram.send_task_started(
+            task_id=task["id"],
+            query=query_text,
+            task_type=request.task_type,
+        )
+    except Exception:
+        pass  # Non-critical
+
+    return BackgroundTaskResponse(
+        task_id=task["id"],
+        status="pending",
+        message="Task queued for background processing",
+        task=task,
+    )
+
+
+@app.get("/api/tasks/{task_id}", response_model=BackgroundTaskResponse)
+async def get_task_status(task_id: str):
+    """Get status of a background task."""
+    task = await database.get_background_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return BackgroundTaskResponse(
+        task_id=task["id"],
+        status=task["status"],
+        message=f"Task {task['status']} (confidence: {task['confidence']:.0%})",
+        task=task,
+    )
+
+
+@app.get("/api/tasks")
+async def list_background_tasks(
+    status: Optional[str] = Query(None, pattern="^(pending|running|completed|failed)$"),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """List background tasks."""
+    if status:
+        tasks = await database.get_background_tasks_by_status(status, limit)
+    else:
+        # Get all recent tasks
+        tasks = await database.get_pending_background_tasks(limit)
+
+    return {
+        "tasks": tasks,
+        "total": len(tasks),
+        "status_filter": status,
+    }
+
+
+@app.get("/api/orchestrator/status")
+async def orchestrator_status():
+    """Get orchestrator status."""
+    pending = await database.get_pending_background_tasks(limit=100)
+    running = await database.get_background_tasks_by_status("running", limit=10)
+
+    return {
+        "enabled": ORCHESTRATOR_ENABLED,
+        "running": orchestrator.running,
+        "poll_interval": orchestrator.poll_interval,
+        "pending_tasks": len(pending),
+        "running_tasks": len(running),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

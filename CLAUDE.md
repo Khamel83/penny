@@ -26,16 +26,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Penny is a voice assistant that receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant, Apple Reminders, Apple Calendar, Apple Notes).
 
+**Core Philosophy:** "Gather signal cheap, reason expensive."
+
+Penny runs cheap probes in the background while you're away, accumulates findings, and only escalates to expensive LLM reasoning when confidence thresholds are met.
+
 **Key Features:**
+- **Background Orchestrator**: Runs cheap probes (grep, file reads, API checks, Atlas queries) automatically
+- **Confidence-based escalation**: High (≥0.8) → deliver, Medium (≥0.6) → quick reasoning, Low → full reasoning
 - Confidence-based routing: Low confidence (<70%) items are sent to Telegram for confirmation before routing
 - 9 classification categories with graceful fallback to Telegram
 - Voice-to-build pipeline via Claude Code (GLM-4.7 or Opus)
 - Apple integrations via AppleScript over SSH to Mac mini
 
-**Critical Docker Notes:**
-- Container runs as non-root user (UID 1001) - Claude CLI requires this
-- Data directory must be writable by UID 1001: `sudo chgrp -R 1001 ./data && sudo chmod -R g+w ./data`
-- Dockerfile includes `procps` for Claude CLI process management
+**Deployment:**
+- Runs as systemd service on OCI Dev (100.126.13.70:8888)
+- Mac mini acts as transcription relay only
 
 ## Commands
 
@@ -68,15 +73,36 @@ Voice Memo (iCloud) → Mac mini watcher → mlx-whisper transcription → Penny
 
 ### Core Components
 
-- **`penny/main.py`**: FastAPI app with HTMX web UI. Endpoints: `/api/ingest` (receive transcriptions), `/api/items` (list items), `/api/items/{id}/reclassify` (manual reclassification), `/api/items/{id}/confirm` (confirm pending items)
+- **`penny/main.py`**: FastAPI app with HTMX web UI. Endpoints: `/api/ingest` (receive transcriptions), `/api/items` (list items), `/api/items/{id}/reclassify` (manual reclassification), `/api/items/{id}/confirm` (confirm pending items), `/api/tasks/background` (create background tasks), `/api/orchestrator/status` (check orchestrator)
 
 - **`penny/classifier.py`**: Two-tier classification: LLM via OpenRouter (`google/gemini-2.5-flash-lite`) with keyword fallback. Returns JSON with classification, confidence score, and extracted routing data.
 
-- **`penny/router.py`**: Dispatches to integrations based on classification. Implements confidence-based routing (sends low-confidence items to Telegram for confirmation) and graceful degradation—all routes fall back to Telegram on failure.
+- **`penny/router.py`**: Dispatches to integrations based on classification. Implements confidence-based routing (sends low-confidence items to Telegram for confirmation) and graceful degradation—all routes fall back to Telegram on failure. Supports `background=True` to queue tasks for async processing.
 
-- **`penny/database.py`**: Async SQLite via aiosqlite. Database stored at `/app/data/penny.db`
+- **`penny/database.py`**: Async SQLite via aiosqlite. Includes `items` table and `background_tasks` table for orchestrator state.
 
-- **`watcher/watcher.py`**: Standalone script for Mac mini. Watches iCloud Voice Memos folder, transcribes with mlx-whisper, POSTs to Penny.
+- **`watcher/watcher.py`**: Standalone script for Mac mini. Watches iCloud Voice Memos folder, transcribes with mlx-whisper, POSTs to Penny at OCI Dev.
+
+### Orchestrator (`penny/orchestrator/`)
+
+The background orchestrator implements the "gather signal cheap, reason expensive" pattern:
+
+- **`loop.py`**: `BackgroundOrchestrator` class - polls for pending tasks, runs probes, escalates when ready
+- **`probes.py`**: Cheap information-gathering probes:
+  - `probe_grep` - Search codebase with ripgrep
+  - `probe_file_read` - Read specific files
+  - `probe_api_check` - Health check URLs
+  - `probe_atlas` - Query knowledge base
+  - `probe_command` - Run safe diagnostic commands
+- **`escalation.py`**: Confidence-based escalation to expensive reasoning
+
+### Service Router (`penny/service_router.py`)
+
+Routes to external LLMs without API keys in Penny:
+- Claude CLI dispatch (uses Max plan credentials)
+- Gemini CLI dispatch
+- OpenRouter HTTP API
+- GLM HTTP API
 
 ### Integrations (`penny/integrations/`)
 
@@ -123,6 +149,16 @@ MAC_MINI_USER           # Default: macmini
 PENNY_REMINDERS_LIST    # Default: Reminders
 PENNY_CALENDAR          # Default: Calendar
 PENNY_NOTES_FOLDER      # Default: Penny
+
+# Orchestrator settings
+PENNY_POLL_INTERVAL     # Background task poll interval in seconds (default: 30)
+PENNY_HIGH_CONFIDENCE   # Threshold for direct delivery (default: 0.8)
+PENNY_PROBE_TIMEOUT     # Probe timeout in seconds (default: 30)
+
+# Service router
+PENNY_CLAUDE_CLI        # Path to claude CLI (default: claude)
+ATLAS_URL               # Atlas API URL for knowledge base queries
+ATLAS_DB_PATH           # Atlas DB path for direct library import
 ```
 
 ## Key Patterns
@@ -139,7 +175,7 @@ PENNY_NOTES_FOLDER      # Default: Penny
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]" pytest-asyncio requests httpx
 
-# Run all tests (87 tests)
+# Run all tests (111 tests)
 .venv/bin/pytest -v
 ```
 

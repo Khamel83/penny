@@ -50,7 +50,7 @@ class TestBuildPrompt:
         result = build_prompt("build an app", "")
 
         assert "Instructions" in result
-        assert "simplest approach" in result.lower()
+        assert "voice memo" in result.lower()  # Penny integration instructions
 
     def test_handles_empty_preferences(self):
         """Should work without preferences."""

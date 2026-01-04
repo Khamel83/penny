@@ -17,6 +17,7 @@ async def route(
     data: dict[str, Any],
     item_id: Optional[str] = None,
     confidence: float = 1.0,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Route to appropriate service based on classification.
 
@@ -26,10 +27,20 @@ async def route(
         data: Extracted routing data from LLM (items, title, task, etc.)
         item_id: The item ID (for confirmation requests)
         confidence: Classification confidence (0-1)
+        background: If True, queue as background task instead of immediate routing
 
     Returns:
-        dict with 'routed', 'service', 'error', 'needs_confirmation' keys
+        dict with 'routed', 'service', 'error', 'needs_confirmation', 'queued' keys
     """
+    # If background requested, queue for async processing
+    if background:
+        return await queue_background_task(
+            classification=classification,
+            text=text,
+            data=data,
+            item_id=item_id,
+        )
+
     # Check if we need confirmation for low-confidence classifications
     if confidence < CONFIDENCE_THRESHOLD and classification not in ("unknown", "personal"):
         return await request_confirmation(item_id, classification, text, confidence)
@@ -60,6 +71,74 @@ async def route(
             return {"routed": False, "reason": f"No route for {classification}"}
     except Exception as e:
         return {"routed": False, "error": str(e)}
+
+
+async def queue_background_task(
+    classification: str,
+    text: str,
+    data: dict[str, Any],
+    item_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Queue a task for background processing.
+
+    Uses the "gather signal cheap, reason expensive" pattern.
+    """
+    try:
+        from . import database
+
+        # Determine task type based on classification
+        if classification == "build":
+            task_type = "build"
+            priority = 1
+        else:
+            task_type = "probe"
+            priority = 0
+
+        # Build input data for the orchestrator
+        input_data = {
+            "text": text,
+            "classification": classification,
+            "data": data,
+            "query": text,  # Use text as the query for probing
+        }
+
+        # Add search patterns for code-related tasks
+        if classification == "build":
+            input_data["search_pattern"] = data.get("description", text)[:50]
+
+        task = await database.create_background_task(
+            task_type=task_type,
+            input_data=input_data,
+            item_id=item_id,
+            priority=priority,
+        )
+
+        # Notify via Telegram
+        try:
+            from .integrations import telegram
+            await telegram.send_task_started(
+                task_id=task["id"],
+                query=text[:150],
+                task_type=task_type,
+            )
+        except Exception:
+            pass
+
+        return {
+            "routed": False,
+            "queued": True,
+            "task_id": task["id"],
+            "service": "orchestrator",
+            "message": "Queued for background processing",
+        }
+
+    except Exception as e:
+        # Fall back to immediate routing if queuing fails
+        return {
+            "routed": False,
+            "queued": False,
+            "error": f"Failed to queue: {e}",
+        }
 
 
 async def request_confirmation(

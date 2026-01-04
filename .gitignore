@@ -57,3 +57,7 @@ htmlcov/
 .beads/beads.db
 .beads/bd.sock
 .beads/export_hashes.db
+
+# Local directories
+plans/
+secrets/

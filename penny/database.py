@@ -109,6 +109,40 @@ async def init_db():
             ON pending_questions(message_id)
         """)
 
+        # Background tasks for orchestrator
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS background_tasks (
+                id TEXT PRIMARY KEY,
+                item_id TEXT,
+                task_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority INTEGER DEFAULT 0,
+                input_data TEXT,
+                findings TEXT DEFAULT '[]',
+                confidence REAL DEFAULT 0.0,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                next_run_at TEXT,
+                error_message TEXT,
+                FOREIGN KEY (item_id) REFERENCES items(id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_background_tasks_status
+            ON background_tasks(status)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_background_tasks_next_run
+            ON background_tasks(next_run_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_background_tasks_priority
+            ON background_tasks(priority DESC, created_at ASC)
+        """)
+
         await db.commit()
 
 
@@ -533,3 +567,230 @@ async def delete_pending_question(build_id: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+# =============================================================================
+# Background Tasks CRUD
+# =============================================================================
+
+
+async def create_background_task(
+    task_type: str,
+    input_data: dict,
+    item_id: Optional[str] = None,
+    priority: int = 0,
+) -> dict:
+    """Create a new background task for the orchestrator."""
+    import uuid
+
+    task_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO background_tasks
+            (id, item_id, task_type, status, priority, input_data, findings, created_at)
+            VALUES (?, ?, ?, 'pending', ?, ?, '[]', ?)
+            """,
+            (task_id, item_id, task_type, priority, json.dumps(input_data), now),
+        )
+        await db.commit()
+
+    return {
+        "id": task_id,
+        "item_id": item_id,
+        "task_type": task_type,
+        "status": "pending",
+        "priority": priority,
+        "input_data": input_data,
+        "findings": [],
+        "confidence": 0.0,
+        "retry_count": 0,
+        "created_at": now,
+    }
+
+
+async def get_background_task(task_id: str) -> Optional[dict]:
+    """Get a background task by ID."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM background_tasks WHERE id = ?", (task_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return _row_to_background_task(row)
+    return None
+
+
+def _row_to_background_task(row) -> dict:
+    """Convert a database row to a background task dict."""
+    input_data = {}
+    findings = []
+    try:
+        if row["input_data"]:
+            input_data = json.loads(row["input_data"])
+    except json.JSONDecodeError:
+        pass
+    try:
+        if row["findings"]:
+            findings = json.loads(row["findings"])
+    except json.JSONDecodeError:
+        pass
+
+    return {
+        "id": row["id"],
+        "item_id": row["item_id"],
+        "task_type": row["task_type"],
+        "status": row["status"],
+        "priority": row["priority"],
+        "input_data": input_data,
+        "findings": findings,
+        "confidence": row["confidence"],
+        "retry_count": row["retry_count"],
+        "max_retries": row["max_retries"],
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "completed_at": row["completed_at"],
+        "next_run_at": row["next_run_at"],
+        "error_message": row["error_message"],
+    }
+
+
+async def get_pending_background_tasks(limit: int = 10) -> list[dict]:
+    """Get pending background tasks ordered by priority and age."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM background_tasks
+            WHERE status = 'pending'
+            AND (next_run_at IS NULL OR next_run_at <= datetime('now'))
+            ORDER BY priority DESC, created_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_background_task(row) for row in rows]
+
+
+async def update_task_status(
+    task_id: str,
+    status: str,
+    findings: Optional[list] = None,
+    confidence: Optional[float] = None,
+    error_message: Optional[str] = None,
+) -> Optional[dict]:
+    """Update a background task's status and optionally its findings/confidence."""
+    now = datetime.utcnow().isoformat()
+    updates = ["status = ?"]
+    params = [status]
+
+    if status == "running":
+        updates.append("started_at = ?")
+        params.append(now)
+    elif status in ("completed", "failed"):
+        updates.append("completed_at = ?")
+        params.append(now)
+
+    if findings is not None:
+        updates.append("findings = ?")
+        params.append(json.dumps(findings))
+
+    if confidence is not None:
+        updates.append("confidence = ?")
+        params.append(confidence)
+
+    if error_message is not None:
+        updates.append("error_message = ?")
+        params.append(error_message)
+
+    params.append(task_id)
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            f"UPDATE background_tasks SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        await db.commit()
+
+    return await get_background_task(task_id)
+
+
+async def append_finding(task_id: str, finding: dict) -> Optional[dict]:
+    """Append a finding to a background task's findings list."""
+    task = await get_background_task(task_id)
+    if not task:
+        return None
+
+    findings = task.get("findings", [])
+    findings.append(finding)
+
+    # Recalculate confidence as average of finding confidences
+    confidences = [f.get("confidence", 0.0) for f in findings if "confidence" in f]
+    new_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+    return await update_task_status(
+        task_id,
+        status=task["status"],
+        findings=findings,
+        confidence=new_confidence,
+    )
+
+
+async def get_tasks_ready_for_escalation(confidence_threshold: float = 0.8) -> list[dict]:
+    """Get tasks that have accumulated enough findings for escalation."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM background_tasks
+            WHERE status = 'pending'
+            AND confidence >= ?
+            ORDER BY confidence DESC, priority DESC
+            """,
+            (confidence_threshold,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_background_task(row) for row in rows]
+
+
+async def increment_task_retry(task_id: str, next_run_at: Optional[str] = None) -> Optional[dict]:
+    """Increment retry count and optionally schedule next run."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        if next_run_at:
+            await db.execute(
+                """
+                UPDATE background_tasks
+                SET retry_count = retry_count + 1, next_run_at = ?, status = 'pending'
+                WHERE id = ?
+                """,
+                (next_run_at, task_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE background_tasks SET retry_count = retry_count + 1 WHERE id = ?",
+                (task_id,),
+            )
+        await db.commit()
+
+    return await get_background_task(task_id)
+
+
+async def get_background_tasks_by_status(status: str, limit: int = 50) -> list[dict]:
+    """Get background tasks by status."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM background_tasks
+            WHERE status = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_background_task(row) for row in rows]
