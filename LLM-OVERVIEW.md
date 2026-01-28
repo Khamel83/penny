@@ -1,157 +1,226 @@
-# LLM Overview
+# LLM-OVERVIEW: Penny
 
-> Context for any LLM working on this project. No secrets.
+> Complete context for any LLM to understand this project.
+> **Last Updated**: 2026-01-27
+> **ONE_SHOT Version**: 6.0
 
-## What This Project Does
+## 1. WHAT IS THIS PROJECT?
 
-Penny is a voice assistant that receives transcribed voice memos from iCloud (via a Mac mini watcher), classifies them using an LLM, and routes them to appropriate services:
+### One-Line Description
+A voice assistant that transcribes, classifies, and routes voice memos to appropriate services with autonomous build capabilities.
 
-- **Shopping** → Google Keep lists
-- **Media** → Jellyseerr movie/TV requests
-- **Reminders** → Apple Reminders (via Mac mini SSH)
-- **Calendar** → Apple Calendar (via Mac mini SSH)
-- **Notes** → Apple Notes (via Mac mini SSH)
-- **Work** → Telegram notifications
-- **Build** → Claude Code for autonomous project creation
-- **Personal** → Stored in Penny
+### The Problem It Solves
+Voice memos pile up unorganized. Manual transcription and routing is tedious. Complex voice-to-build workflows require expensive LLM usage for simple tasks.
 
-## Tech Stack
+### Current State
+- **Status**: Production (OCI-Dev 24/7/365)
+- **Version**: 2.0 (Background Orchestrator + Service Router)
+- **Last Milestone**: ClawdBot integration complete (2026-01-27)
+- **Next Milestone**: Home Assistant integration
 
+## 2. ARCHITECTURE OVERVIEW
+
+### Tech Stack
 | Component | Technology |
 |-----------|------------|
 | Language | Python 3.12 |
 | Framework | FastAPI + HTMX |
 | Database | SQLite (async via aiosqlite) |
-| Deployment | Docker on homelab |
+| Deployment | systemd on OCI-Dev (100.126.13.70:8888) |
 | Classification LLM | OpenRouter (gemini-2.5-flash-lite) |
 | Build LLM | Z.AI GLM-4.7 / Anthropic Opus |
 | Transcription | mlx-whisper on Mac mini |
-| Public Access | Cloudflare Tunnel |
+| Service Router | Claude/Gemini CLI + OpenRouter/GLM APIs |
 
-## Project Structure
+### Key Components
 
-```
-penny/
-  main.py              # FastAPI app with HTMX web UI + Telegram webhook
-  classifier.py        # LLM classification + keyword fallback
-  router.py            # Dispatch to integrations based on category
-  database.py          # Async SQLite (items, sessions, preferences, questions)
-  models.py            # Pydantic models
-  model_selector.py    # GLM vs Opus selection logic for builds
-  config/
-    claude_code.py     # Build configuration constants
-  integrations/
-    telegram.py        # Telegram bot notifications
-    telegram_qa.py     # Async Q&A for build clarifications
-    jellyseerr.py      # Media request API
-    google_keep.py     # Shopping list via gkeepapi
-    reminders.py       # Apple Reminders via SSH
-    calendar.py        # Apple Calendar via SSH
-    notes.py           # Apple Notes via SSH
-    claude_code.py     # Claude Code build execution
-watcher/
-  watcher.py           # Mac mini: watches iCloud, transcribes, POSTs to Penny
-tests/
-  test_*.py            # 87 tests covering all modules
-data/
-  omar-preferences.md  # User build preferences
-docs/
-  CLAUDE_CODE_SETUP.md # Build integration setup guide
-```
+| Component | Purpose | Location |
+|-----------|---------|----------|
+| `main.py` | FastAPI app with HTMX web UI | `penny/main.py` |
+| `classifier.py` | LLM + keyword classification | `penny/classifier.py` |
+| `router.py` | Category → integration routing | `penny/router.py` |
+| `service_router.py` | Dispatch to AI services (no API keys) | `penny/service_router.py` |
+| `database.py` | Async SQLite (items, tasks, sessions) | `penny/database.py` |
+| `orchestrator/loop.py` | Background polling loop | `penny/orchestrator/loop.py` |
+| `orchestrator/probes.py` | Cheap info-gathering functions | `penny/orchestrator/probes.py` |
+| `orchestrator/escalation.py` | Confidence-based escalation | `penny/orchestrator/escalation.py` |
+| `watcher/watcher.py` | Mac mini transcription relay | `watcher/watcher.py` |
 
-## Key Files
+### Integration Categories
+
+| Category | Route | Integration |
+|----------|-------|-------------|
+| shopping | Google Keep | `penny/integrations/google_keep.py` |
+| media | Jellyseerr | `penny/integrations/jellyseerr.py` |
+| reminder | Apple Reminders | `penny/integrations/reminders.py` |
+| calendar | Apple Calendar | `penny/integrations/calendar.py` |
+| notes | Apple Notes | `penny/integrations/notes.py` |
+| work | Telegram | `penny/integrations/telegram.py` |
+| build | Claude Code | `penny/integrations/claude_code.py` |
+| smart_home | Home Assistant | *Not yet implemented* |
+| personal | Penny Storage | Internal database |
+
+## 3. KEY FILES
 
 | File | Purpose |
 |------|---------|
-| `CLAUDE.md` | Project instructions for Claude |
-| `AGENTS.md` | ONE_SHOT skill routing |
+| `CLAUDE.md` | Project instructions for Claude Code |
+| `AGENTS.md` | ONE_SHOT skill routing rules |
 | `TODO.md` | Task tracking |
-| `penny/model_selector.py` | Decides GLM vs Opus |
-| `penny/integrations/claude_code.py` | Build execution |
-| `data/omar-preferences.md` | User's tech stack preferences |
+| `README.md` | User-facing documentation |
+| `deploy/penny.service` | systemd service configuration |
+| `deploy/install.sh` | Production installation script |
 
-## Data Flow
+## 4. DATA FLOW
 
 ```
-Voice Memo → iCloud → Mac mini (watcher) → mlx-whisper transcription
-                                                    ↓
-                           Penny API (/api/ingest)
-                                   ↓
-              LLM Classifier (OpenRouter/Gemini)
-                    ↓                        ↓
-            [Normal Categories]        [Build Category]
-                    ↓                        ↓
-    ┌──────────────┴──────────┐       Model Selector
-    ↓          ↓          ↓           ↓           ↓
-  Keep    Jellyseerr   Apple    [Simple]     [Complex]
-                       Apps         ↓           ↓
-                               GLM-4.7       Opus
-                               (Z.AI)     (Anthropic)
-                                   ↓           ↓
-                               Claude Code Execution
+Voice Memo → iCloud → Mac mini Watcher → mlx-whisper
                                         ↓
-                               Q&A via Telegram (if needed)
+                              ClawdBot Receiver (18888)
                                         ↓
-                               Auto-Deploy
-                    ┌───────────────┴───────────────┐
-                    ↓                               ↓
-              [Static Site]                   [Backend]
-                    ↓                               ↓
-            penny-builds nginx              OCI-Dev systemd
-                    ↓                               ↓
-        <project>.builds.khamel.com    <project>.deer-panga.ts.net
-                    └───────────────┬───────────────┘
-                                    ↓
-                         Telegram: "Live at: <URL>"
+                              Penny API (OCI-Dev:8888)
+                                        ↓
+                    ┌───────────────────┴───────────────────┐
+                    │   LLM Classifier (OpenRouter/Gemini)   │
+                    │   Extract: category, confidence, data │
+                    └───────────────────┬───────────────────┘
+                                        ↓
+                    ┌───────────────────┴───────────────────┐
+                    │           Router (Confidence Check)    │
+                    │    <70% → Telegram confirmation       │
+                    └───────────────────┬───────────────────┘
+                                        ↓
+        ┌───────────────┬───────────────┼───────────────┬───────────────┐
+        ▼               ▼               ▼               ▼               ▼
+    [Integrations] [Build Tasks] [Background    [Service       [Fallback]
+                    │           │     Orchestrator]  Router        │
+                    │           │           │               │          │
+            Claude Code   Cheap Probes  →  Expensive    AI Services  Telegram
+            (GLM/Opus)    + Escalation     Reasoning    Dispatch     Universal
 ```
 
-## Claude Code Integration (NEW)
+## 5. BACKGROUND ORCHESTRATOR
 
-The "build" category enables voice-to-project creation:
+### Philosophy: "Gather signal cheap, reason expensive"
 
-### Model Selection Logic (`model_selector.py`)
+Penny runs cheap probes automatically while you're away and only escalates to expensive LLM reasoning when confidence thresholds are met.
+
+### Available Probes
+
+| Probe | Purpose | Cost |
+|-------|---------|------|
+| `probe_grep` | Search codebase with ripgrep | Free |
+| `probe_file_read` | Read specific files | Free |
+| `probe_api_check` | Health check URLs | Free |
+| `probe_atlas` | Query knowledge base | Free |
+| `probe_command` | Run safe diagnostic commands | Free |
+
+### Escalation Logic
+
+| Confidence | Action |
+|------------|--------|
+| ≥0.8 | Direct delivery (no reasoning) |
+| ≥0.6 | Quick reasoning (cheap LLM) |
+| <0.6 | Full reasoning (expensive LLM) |
+
+### Configuration
+
+```bash
+PENNY_POLL_INTERVAL=30      # Poll interval in seconds
+PENNY_HIGH_CONFIDENCE=0.8   # Threshold for direct delivery
+PENNY_PROBE_TIMEOUT=30      # Probe timeout in seconds
+```
+
+## 6. SERVICE ROUTER
+
+Penny dispatches to authenticated AI services without storing API keys:
+
+| Service | Auth Method | Use Case |
+|---------|-------------|----------|
+| `claude` | CLI (Max plan) | Primary build execution |
+| `gemini` | CLI (Google) | Alternative reasoning |
+| `openrouter` | API key | Classification LLM |
+| `glm` | Z.AI API | Cheap/fast builds (~$3/month) |
+
+**Key Principle**: Penny never holds Anthropic API keys directly. Uses pre-authenticated CLIs or aggregator APIs.
+
+## 7. CLAUDE CODE INTEGRATION
+
+### Model Selection
 
 | Condition | Model | Reason |
 |-----------|-------|--------|
 | Normal request | GLM-4.7 | Cheap ($3/month via Z.AI) |
 | Keywords: critical, urgent, production, security | Opus | High-stakes |
-| Confidence < 70% | Opus | Ambiguous request needs smarter model |
+| Confidence < 70% | Opus | Ambiguous needs smarts |
 | Complexity: auth, payments, migrations | Opus | Complex architecture |
 
-### Q&A Flow (`telegram_qa.py`)
+### Build Flow
 
-When Claude Code needs clarification:
-1. Question sent to Telegram via bot
-2. User has 10 minutes to reply
-3. Webhook receives answer and resumes build
-4. Timeout → uses reasonable defaults
+1. Voice memo classified as "build"
+2. Model selector chooses GLM or Opus
+3. Service router dispatches to Claude CLI
+4. Q&A via Telegram if needed (10 min timeout)
+5. Auto-deployment to:
+   - Static sites → penny-builds nginx
+   - Backends → OCI-Dev systemd
+6. URL sent via Telegram
 
-### Database Tables
+## 8. CURRENT STATE
 
-| Table | Purpose |
-|-------|---------|
-| `items` | Voice memo classifications |
-| `claude_sessions` | Build execution tracking |
-| `learned_preferences` | Preferences learned from builds |
-| `pending_questions` | Telegram Q&A state |
+### What Works
+- ✅ Voice transcription (mlx-whisper on Mac mini)
+- ✅ LLM classification (9 categories)
+- ✅ All routing integrations (Google Keep, Jellyseerr, Apple apps, Telegram)
+- ✅ Voice-to-build pipeline (GLM + Opus)
+- ✅ Background orchestrator with probes
+- ✅ Service router for AI dispatch
+- ✅ Confidence-based routing (<70% → Telegram confirmation)
+- ✅ Graceful degradation (all failures → Telegram)
+- ✅ ClawdBot integration (Receiver + Gateway)
+- ✅ 24/7/365 operation (systemd)
 
-## How to Run
+### What's In Progress
+- 🔄 Home Assistant integration (backlog)
+
+### What's Broken/Workarounds
+- **Mac mini TCC**: Voice Memos in protected folder. Watcher copies to temp before transcribing.
+- **Google Keep**: Uses unofficial API (gkeepapi), may break.
+
+## 9. DEPLOYMENT
+
+### Production (OCI-Dev)
 
 ```bash
-# Development (local)
-PENNY_DB_PATH=./data/penny.db uvicorn penny.main:app --reload --port 8000
+# Location
+100.126.13.70:8888 (Tailscale)
+141.148.146.79:8888 (Public)
 
-# Docker (homelab)
-docker compose -f services/penny/docker-compose.yml up -d
+# Services
+- Penny (8888) - Voice classification and routing
+- ClawdBot Receiver (18888) - Transcription forwarding
+- ClawdBot Gateway (18789) - Telegram delivery
 
-# Watcher (Mac mini)
-python watcher/watcher.py
-
-# Tests (87 tests)
-pytest -v
+# Management
+sudo systemctl status penny clawdbot clawdbot-receiver
+journalctl -u penny -f
 ```
 
-## Environment Variables
+### Local Development
+
+```bash
+# Setup
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+# Run
+PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8000
+
+# Test (111 tests)
+.venv/bin/pytest -v
+```
+
+## 10. ENVIRONMENT VARIABLES
 
 ### Required
 - `OPENROUTER_API_KEY` - Classification LLM
@@ -168,34 +237,45 @@ pytest -v
 - `GOOGLE_KEEP_EMAIL`, `GOOGLE_KEEP_TOKEN`
 - `MAC_MINI_HOST`, `MAC_MINI_USER`
 
-## Current State
+### Orchestrator
+- `PENNY_POLL_INTERVAL` - Background task poll interval (default: 30s)
+- `PENNY_HIGH_CONFIDENCE` - Threshold for direct delivery (default: 0.8)
+- `PENNY_PROBE_TIMEOUT` - Probe timeout (default: 30s)
 
-- **Status**: Production (Voice-to-Build Pipeline Operational)
-- **Last Updated**: 2025-12-25
-- **Tests**: 87 passing
-- **Categories**: 9 (shopping, media, work, personal, reminder, calendar, notes, smart_home, build)
-
-### Recent Fixes (2025-12-25)
-
-| Issue | Root Cause | Fix |
-|-------|------------|-----|
-| Watcher ffmpeg permission denied | macOS TCC blocks subprocess access to protected folders | Copy to temp before transcribing |
-| Claude CLI exit code 1 | CLI refuses `--dangerously-skip-permissions` as root | Non-root user in Docker (UID 1001) |
-| Missing `ps` command | Python slim image lacks procps | Added `procps` to Dockerfile |
-| SDK empty output | Wrong message type checking (`.type` vs class name) | Check `type(message).__name__` |
-| Database read-only | Container user can't write to volume | Set group ownership to 1001 |
-
-### Known Workarounds
-
-**Mac mini watcher**: Files in `~/Library/Group Containers/.../VoiceMemos.shared/Recordings/` are protected by macOS TCC. Python can read them, but ffmpeg (spawned by mlx-whisper) cannot. The watcher copies files to `~/penny/temp/` before transcribing.
-
-## Important Context
+## 11. IMPORTANT CONTEXT
 
 - **Permission model**: `bypassPermissions` is intentional - Penny is an autonomous voice-to-build pipeline. Docker + non-root user provide isolation. Don't add approval prompts.
-- Router uses graceful degradation: all failures fall back to Telegram
-- Confidence < 70% triggers Telegram confirmation before routing
-- Claude Code builds run autonomously with optional Q&A
-- Z.AI provides Anthropic-compatible API at ~$3/month
-- Public access via Cloudflare Tunnel (penny.example.com)
-- Docker container runs as non-root user (UID/GID 1001) for Claude CLI compatibility
-- Claude Agent SDK uses class-based message types (`AssistantMessage`, `ResultMessage`)
+- **Router pattern**: All integration failures cascade to Telegram as universal fallback
+- **Confidence routing**: <70% triggers Telegram confirmation before routing
+- **Service router**: Penny never stores Anthropic API keys directly - uses authenticated CLIs or aggregator APIs
+- **Background orchestrator**: Implements "gather signal cheap, reason expensive" pattern
+- **Z.AI**: Provides Anthropic-compatible API at ~$3/month for simple builds
+- **ClawdBot**: v2026.1.27 hardened against prompt injection (DM allowlist, fail-closed auth)
+- **Database path**: Configurable via `PENNY_DB_PATH` (defaults to `/app/data/penny.db` for Docker, `./data/penny.db` for local)
+- **Web UI**: Server-rendered HTML with HTMX for interactions
+
+## 12. DATABASE SCHEMA
+
+### Tables
+
+| Table | Purpose |
+|-------|---------|
+| `items` | Voice memo classifications (id, text, classification, confidence, routed_to, status) |
+| `background_tasks` | Orchestrator task state (id, type, status, probe_results, confidence) |
+| `claude_sessions` | Build execution tracking (id, prompt, model, status, result) |
+| `learned_preferences` | Preferences learned from builds |
+| `pending_questions` | Telegram Q&A state |
+
+## 13. API ENDPOINTS
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web UI (HTMX) |
+| `/health` | GET | Health check |
+| `/api/ingest` | POST | Receive transcribed text, classify, route |
+| `/api/items` | GET | List all items |
+| `/api/items/{id}/reclassify` | POST | Change classification |
+| `/api/items/{id}/confirm` | POST | Confirm pending classification |
+| `/api/telegram/webhook` | POST | Telegram callback for build Q&A |
+| `/api/tasks/background` | POST | Create background task |
+| `/api/orchestrator/status` | GET | Check orchestrator state |

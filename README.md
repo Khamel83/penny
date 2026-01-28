@@ -2,24 +2,36 @@
 
 > Your personal voice assistant - Named after Alfred Pennyworth (Batman's butler) and Penny from Inspector Gadget
 
+**Status**: Production | **Tier**: Cloud Runtime (OCI-Dev) | **Last Updated**: 2026-01-27
+
 Record voice memos on your iPhone/Apple Watch → see them transcribed, classified, and **routed** to the right service. Including autonomous project creation via Claude Code.
 
 ## Architecture
 
 ```
-iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → Penny (homelab)
+iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → ClawdBot Receiver (18888)
+                                                                  ↓
+                                            Penny API (OCI-Dev:8888)
                                                                   ↓
                                             ┌─────────────────────┴─────────────────────┐
                                             │  LLM Router (Gemini 2.5 Flash via OpenRouter) │
                                             │  Classifies + Extracts structured data      │
                                             └─────────────────────┬─────────────────────┘
-        ┌──────────┬──────────┬──────────┬──────────┬─────────────┼────────────┐
-        ▼          ▼          ▼          ▼          ▼             ▼            ▼
-   ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐  ┌──────────┐ ┌──────────┐
-   │ Google │ │Jellys- │ │ Apple  │ │ Apple  │ │ Apple  │  │ Telegram │ │  Claude  │
-   │  Keep  │ │  eerr  │ │Remind- │ │Calendar│ │ Notes  │  │   Bot    │ │   Code   │
-   │Shopping│ │ Media  │ │  ers   │ │ Events │ │ Notes  │  │  Tasks   │ │  Builds  │
-   └────────┘ └────────┘ └────────┘ └────────┘ └────────┘  └──────────┘ └──────────┘
+        ┌──────────┬──────────┬──────────┬──────────┬─────────────┼────────────┬──────────┐
+        ▼          ▼          ▼          ▼          ▼             ▼            ▼          ▼
+   ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐  ┌──────────┐ ┌──────────┐ ┌────────┐
+   │ Google │ │Jellys- │ │ Apple  │ │ Apple  │ │ Apple  │  │ Telegram │ │  Claude  │ │ Atlas  │
+   │  Keep  │ │  eerr  │ │Remind- │ │Calendar│ │ Notes  │  │   Bot    │ │   Code   │ │  KB    │
+   │Shopping│ │ Media  │ │  ers   │ │ Events │ │ Notes  │  │  Tasks   │ │  Builds  │ │Queries │
+   └────────┘ └────────┘ └────────┘ └────────┘ └────────┘  └──────────┘ └──────────┘ └────────┘
+                                                                          ▲
+                                                                          │
+                                                                   ┌──────┴────────┐
+                                                                   │ Background    │
+                                                                   │ Orchestrator  │
+                                                                   │ (Probes +      │
+                                                                   │  Escalation)   │
+                                                                   └───────────────┘
 ```
 
 ## Categories & Routing
@@ -74,18 +86,42 @@ The final URL is sent to you via Telegram automatically.
 ### Local Development
 
 ```bash
-# Create venv
+# Clone and setup
+git clone https://github.com/Khamel83/penny.git
+cd penny
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]" pytest-asyncio requests httpx
+.venv/bin/pip install -e ".[dev]"
 
 # Run server
 PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8000
 
-# Run tests (87 tests)
+# Run tests (111 tests)
 .venv/bin/pytest -v
 ```
 
-### Homelab (Docker)
+### Production Deployment (systemd)
+
+```bash
+# Install to /home/ubuntu/penny
+cd /home/ubuntu/penny
+
+# Create systemd service (see deploy/penny.service)
+sudo cp deploy/penny.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable penny
+sudo systemctl start penny
+
+# Verify
+curl http://localhost:8888/health
+```
+
+**Production Deployment Notes**:
+- Penny runs as systemd service on OCI-Dev (100.126.13.70:8888)
+- Integrates with ClawdBot Gateway (18789) and Receiver (18888)
+- Database at `/home/ubuntu/penny/data/penny.db`
+- Logs via journald: `journalctl -u penny -f`
+
+### Docker (Alternative)
 
 ```bash
 # Build
@@ -99,7 +135,7 @@ sudo chmod -R g+w ./data
 docker run -p 8000:8000 -v $(pwd)/data:/app/data penny
 ```
 
-**Note**: The container runs as a non-root user (UID 1001) because Claude CLI refuses to run with elevated privileges. The data directory must be writable by this user.
+**Note**: The container runs as a non-root user (UID 1001) because Claude CLI refuses to run with elevated privileges.
 
 ## Environment Variables
 
@@ -126,13 +162,15 @@ MAC_MINI_HOST=macmini               # For Apple integrations
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Web UI |
+| `/` | GET | Web UI (HTMX) |
+| `/health` | GET | Health check |
 | `/api/ingest` | POST | Receive transcribed text, classify, and route |
 | `/api/items` | GET | List all items |
 | `/api/items/{id}/reclassify` | POST | Change classification |
 | `/api/items/{id}/confirm` | POST | Confirm pending classification |
 | `/api/telegram/webhook` | POST | Telegram callback for build Q&A |
-| `/health` | GET | Health check |
+| `/api/tasks/background` | POST | Create background task (orchestrator) |
+| `/api/orchestrator/status` | GET | Check orchestrator state |
 
 ## Classification
 
@@ -160,22 +198,32 @@ Telegram is the universal fallback - you'll always get your messages.
 
 ```
 penny/
-  main.py              # FastAPI app
+  main.py              # FastAPI app with HTMX web UI
   classifier.py        # LLM + keyword classification
   router.py            # Category → integration routing
   model_selector.py    # GLM vs Opus selection
-  database.py          # SQLite storage
+  database.py          # Async SQLite storage
+  service_router.py    # Dispatch to Claude/Gemini/GLM APIs
+  orchestrator/
+    loop.py           # Background task polling loop
+    probes.py         # Cheap info-gathering (grep, files, APIs)
+    escalation.py     # Confidence-based escalation
   integrations/
     claude_code.py     # Build execution (SDK + CLI fallback)
     telegram_qa.py     # Async Q&A for builds
-    telegram.py        # Notifications
+    telegram.py        # Notifications + universal fallback
     jellyseerr.py      # Media requests
     google_keep.py     # Shopping lists
     reminders.py       # Apple Reminders
     calendar.py        # Apple Calendar
     notes.py           # Apple Notes
+    atlas.py           # Knowledge base queries
+    trojanhorse.py     # Secret scanning
 watcher/
   watcher.py           # Mac mini transcription (with TCC workaround)
+deploy/
+  install.sh           # Production installation script
+  penny.service        # systemd service file
 data/
   omar-preferences.md  # Build preferences
 docs/
@@ -187,6 +235,42 @@ docs/
 The watcher runs on a Mac mini and handles Voice Memo transcription via mlx-whisper.
 
 **Important**: Voice Memos are in a macOS-protected folder. The watcher copies files to `~/penny/temp/` before transcribing because ffmpeg (used by mlx-whisper) cannot access protected folders when running as a launchd service.
+
+## Background Orchestrator
+
+Penny implements a "gather signal cheap, reason expensive" pattern:
+
+1. **Cheap Probes** run automatically while you're away:
+   - `probe_grep` - Search codebases with ripgrep
+   - `probe_file_read` - Read specific files
+   - `probe_api_check` - Health check URLs
+   - `probe_atlas` - Query knowledge base
+   - `probe_command` - Run safe diagnostic commands
+
+2. **Confidence-Based Escalation**:
+   - High confidence (≥0.8) → Direct delivery
+   - Medium confidence (≥0.6) → Quick reasoning
+   - Low confidence → Full LLM reasoning
+
+3. **Background Loop** polls every 30 seconds (configurable via `PENNY_POLL_INTERVAL`)
+
+## Service Router
+
+Penny routes AI requests to authenticated services without storing API keys:
+
+| Service | Auth Method | Use Case |
+|---------|-------------|----------|
+| `claude` | CLI (Max plan) | Primary build execution |
+| `gemini` | CLI (Google) | Alternative reasoning |
+| `openrouter` | API key | Classification LLM |
+| `glm` | Z.AI API | Cheap/fast builds (~$3/month) |
+
+## Known Limitations
+
+- **Home Assistant**: Integration not yet implemented (backlog)
+- **Apple Integrations**: Require Mac mini with SSH access + AppleScript permissions
+- **Google Keep**: Uses unofficial API (gkeepapi), may break
+- **ClawdBot Integration**: Requires ClawdBot Gateway + Receiver services running
 
 ## License
 
