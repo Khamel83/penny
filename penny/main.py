@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +33,38 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 ORCHESTRATOR_ENABLED = os.environ.get("PENNY_ORCHESTRATOR_ENABLED", "true").lower() == "true"
+TAILSCALE_ONLY = os.environ.get("PENNY_TAILSCALE_ONLY", "true").lower() == "true"
+
+
+class TailscaleIPMiddleware(BaseHTTPMiddleware):
+    """Middleware to restrict access to Tailscale IPs only.
+
+    Tailscale uses the 100.x.x.x CGNAT range for all devices.
+    Localhost (127.0.0.1) is also allowed for local development.
+    """
+
+    ALLOWED_PREFIXES = ("100.", "127.")
+
+    async def dispatch(self, request: Request, call_next):
+        if not TAILSCALE_ONLY:
+            return await call_next(request)
+
+        # Get client IP - check X-Forwarded-For for proxied requests
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            client_ip = request.client.host if request.client else ""
+
+        # Allow Tailscale IPs (100.x.x.x) and localhost
+        if client_ip and client_ip.startswith(self.ALLOWED_PREFIXES):
+            return await call_next(request)
+
+        logger.warning(f"Blocked request from non-Tailscale IP: {client_ip}")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Access denied: Tailscale connection required"},
+        )
 
 # Orchestrator instance
 orchestrator = BackgroundOrchestrator()
@@ -60,6 +93,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Add Tailscale IP whitelist middleware
+app.add_middleware(TailscaleIPMiddleware)
 
 # Mount static files
 static_path = Path(__file__).parent.parent / "static"
@@ -203,9 +239,12 @@ async def get_pending_items():
 
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(request: Request):
-    """Receive Telegram bot updates for build Q&A.
+    """Receive Telegram bot updates for build Q&A and approvals.
 
-    This endpoint receives replies to build questions sent via Telegram.
+    This endpoint receives:
+    1. Replies to build questions sent via Telegram
+    2. Callback queries from inline buttons (approve/reject builds)
+
     When Omar replies to a question, this webhook resolves the pending future
     and the build can continue.
     """
@@ -217,7 +256,54 @@ async def telegram_webhook(request: Request):
 
     data = await request.json()
 
-    # Extract message info
+    # Handle callback queries (inline button presses)
+    callback_query = data.get("callback_query")
+    if callback_query:
+        callback_id = callback_query.get("id")
+        callback_data = callback_query.get("data", "")
+        message_id = callback_query.get("message", {}).get("message_id")
+
+        # Handle build approval/rejection
+        if callback_data.startswith("build_approve:") or callback_data.startswith("build_reject:"):
+            approved = callback_data.startswith("build_approve:")
+            build_id = callback_data.split(":", 1)[1]
+
+            # Resolve the pending approval
+            try:
+                from .integrations import claude_code, telegram
+
+                resolved = claude_code.resolve_build_approval(build_id, approved)
+
+                if resolved:
+                    # Update database
+                    await database.resolve_pending_approval(build_id, approved)
+
+                    # Update the Telegram message
+                    status = "✅ **Approved**" if approved else "❌ **Rejected**"
+                    action = "Build will proceed." if approved else "Build cancelled."
+                    if message_id:
+                        await telegram.edit_message_text(
+                            message_id=message_id,
+                            text=f"{status}\n\n{action}",
+                        )
+
+                    # Acknowledge the callback
+                    await telegram.answer_callback_query(
+                        callback_id,
+                        text="Approved!" if approved else "Rejected",
+                    )
+                else:
+                    # No pending approval found (maybe already resolved or timed out)
+                    await telegram.answer_callback_query(
+                        callback_id,
+                        text="Request already processed or expired",
+                    )
+            except ImportError:
+                pass  # Integrations not available
+
+        return {"ok": True}
+
+    # Extract message info for replies
     message = data.get("message", {})
     reply_to = message.get("reply_to_message", {})
     text = message.get("text", "")

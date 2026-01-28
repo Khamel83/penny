@@ -10,6 +10,7 @@ After build completes, automatically deploys:
 - Backend services → OCI-Dev → <project>.deer-panga.ts.net
 """
 
+import asyncio
 import logging
 import os
 import uuid
@@ -23,7 +24,14 @@ from ..config.claude_code import (
     PREFERENCES_FILE,
 )
 from ..model_selector import get_model_reason, select_model
-from . import deploy, telegram_qa
+from . import deploy, telegram, telegram_qa
+
+# Build approval timeout (5 minutes)
+BUILD_APPROVAL_TIMEOUT_SECONDS = int(os.environ.get("PENNY_BUILD_APPROVAL_TIMEOUT", "300"))
+
+# In-memory storage for pending approval futures
+# Key: build_id, Value: asyncio.Future that resolves with approval status (bool)
+pending_approvals: dict[str, "asyncio.Future[bool]"] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +142,95 @@ def build_prompt(transcript: str, preferences: str) -> str:
     return "".join(prompt_parts)
 
 
+async def request_build_approval(
+    build_id: str,
+    transcript: str,
+) -> bool:
+    """Request approval for a build via Telegram.
+
+    Sends an approval request with inline buttons and waits for response.
+
+    Args:
+        build_id: The build session ID
+        transcript: The voice memo transcription
+
+    Returns:
+        True if approved, False if rejected or timed out
+    """
+    import asyncio
+
+    # Send approval request via Telegram
+    result = await telegram.send_build_approval_request(
+        build_id=build_id,
+        transcript=transcript,
+    )
+
+    if not result.get("success"):
+        logger.warning(f"Failed to send approval request: {result.get('error')}")
+        # If we can't send the approval request, reject by default
+        return False
+
+    message_id = result.get("message_id")
+
+    # Save pending approval to database
+    await database.save_pending_approval(
+        build_id=build_id,
+        transcript=transcript,
+        message_id=str(message_id) if message_id else None,
+    )
+
+    # Create future to wait for approval
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[bool] = loop.create_future()
+    pending_approvals[build_id] = future
+
+    try:
+        # Wait for approval with timeout
+        approved = await asyncio.wait_for(
+            future,
+            timeout=BUILD_APPROVAL_TIMEOUT_SECONDS,
+        )
+        return approved
+    except asyncio.TimeoutError:
+        # Timeout = reject by default
+        logger.info(f"Build approval timed out for {build_id}")
+        await database.resolve_pending_approval(build_id, approved=False)
+
+        # Update the Telegram message to show timeout
+        if message_id:
+            try:
+                await telegram.edit_message_text(
+                    message_id=message_id,
+                    text=f"⏰ **Build Request Timed Out**\n\nNo response received within {BUILD_APPROVAL_TIMEOUT_SECONDS // 60} minutes.\n\n_Build rejected by default._",
+                )
+            except Exception:
+                pass
+
+        return False
+    finally:
+        # Clean up
+        pending_approvals.pop(build_id, None)
+
+
+def resolve_build_approval(build_id: str, approved: bool) -> bool:
+    """Resolve a pending build approval.
+
+    Called by the webhook when user clicks Approve/Reject button.
+
+    Args:
+        build_id: The build session ID
+        approved: Whether the build was approved
+
+    Returns:
+        True if a pending approval was resolved, False otherwise
+    """
+    future = pending_approvals.get(build_id)
+    if future and not future.done():
+        future.set_result(approved)
+        return True
+    return False
+
+
 async def handle_build(
     transcript: str,
     metadata: Optional[dict] = None,
@@ -152,6 +249,21 @@ async def handle_build(
 
     # Generate unique build ID
     build_id = str(uuid.uuid4())
+
+    # SECURITY GATE: Request approval before executing any build
+    logger.info(f"Requesting approval for build {build_id}")
+    approved = await request_build_approval(build_id, transcript)
+
+    if not approved:
+        logger.warning(f"Build {build_id} was rejected or timed out")
+        return {
+            "success": False,
+            "output": "Build rejected: approval not granted or timed out",
+            "deliverables": [],
+            "error": "approval_denied",
+        }
+
+    logger.info(f"Build {build_id} approved, proceeding with execution")
 
     # Select model based on transcript analysis
     model_name, env_overrides = select_model(transcript, confidence)

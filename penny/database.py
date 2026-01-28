@@ -109,6 +109,28 @@ async def init_db():
             ON pending_questions(message_id)
         """)
 
+        # Pending build approvals for security gate
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                id TEXT PRIMARY KEY,
+                build_id TEXT NOT NULL,
+                transcript TEXT NOT NULL,
+                message_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                approved BOOLEAN
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_build_id
+            ON pending_approvals(build_id)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+            ON pending_approvals(status)
+        """)
+
         # Background tasks for orchestrator
         await db.execute("""
             CREATE TABLE IF NOT EXISTS background_tasks (
@@ -794,3 +816,106 @@ async def get_background_tasks_by_status(status: str, limit: int = 50) -> list[d
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_background_task(row) for row in rows]
+
+
+# =============================================================================
+# Pending Build Approvals CRUD
+# =============================================================================
+
+
+async def save_pending_approval(
+    build_id: str,
+    transcript: str,
+    message_id: Optional[str] = None,
+) -> dict:
+    """Save a pending build approval request."""
+    import uuid
+
+    approval_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO pending_approvals (id, build_id, transcript, message_id, status, created_at)
+            VALUES (?, ?, ?, ?, 'pending', ?)
+            """,
+            (approval_id, build_id, transcript, message_id, now),
+        )
+        await db.commit()
+
+    return {
+        "id": approval_id,
+        "build_id": build_id,
+        "transcript": transcript,
+        "message_id": message_id,
+        "status": "pending",
+        "created_at": now,
+    }
+
+
+async def get_pending_approval_by_build_id(build_id: str) -> Optional[dict]:
+    """Get pending approval for a build."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM pending_approvals WHERE build_id = ? AND status = 'pending'",
+            (build_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "id": row["id"],
+                    "build_id": row["build_id"],
+                    "transcript": row["transcript"],
+                    "message_id": row["message_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                }
+    return None
+
+
+async def resolve_pending_approval(
+    build_id: str,
+    approved: bool,
+) -> Optional[dict]:
+    """Resolve a pending build approval."""
+    now = datetime.utcnow().isoformat()
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE pending_approvals
+            SET status = 'resolved', resolved_at = ?, approved = ?
+            WHERE build_id = ? AND status = 'pending'
+            """,
+            (now, approved, build_id),
+        )
+        await db.commit()
+
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM pending_approvals WHERE build_id = ? ORDER BY resolved_at DESC LIMIT 1",
+            (build_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "id": row["id"],
+                    "build_id": row["build_id"],
+                    "transcript": row["transcript"],
+                    "status": row["status"],
+                    "approved": row["approved"],
+                    "resolved_at": row["resolved_at"],
+                }
+    return None
+
+
+async def delete_pending_approval(build_id: str) -> bool:
+    """Delete pending approval for a build."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM pending_approvals WHERE build_id = ?", (build_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0

@@ -49,6 +49,7 @@ htmlcov/
 # ONE_SHOT
 .env
 .env.local
+.env.backup
 *.key
 .age/
 !.env.example
