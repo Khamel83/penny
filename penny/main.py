@@ -110,8 +110,12 @@ async def health():
 
 
 @app.post("/api/ingest", response_model=ItemResponse)
-async def ingest(request: IngestRequest):
+async def ingest(request: IngestRequest, req: Request):
     """Ingest transcribed text, classify it, and route to appropriate service."""
+    # Extract client IP for audit trail
+    forwarded_for = req.headers.get("X-Forwarded-For")
+    client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else req.client.host if req.client else ""
+
     # Classify the text (returns dict with classification + routing data)
     result = classifier.classify(request.text)
     classification = result.get("classification", "unknown")
@@ -142,6 +146,7 @@ async def ingest(request: IngestRequest):
             result,
             item_id=saved_item.id,
             confidence=confidence,
+            client_ip=client_ip,
         )
         if route_result.get("routed"):
             routed_to = route_result.get("service")
@@ -248,6 +253,10 @@ async def telegram_webhook(request: Request):
     When Omar replies to a question, this webhook resolves the pending future
     and the build can continue.
     """
+    # Extract client IP for audit trail
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    client_ip = forwarded_for.split(",")[0].strip() if forwarded_for else request.client.host if request.client else ""
+
     # Validate Telegram's secret token
     if TELEGRAM_WEBHOOK_SECRET:
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
@@ -272,11 +281,11 @@ async def telegram_webhook(request: Request):
             try:
                 from .integrations import claude_code, telegram
 
-                resolved = claude_code.resolve_build_approval(build_id, approved)
+                resolved = claude_code.resolve_build_approval(build_id, approved, resolved_from_ip=client_ip)
 
                 if resolved:
-                    # Update database
-                    await database.resolve_pending_approval(build_id, approved)
+                    # Update database with client IP for audit
+                    await database.resolve_pending_approval(build_id, approved, resolved_from_ip=client_ip)
 
                     # Update the Telegram message
                     status = "✅ **Approved**" if approved else "❌ **Rejected**"

@@ -170,7 +170,9 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL,
     resolved_at TEXT,
-    approved BOOLEAN
+    approved BOOLEAN,
+    client_ip TEXT,
+    resolved_from_ip TEXT
 )
 ```
 
@@ -179,6 +181,8 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 - `resolved_at` - When user responded
 - `approved` - Final decision (true/false)
 - `transcript` - Original voice memo text
+- `client_ip` - IP address that requested the build
+- `resolved_from_ip` - IP address that approved/rejected the build
 
 ### Layer 5: Fail-Secure Defaults
 
@@ -267,6 +271,7 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 -- Indexes for efficient lookups
 CREATE INDEX idx_pending_approvals_build_id ON pending_approvals(build_id);
 CREATE INDEX idx_pending_approvals_status ON pending_approvals(status);
+CREATE INDEX idx_pending_approvals_client_ip ON pending_approvals(client_ip);
 ```
 
 ### API Endpoints

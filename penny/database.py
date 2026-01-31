@@ -119,7 +119,9 @@ async def init_db():
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 resolved_at TEXT,
-                approved BOOLEAN
+                approved BOOLEAN,
+                client_ip TEXT,
+                resolved_from_ip TEXT
             )
         """)
         await db.execute("""
@@ -129,6 +131,10 @@ async def init_db():
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
             ON pending_approvals(status)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_client_ip
+            ON pending_approvals(client_ip)
         """)
 
         # Background tasks for orchestrator
@@ -827,6 +833,7 @@ async def save_pending_approval(
     build_id: str,
     transcript: str,
     message_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
 ) -> dict:
     """Save a pending build approval request."""
     import uuid
@@ -837,10 +844,10 @@ async def save_pending_approval(
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
             """
-            INSERT INTO pending_approvals (id, build_id, transcript, message_id, status, created_at)
-            VALUES (?, ?, ?, ?, 'pending', ?)
+            INSERT INTO pending_approvals (id, build_id, transcript, message_id, status, created_at, client_ip)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?)
             """,
-            (approval_id, build_id, transcript, message_id, now),
+            (approval_id, build_id, transcript, message_id, now, client_ip),
         )
         await db.commit()
 
@@ -851,6 +858,7 @@ async def save_pending_approval(
         "message_id": message_id,
         "status": "pending",
         "created_at": now,
+        "client_ip": client_ip,
     }
 
 
@@ -871,6 +879,7 @@ async def get_pending_approval_by_build_id(build_id: str) -> Optional[dict]:
                     "message_id": row["message_id"],
                     "status": row["status"],
                     "created_at": row["created_at"],
+                    "client_ip": row.get("client_ip"),
                 }
     return None
 
@@ -878,6 +887,7 @@ async def get_pending_approval_by_build_id(build_id: str) -> Optional[dict]:
 async def resolve_pending_approval(
     build_id: str,
     approved: bool,
+    resolved_from_ip: Optional[str] = None,
 ) -> Optional[dict]:
     """Resolve a pending build approval."""
     now = datetime.utcnow().isoformat()
@@ -886,10 +896,10 @@ async def resolve_pending_approval(
         await db.execute(
             """
             UPDATE pending_approvals
-            SET status = 'resolved', resolved_at = ?, approved = ?
+            SET status = 'resolved', resolved_at = ?, approved = ?, resolved_from_ip = ?
             WHERE build_id = ? AND status = 'pending'
             """,
-            (now, approved, build_id),
+            (now, approved, resolved_from_ip, build_id),
         )
         await db.commit()
 
@@ -907,6 +917,8 @@ async def resolve_pending_approval(
                     "status": row["status"],
                     "approved": row["approved"],
                     "resolved_at": row["resolved_at"],
+                    "client_ip": row.get("client_ip"),
+                    "resolved_from_ip": row.get("resolved_from_ip"),
                 }
     return None
 

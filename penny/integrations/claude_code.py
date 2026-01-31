@@ -145,6 +145,7 @@ def build_prompt(transcript: str, preferences: str) -> str:
 async def request_build_approval(
     build_id: str,
     transcript: str,
+    client_ip: Optional[str] = None,
 ) -> bool:
     """Request approval for a build via Telegram.
 
@@ -153,6 +154,7 @@ async def request_build_approval(
     Args:
         build_id: The build session ID
         transcript: The voice memo transcription
+        client_ip: Client IP address for audit trail
 
     Returns:
         True if approved, False if rejected or timed out
@@ -172,11 +174,12 @@ async def request_build_approval(
 
     message_id = result.get("message_id")
 
-    # Save pending approval to database
+    # Save pending approval to database with client IP for audit
     await database.save_pending_approval(
         build_id=build_id,
         transcript=transcript,
         message_id=str(message_id) if message_id else None,
+        client_ip=client_ip,
     )
 
     # Create future to wait for approval
@@ -212,7 +215,11 @@ async def request_build_approval(
         pending_approvals.pop(build_id, None)
 
 
-def resolve_build_approval(build_id: str, approved: bool) -> bool:
+def resolve_build_approval(
+    build_id: str,
+    approved: bool,
+    resolved_from_ip: Optional[str] = None,
+) -> bool:
     """Resolve a pending build approval.
 
     Called by the webhook when user clicks Approve/Reject button.
@@ -220,6 +227,7 @@ def resolve_build_approval(build_id: str, approved: bool) -> bool:
     Args:
         build_id: The build session ID
         approved: Whether the build was approved
+        resolved_from_ip: Client IP address that resolved the approval
 
     Returns:
         True if a pending approval was resolved, False otherwise
@@ -234,12 +242,14 @@ def resolve_build_approval(build_id: str, approved: bool) -> bool:
 async def handle_build(
     transcript: str,
     metadata: Optional[dict] = None,
+    client_ip: Optional[str] = None,
 ) -> dict[str, Any]:
     """Execute a build request via Claude Agent SDK.
 
     Args:
         transcript: The voice memo transcription describing what to build
         metadata: Optional metadata including confidence score
+        client_ip: Client IP address for audit trail
 
     Returns:
         Dict with success status, output, and deliverables
@@ -251,8 +261,8 @@ async def handle_build(
     build_id = str(uuid.uuid4())
 
     # SECURITY GATE: Request approval before executing any build
-    logger.info(f"Requesting approval for build {build_id}")
-    approved = await request_build_approval(build_id, transcript)
+    logger.info(f"Requesting approval for build {build_id} from {client_ip or 'unknown'}")
+    approved = await request_build_approval(build_id, transcript, client_ip=client_ip)
 
     if not approved:
         logger.warning(f"Build {build_id} was rejected or timed out")

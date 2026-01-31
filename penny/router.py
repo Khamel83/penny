@@ -18,6 +18,7 @@ async def route(
     item_id: Optional[str] = None,
     confidence: float = 1.0,
     background: bool = False,
+    client_ip: Optional[str] = None,
 ) -> dict[str, Any]:
     """Route to appropriate service based on classification.
 
@@ -28,6 +29,7 @@ async def route(
         item_id: The item ID (for confirmation requests)
         confidence: Classification confidence (0-1)
         background: If True, queue as background task instead of immediate routing
+        client_ip: Client IP address for audit trail
 
     Returns:
         dict with 'routed', 'service', 'error', 'needs_confirmation', 'queued' keys
@@ -61,7 +63,7 @@ async def route(
         elif classification == "notes":
             return await route_notes(text, data)
         elif classification == "build":
-            return await route_build(text, data)
+            return await route_build(text, data, client_ip=client_ip)
         elif classification == "url":
             return await route_url(text, data)
         elif classification == "personal":
@@ -391,13 +393,17 @@ async def route_url(text: str, data: dict[str, Any]) -> dict[str, Any]:
         return await send_telegram(f"🔗 URL (Atlas failed): {data.get('url', text)[:100]}...")
 
 
-async def route_build(text: str, data: dict[str, Any]) -> dict[str, Any]:
+async def route_build(
+    text: str,
+    data: dict[str, Any],
+    client_ip: Optional[str] = None,
+) -> dict[str, Any]:
     """Route build requests to Claude Code."""
     try:
         from .integrations import claude_code
 
         description = data.get("description", text)
-        result = await claude_code.handle_build(description, data)
+        result = await claude_code.handle_build(description, data, client_ip=client_ip)
 
         if result.get("success"):
             return {"routed": True, "service": "claude_code", "result": result}
