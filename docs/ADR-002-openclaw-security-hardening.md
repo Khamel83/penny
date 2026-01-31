@@ -34,7 +34,7 @@ Penny (voice layer on top of OpenClaw) is a multi-capability AI assistant system
 - **Penny**: Voice assistant that receives transcribed voice memos and routes to services
 - **Build Pipeline**: Voice-to-code via Claude Agent SDK with code execution capabilities
 - **Background Orchestrator**: Automated task processing with cheap probes
-- **Telegram Integration**: Two bots (@PennyMoltBot for voice, @PennyOCIBot for general AI)
+- **Telegram Integration**: @PennyMoltBot (Penny's voice bot) + @PennyOCIBot (OpenClaw's bot)
 
 The system exposes several attack vectors:
 1. **Public webhook endpoint** (`/api/telegram/webhook`) - could receive malicious requests

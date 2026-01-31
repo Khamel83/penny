@@ -34,12 +34,22 @@ iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → Penny AP
 
 ## Penny vs OpenClaw
 
+**OpenClaw is an EXTERNAL dependency. Penny uses it, doesn't maintain it.**
+
 | Layer | Repository | Purpose |
 |-------|-----------|---------|
-| Penny | This repo | Voice assistant (transcribe, classify, route) |
-| OpenClaw | https://github.com/openclaw/openclaw | AI agent platform |
+| Penny | This repo | Voice memo transcription pipeline |
+| OpenClaw | https://github.com/openclaw/openclaw | AI agent platform (external) |
 
-Penny extends OpenClaw with voice-specific capabilities. Think of Penny as a "voice interface" layer on top of the OpenClaw AI agent platform.
+**What Penny does (unique):**
+- Voice memo transcription: Mac mini watcher → mlx-whisper → Penny API
+- `@PennyMoltBot` - Penny's Telegram bot for voice routing
+
+**What comes from OpenClaw (everything else):**
+- `@PennyOCIBot` - OpenClaw's bot (not Penny's)
+- Agent orchestration, skills, build execution, etc.
+
+**Penny is a consumer of OpenClaw, not a maintainer.**
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

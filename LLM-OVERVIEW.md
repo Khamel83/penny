@@ -206,8 +206,8 @@ Penny dispatches to authenticated AI services without storing API keys:
 
 # Services
 - Penny (8888) - Voice classification and routing
-- @PennyMoltBot - Telegram bot (inbound + outbound)
-- @PennyOCIBot - Separate OpenClaw AI assistant
+- @PennyMoltBot - Penny's Telegram bot (inbound + outbound)
+- @PennyOCIBot - OpenClaw's bot (external dependency)
 
 # Management
 sudo systemctl status penny penny-telegram

@@ -24,12 +24,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Relationship to OpenClaw
 
-Penny is a **voice assistant layer built on top of OpenClaw**:
+**OpenClaw is an EXTERNAL project that Penny uses as a dependency.**
 
-- **Penny** (this repo): Voice memos → transcription → classification → routing
-- **OpenClaw** (separate project): AI agent platform with skills/integrations
+- **OpenClaw** = https://github.com/openclaw/openclaw (maintained by others, used by Penny)
+- **Penny** = This repository (a thin voice layer on top of OpenClaw)
 
-Think of Penny as a specialized "voice interface" that uses OpenClaw as its AI engine.
+**What Penny provides (unique to this repo):**
+- Voice memo transcription pipeline: Mac mini watcher → mlx-whisper → Penny API
+- `@PennyMoltBot` - Penny's Telegram bot for voice routing
+- Classification and routing of transcribed voice memos
+
+**What comes from OpenClaw (everything else):**
+- `@PennyOCIBot` - This is the OpenClaw bot (not Penny's)
+- Agent orchestration
+- Skill system
+- Build execution (Claude Code)
+- Integration framework
+
+**Penny is a CONSUMER of OpenClaw, not a maintainer.** For OpenClaw issues, see the OpenClaw repository.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -56,7 +68,7 @@ Think of Penny as a specialized "voice interface" that uses OpenClaw as its AI e
 - **Penny**: Voice assistant (transcribe → classify → route)
 - **Build Pipeline**: Voice-to-code via Claude Agent SDK
 - **Background Orchestrator**: Cheap probes + expensive reasoning
-- **Telegram Integration**: Two bots (@PennyMoltBot for voice, @PennyOCIBot for general AI)
+- **Telegram Integration**: @PennyMoltBot (Penny's voice bot) + @PennyOCIBot (OpenClaw's bot)
 
 Penny receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant, Apple Reminders, Apple Calendar, Apple Notes).
 
