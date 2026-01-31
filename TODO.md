@@ -29,7 +29,27 @@ Project task tracking following [todo.md](https://github.com/todomd/todo.md) spe
 - [ ] Consider moving Apple integrations to watcher (runs locally, better permissions)
 
 ## In Progress
+- [ ] Home Assistant integration (smart_home category)
+- [ ] Telegram /confirm and /reclassify commands via webhook
 
+## Done (2026-01-29 - OpenClaw Security Hardening)
+- [x] Add Tailscale IP whitelist middleware (penny/main.py)
+- [x] Add build approval gate via Telegram (penny/integrations/claude_code.py)
+- [x] Add webhook secret token validation (penny/main.py webhook)
+- [x] Add pending_approvals database table with audit trail
+- [x] Implement fail-secure defaults (timeout=reject, Tailscale=true)
+- [x] Security audit passed (no critical issues)
+
+Note: Penny is a voice assistant layer built on top of OpenClaw.
+Security hardening applies to the combined Penny + OpenClaw system
+including voice-to-build pipeline and orchestrator.
+
+## Done (2026-01-28 - Telegram Setup Fixed)
+- [x] Fixed Mac mini watcher port (18888 → 8888 direct to Penny)
+- [x] Updated Penny .env to use @PennyMoltBot token
+- [x] Separated Penny (@PennyMoltBot) from OpenClaw (@PennyOCIBot)
+- [x] Verified inbound + outbound Telegram flow
+- [x] Removed @khamelhomelab_bot dependency from OCI-Dev
 
 ## Done (2025-12-25 - Voice-to-Build Pipeline Fixed)
 - [x] Fix watcher ffmpeg permission denied (temp copy workaround for macOS TCC)

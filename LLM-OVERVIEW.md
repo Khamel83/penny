@@ -1,7 +1,7 @@
 # LLM-OVERVIEW: Penny
 
 > Complete context for any LLM to understand this project.
-> **Last Updated**: 2026-01-27
+> **Last Updated**: 2026-01-28
 > **ONE_SHOT Version**: 6.0
 
 ## 1. WHAT IS THIS PROJECT?
@@ -14,8 +14,8 @@ Voice memos pile up unorganized. Manual transcription and routing is tedious. Co
 
 ### Current State
 - **Status**: Production (OCI-Dev 24/7/365)
-- **Version**: 2.0 (Background Orchestrator + Service Router)
-- **Last Milestone**: ClawdBot integration complete (2026-01-27)
+- **Version**: 2.1 (Security Hardening)
+- **Last Milestone**: Security hardening - Tailscale IP whitelist + Build approval gate (2026-01-28)
 - **Next Milestone**: Home Assistant integration
 
 ## 2. ARCHITECTURE OVERVIEW
@@ -75,8 +75,6 @@ Voice memos pile up unorganized. Manual transcription and routing is tedious. Co
 
 ```
 Voice Memo → iCloud → Mac mini Watcher → mlx-whisper
-                                        ↓
-                              ClawdBot Receiver (18888)
                                         ↓
                               Penny API (OCI-Dev:8888)
                                         ↓
@@ -158,13 +156,22 @@ Penny dispatches to authenticated AI services without storing API keys:
 ### Build Flow
 
 1. Voice memo classified as "build"
-2. Model selector chooses GLM or Opus
-3. Service router dispatches to Claude CLI
-4. Q&A via Telegram if needed (10 min timeout)
-5. Auto-deployment to:
+2. **🔐 Approval request** sent via Telegram (inline buttons)
+3. User taps **Approve** or **Reject** (5 min timeout → auto-reject)
+4. Model selector chooses GLM or Opus
+5. Service router dispatches to Claude CLI
+6. Q&A via Telegram if needed (10 min timeout)
+7. Auto-deployment to:
    - Static sites → penny-builds nginx
    - Backends → OCI-Dev systemd
-6. URL sent via Telegram
+8. URL sent via Telegram
+
+### Security Gate
+
+**No code runs without explicit approval.** This prevents:
+- Accidental builds from misclassified voice memos
+- Malicious builds if voice memo source is compromised
+- Unexpected cost from complex builds
 
 ## 8. CURRENT STATE
 
@@ -177,8 +184,9 @@ Penny dispatches to authenticated AI services without storing API keys:
 - ✅ Service router for AI dispatch
 - ✅ Confidence-based routing (<70% → Telegram confirmation)
 - ✅ Graceful degradation (all failures → Telegram)
-- ✅ ClawdBot integration (Receiver + Gateway)
+- ✅ @PennyMoltBot (inbound + outbound Telegram)
 - ✅ 24/7/365 operation (systemd)
+- ✅ Direct watcher → Penny flow (no intermediary)
 
 ### What's In Progress
 - 🔄 Home Assistant integration (backlog)
@@ -198,11 +206,11 @@ Penny dispatches to authenticated AI services without storing API keys:
 
 # Services
 - Penny (8888) - Voice classification and routing
-- ClawdBot Receiver (18888) - Transcription forwarding
-- ClawdBot Gateway (18789) - Telegram delivery
+- @PennyMoltBot - Telegram bot (inbound + outbound)
+- @PennyOCIBot - Separate OpenClaw AI assistant
 
 # Management
-sudo systemctl status penny clawdbot clawdbot-receiver
+sudo systemctl status penny penny-telegram
 journalctl -u penny -f
 ```
 
@@ -244,15 +252,26 @@ PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8
 
 ## 11. IMPORTANT CONTEXT
 
-- **Permission model**: `bypassPermissions` is intentional - Penny is an autonomous voice-to-build pipeline. Docker + non-root user provide isolation. Don't add approval prompts.
+- **Architecture**: Penny is a voice assistant layer built on top of OpenClaw. Penny handles voice-specific features (transcription, classification, routing) while OpenClaw provides the underlying AI agent platform.
+- **Security model**: Defense-in-depth with Tailscale IP whitelist + build approval gate
+- **Permission model**: `bypassPermissions` used AFTER explicit Telegram approval - safe because human-in-the-loop
 - **Router pattern**: All integration failures cascade to Telegram as universal fallback
 - **Confidence routing**: <70% triggers Telegram confirmation before routing
 - **Service router**: Penny never stores Anthropic API keys directly - uses authenticated CLIs or aggregator APIs
 - **Background orchestrator**: Implements "gather signal cheap, reason expensive" pattern
 - **Z.AI**: Provides Anthropic-compatible API at ~$3/month for simple builds
-- **ClawdBot**: v2026.1.27 hardened against prompt injection (DM allowlist, fail-closed auth)
+- **OpenClaw**: v2026.1.27 hardened against prompt injection (DM allowlist, fail-closed auth)
 - **Database path**: Configurable via `PENNY_DB_PATH` (defaults to `/app/data/penny.db` for Docker, `./data/penny.db` for local)
 - **Web UI**: Server-rendered HTML with HTMX for interactions
+
+### Security Controls (v2.1)
+
+| Control | Implementation | Bypass |
+|---------|---------------|--------|
+| Tailscale IP whitelist | `TailscaleIPMiddleware` in main.py | `PENNY_TAILSCALE_ONLY=false` |
+| Build approval gate | `request_build_approval()` in claude_code.py | None - always required |
+| File permissions | chmod 600 on .env, data/*.db | Manual chmod |
+| Approval timeout | 5 min default | `PENNY_BUILD_APPROVAL_TIMEOUT=N` |
 
 ## 12. DATABASE SCHEMA
 
@@ -265,6 +284,7 @@ PENNY_DB_PATH=./data/penny.db .venv/bin/uvicorn penny.main:app --reload --port 8
 | `claude_sessions` | Build execution tracking (id, prompt, model, status, result) |
 | `learned_preferences` | Preferences learned from builds |
 | `pending_questions` | Telegram Q&A state |
+| `pending_approvals` | Build approval requests (id, build_id, transcript, status, approved) |
 
 ## 13. API ENDPOINTS
 

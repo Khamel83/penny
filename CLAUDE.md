@@ -1,8 +1,8 @@
-<!-- ONE_SHOT v5.5 -->
+<!-- ONE_SHOT v6.0 -->
 # IMPORTANT: Read AGENTS.md - it contains skill and agent routing rules.
 #
 # Skills (synchronous, shared context):
-#   "build me..."     → oneshot-core
+#   "build me..."     → front-door
 #   "plan..."         → create-plan
 #   "implement..."    → implement-plan
 #   "debug/fix..."    → debugger
@@ -22,9 +22,43 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Relationship to OpenClaw
+
+Penny is a **voice assistant layer built on top of OpenClaw**:
+
+- **Penny** (this repo): Voice memos → transcription → classification → routing
+- **OpenClaw** (separate project): AI agent platform with skills/integrations
+
+Think of Penny as a specialized "voice interface" that uses OpenClaw as its AI engine.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Penny (Voice Assistant Layer)               │
+│  • Transcribe → Classify → Route voice memos                    │
+│  • Background orchestrator (cheap probes + expensive reasoning) │
+│  • Web UI (HTMX)                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     OpenClaw (AI Agent Core)                     │
+│  • Agent orchestration                                          │
+│  • Skill system                                                  │
+│  • Integration framework                                        │
+│  • Build execution (Claude Code)                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Project Overview
 
-Penny is a voice assistant that receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant, Apple Reminders, Apple Calendar, Apple Notes).
+**About This Project**: This repository contains **Penny**, a voice assistant layer built on top of OpenClaw. Penny handles transcribed voice memos, classification, and routing to homelab services.
+
+**Penny Features:**
+- **Penny**: Voice assistant (transcribe → classify → route)
+- **Build Pipeline**: Voice-to-code via Claude Agent SDK
+- **Background Orchestrator**: Cheap probes + expensive reasoning
+- **Telegram Integration**: Two bots (@PennyMoltBot for voice, @PennyOCIBot for general AI)
+
+Penny receives transcribed voice memos, classifies them using an LLM, and routes them to appropriate homelab services (Google Keep, Jellyseerr, Telegram, Home Assistant, Apple Reminders, Apple Calendar, Apple Notes).
 
 **Core Philosophy:** "Gather signal cheap, reason expensive."
 
@@ -160,6 +194,38 @@ PENNY_CLAUDE_CLI        # Path to claude CLI (default: claude)
 ATLAS_URL               # Atlas API URL for knowledge base queries
 ATLAS_DB_PATH           # Atlas DB path for direct library import
 ```
+
+## Security Architecture
+
+Penny (on top of OpenClaw) implements defense-in-depth security with multiple protection layers:
+
+1. **Network Layer** - Tailscale IP whitelist (100.x.x.x CGNAT range)
+2. **Approval Gate** - Build approvals require explicit Telegram confirmation
+3. **Webhook Security** - Telegram webhook validates secret token
+4. **Audit Trail** - All approvals tracked in database with timestamps
+5. **Fail-Secure Defaults** - Timeouts reject, Tailscale defaults to enabled
+
+### Configuration
+
+```bash
+# Network security
+PENNY_TAILSCALE_ONLY=true  # Default: true (Tailscale-only access)
+
+# Webhook security
+TELEGRAM_WEBHOOK_SECRET=xxx  # Required for webhook endpoint
+
+# Build approval
+PENNY_BUILD_APPROVAL_TIMEOUT=300  # Default: 300 seconds (5 minutes)
+```
+
+### Security Posture
+
+- No API key storage (uses parent Claude Code credentials)
+- No code execution without approval
+- All requests logged with client IP
+- Graceful degradation on Telegram failures
+
+**See `docs/ADR-002-openclaw-security-hardening.md` for full security architecture documentation.**
 
 ## Key Patterns
 

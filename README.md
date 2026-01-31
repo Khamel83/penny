@@ -2,16 +2,14 @@
 
 > Your personal voice assistant - Named after Alfred Pennyworth (Batman's butler) and Penny from Inspector Gadget
 
-**Status**: Production | **Tier**: Cloud Runtime (OCI-Dev) | **Last Updated**: 2026-01-27
+**Status**: Production | **Tier**: Cloud Runtime (OCI-Dev) | **Last Updated**: 2026-01-28 | **Security**: Tailscale-only + Build Approval Gate
 
 Record voice memos on your iPhone/Apple Watch → see them transcribed, classified, and **routed** to the right service. Including autonomous project creation via Claude Code.
 
 ## Architecture
 
 ```
-iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → ClawdBot Receiver (18888)
-                                                                  ↓
-                                            Penny API (OCI-Dev:8888)
+iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → Penny API (OCI-Dev:8888)
                                                                   ↓
                                             ┌─────────────────────┴─────────────────────┐
                                             │  LLM Router (Gemini 2.5 Flash via OpenRouter) │
@@ -34,6 +32,32 @@ iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → ClawdBot
                                                                    └───────────────┘
 ```
 
+## Penny vs OpenClaw
+
+| Layer | Repository | Purpose |
+|-------|-----------|---------|
+| Penny | This repo | Voice assistant (transcribe, classify, route) |
+| OpenClaw | https://github.com/openclaw/openclaw | AI agent platform |
+
+Penny extends OpenClaw with voice-specific capabilities. Think of Penny as a "voice interface" layer on top of the OpenClaw AI agent platform.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Penny (Voice Assistant Layer)               │
+│  • Transcribe → Classify → Route voice memos                    │
+│  • Background orchestrator (cheap probes + expensive reasoning) │
+│  • Web UI (HTMX)                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     OpenClaw (AI Agent Core)                     │
+│  • Agent orchestration                                          │
+│  • Skill system                                                  │
+│  • Integration framework                                        │
+│  • Build execution (Claude Code)                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Categories & Routing
 
 | Category | Keywords | Route | Example |
@@ -53,12 +77,15 @@ iPhone/Watch → Voice Memo → iCloud → Mac mini → mlx-whisper → ClawdBot
 Say "build me a website" and Penny will:
 
 1. **Classify** the request as a build task
-2. **Select model** based on complexity:
+2. **🔐 Request approval** via Telegram (Approve/Reject buttons)
+3. **Select model** based on complexity:
    - Simple builds → GLM-4.7 via Z.AI (~$3/month)
    - Critical/complex → Claude Opus (when keywords like "production", "urgent", "auth")
-3. **Execute** autonomously with your preferences
-4. **Ask questions** via Telegram if needed (10 min timeout)
-5. **Deliver** the finished project
+4. **Execute** autonomously with your preferences
+5. **Ask questions** via Telegram if needed (10 min timeout)
+6. **Deliver** the finished project
+
+**Security**: Builds require explicit Telegram approval before any code runs. Auto-reject after 5 minutes if no response.
 
 ### Example Voice Commands
 
@@ -117,8 +144,9 @@ curl http://localhost:8888/health
 
 **Production Deployment Notes**:
 - Penny runs as systemd service on OCI-Dev (100.126.13.70:8888)
-- Integrates with ClawdBot Gateway (18789) and Receiver (18888)
-- Database at `/home/ubuntu/penny/data/penny.db`
+- Mac mini watcher sends transcriptions directly to Penny (port 8888)
+- Database at `/home/ubuntu/github/penny/data/penny.db`
+- Telegram bot: @PennyMoltBot (inbound + outbound)
 - Logs via journald: `journalctl -u penny -f`
 
 ### Docker (Alternative)
@@ -142,13 +170,17 @@ docker run -p 8000:8000 -v $(pwd)/data:/app/data penny
 ```bash
 # Required
 OPENROUTER_API_KEY=sk-or-v1-...    # Classification LLM
-TELEGRAM_BOT_TOKEN=...              # Notifications + Q&A
-TELEGRAM_CHAT_ID=...                # Your Telegram ID
+TELEGRAM_BOT_TOKEN=8232682412:...   # @PennyMoltBot (Penny's bot)
+TELEGRAM_CHAT_ID=7884781716         # Your Telegram ID
 
 # Build Integration
 ZAI_API_KEY=...                     # Z.AI GLM-4.7 (~$3/month)
 ANTHROPIC_API_KEY=...               # Opus for critical builds (optional)
 TELEGRAM_WEBHOOK_SECRET=...         # Webhook security
+
+# Security Settings
+PENNY_TAILSCALE_ONLY=true           # Restrict to Tailscale IPs (100.x.x.x)
+PENNY_BUILD_APPROVAL_TIMEOUT=300    # Build approval timeout in seconds (default: 5 min)
 
 # Integrations
 JELLYSEERR_URL=http://jellyseerr:5055
@@ -265,12 +297,26 @@ Penny routes AI requests to authenticated services without storing API keys:
 | `openrouter` | API key | Classification LLM |
 | `glm` | Z.AI API | Cheap/fast builds (~$3/month) |
 
+## Security Model
+
+Penny implements defense-in-depth:
+
+| Layer | Control | Description |
+|-------|---------|-------------|
+| **Network** | Tailscale IP whitelist | Only 100.x.x.x IPs can access API |
+| **Build Gate** | Telegram approval | Explicit tap required before code runs |
+| **File Permissions** | chmod 600 | Secrets readable only by owner |
+| **Timeout** | Auto-reject | Unanswered build requests rejected after 5 min |
+| **Audit Trail** | Database logging | All approvals tracked in `pending_approvals` table |
+
+To disable Tailscale restriction (not recommended): `PENNY_TAILSCALE_ONLY=false`
+
 ## Known Limitations
 
 - **Home Assistant**: Integration not yet implemented (backlog)
 - **Apple Integrations**: Require Mac mini with SSH access + AppleScript permissions
 - **Google Keep**: Uses unofficial API (gkeepapi), may break
-- **ClawdBot Integration**: Requires ClawdBot Gateway + Receiver services running
+- **OpenClaw Integration**: Requires OpenClaw services for extended agent capabilities
 
 ## License
 
