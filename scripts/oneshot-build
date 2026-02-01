@@ -1,0 +1,329 @@
+#!/bin/bash
+# oneshot-build: Autonomous builder mode
+# Usage: oneshot-build "A CLI tool that does X"
+#
+# Runs Claude Code autonomously to build from idea to artifact.
+# Uses beads for task tracking, commits after each step.
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+MAX_ITERATIONS=${MAX_ITERATIONS:-100}
+STUCK_THRESHOLD=${STUCK_THRESHOLD:-5}
+CLAUDE_CMD=${CLAUDE_CMD:-"claude"}
+
+# Check dependencies
+check_dependencies() {
+    local missing=()
+
+    if ! command -v bd &> /dev/null; then
+        missing+=("bd (beads CLI)")
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        missing+=("jq")
+    fi
+
+    if ! command -v "$CLAUDE_CMD" &> /dev/null; then
+        missing+=("$CLAUDE_CMD (Claude Code CLI)")
+    fi
+
+    if ! command -v git &> /dev/null; then
+        missing+=("git")
+    fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo -e "${RED}Error: Missing required dependencies:${NC}"
+        for dep in "${missing[@]}"; do
+            echo -e "  ${RED}✗${NC} $dep"
+        done
+        echo ""
+        echo "Install beads:   npm install -g @beads/bd"
+        echo "Install jq:      apt install jq  # or brew install jq"
+        echo "Install Claude:  npm install -g @anthropic-ai/claude-code"
+        exit 1
+    fi
+}
+
+# Check project setup
+check_project() {
+    if [ ! -f "AGENTS.md" ]; then
+        echo -e "${RED}Error: Not a ONE_SHOT project${NC}"
+        echo ""
+        echo "Initialize first:"
+        echo "  curl -sL https://raw.githubusercontent.com/Khamel83/oneshot/master/oneshot.sh | bash"
+        exit 1
+    fi
+}
+
+# Usage
+show_usage() {
+    echo "Usage: oneshot-build \"Your idea description\""
+    echo ""
+    echo "Runs Claude Code autonomously to build from idea to artifact."
+    echo "Uses beads for task tracking, commits after each step."
+    echo ""
+    echo "Options (via environment):"
+    echo "  MAX_ITERATIONS=100   Maximum build iterations"
+    echo "  STUCK_THRESHOLD=5    Iterations without progress before stopping"
+    echo "  CLAUDE_CMD=claude    Claude CLI command"
+    echo ""
+    echo "Examples:"
+    echo "  oneshot-build \"A Python CLI that fetches weather data\""
+    echo "  oneshot-build \"A REST API for managing todos\""
+    echo ""
+    echo "Monitor progress: tail -f .agent/STATUS.md"
+}
+
+if [ $# -eq 0 ]; then
+    show_usage
+    exit 1
+fi
+
+# Run checks
+check_dependencies
+check_project
+
+IDEA="$1"
+AGENT_DIR=".agent"
+STATUS_FILE="$AGENT_DIR/STATUS.md"
+ITER_FILE="$AGENT_DIR/ITERATIONS.md"
+STATE_FILE="$AGENT_DIR/LAST_STATE.md"
+ERROR_FILE="$AGENT_DIR/LAST_ERROR.md"
+
+# Initialize .agent/ directory
+init_agent() {
+    mkdir -p "$AGENT_DIR"
+    echo "0" > "$ITER_FILE"
+    echo "" > "$STATE_FILE"
+
+    cat > "$STATUS_FILE" << EOF
+# Build Status
+
+**Idea**: $IDEA
+**Started**: $(date -Iseconds)
+**Status**: Initializing
+
+## Progress Log
+EOF
+
+    # Initialize beads if not present
+    if [ ! -d .beads ]; then
+        bd init --stealth 2>/dev/null || true
+    fi
+
+    echo -e "${GREEN}Initialized .agent/ directory${NC}"
+}
+
+# Log status
+log_status() {
+    local msg="$1"
+    echo "- $(date +%H:%M:%S): $msg" >> "$STATUS_FILE"
+    echo -e "${YELLOW}$msg${NC}"
+}
+
+# Check if stuck (same beads state for N iterations)
+check_stuck() {
+    local current_state
+    current_state=$(bd ready --json 2>/dev/null | md5sum | cut -d' ' -f1)
+    local last_state
+    last_state=$(cat "$STATE_FILE" 2>/dev/null || echo "")
+
+    if [ "$current_state" = "$last_state" ]; then
+        local stuck_count
+        stuck_count=$(cat "$AGENT_DIR/STUCK_COUNT" 2>/dev/null || echo "0")
+        stuck_count=$((stuck_count + 1))
+        echo "$stuck_count" > "$AGENT_DIR/STUCK_COUNT"
+
+        if [ "$stuck_count" -ge "$STUCK_THRESHOLD" ]; then
+            echo "Stuck for $stuck_count iterations" > "$ERROR_FILE"
+            return 1
+        fi
+    else
+        echo "0" > "$AGENT_DIR/STUCK_COUNT"
+        echo "$current_state" > "$STATE_FILE"
+    fi
+    return 0
+}
+
+# Check if all tasks complete
+is_complete() {
+    local ready_count
+    ready_count=$(bd ready --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    local in_progress
+    in_progress=$(bd list --status in_progress --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+
+    if [ "$ready_count" = "0" ] && [ "$in_progress" = "0" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Run planning phase
+run_planning() {
+    log_status "Phase 1: Planning"
+
+    $CLAUDE_CMD -p --dangerously-skip-permissions << EOF
+You are in autonomous builder mode. Use ONE_SHOT skills.
+
+IDEA: $IDEA
+
+INSTRUCTIONS:
+1. Use front-door skill to interview (answer your own questions with reasonable defaults)
+2. Use create-plan skill to create a structured plan
+3. Parse the plan into beads tasks with dependencies:
+   - bd create "Epic: [idea]" -t epic --json
+   - Create groups and tasks with parent dependencies
+4. Save the plan to thoughts/shared/plans/
+5. STOP after creating beads tasks (don't implement yet)
+
+Use your best judgment for all decisions. Prefer simple solutions.
+Commit the plan file when done.
+EOF
+
+    log_status "Planning complete"
+}
+
+# Run single build iteration
+run_build_iteration() {
+    local iter=$1
+    log_status "Iteration $iter: Building"
+
+    $CLAUDE_CMD -p --dangerously-skip-permissions << EOF
+You are in autonomous builder mode. Continue implementing.
+
+INSTRUCTIONS:
+1. Run: bd ready --json
+2. Pick the highest priority ready task
+3. Run: bd update <id> --status in_progress --json
+4. Implement the task
+5. Commit after EACH file edit: git add <file> && git commit -m "feat: description"
+6. When done: bd close <id> --reason "commit: <hash>" --json
+7. STOP after completing ONE task
+
+If stuck or confused, write to .agent/SCRATCHPAD.md and stop.
+Use your best judgment. Prefer working code over perfect code.
+EOF
+}
+
+# Cleanup on exit
+cleanup() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        log_status "Build stopped with exit code $exit_code"
+        echo "**Status**: STOPPED (exit $exit_code)" >> "$STATUS_FILE"
+    fi
+    # Always sync beads on exit
+    bd sync 2>/dev/null || true
+}
+
+# Main execution
+main() {
+    trap cleanup EXIT
+
+    echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     ONE_SHOT Autonomous Builder v7.4      ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BLUE}Idea:${NC} $IDEA"
+    echo -e "${BLUE}Max iterations:${NC} $MAX_ITERATIONS"
+    echo -e "${BLUE}Monitor:${NC} tail -f .agent/STATUS.md"
+    echo ""
+
+    init_agent
+
+    # Phase 1: Planning
+    run_planning
+
+    # Check if any tasks were created
+    local task_count
+    task_count=$(bd list --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    if [ "$task_count" = "0" ]; then
+        log_status "No tasks created - planning may have failed"
+        echo "**Status**: FAILED (no tasks)" >> "$STATUS_FILE"
+        echo -e "${RED}Planning failed - no beads tasks were created${NC}"
+        echo "Check .agent/STATUS.md for details"
+        exit 1
+    fi
+    log_status "Created $task_count beads tasks"
+
+    # Phase 2: Build loop
+    log_status "Phase 2: Building"
+
+    local iter=0
+    local completed=0
+    while [ $iter -lt $MAX_ITERATIONS ]; do
+        iter=$((iter + 1))
+        echo "$iter" > "$ITER_FILE"
+
+        # Check if complete
+        if is_complete; then
+            log_status "All tasks complete!"
+            completed=1
+            break
+        fi
+
+        # Check if stuck
+        if ! check_stuck; then
+            log_status "Stuck detected after $iter iterations"
+            echo "**Status**: STUCK" >> "$STATUS_FILE"
+            echo ""
+            echo -e "${RED}Build stuck - same state for $STUCK_THRESHOLD iterations${NC}"
+            echo "Check .agent/LAST_ERROR.md and .agent/STATUS.md"
+            exit 1
+        fi
+
+        # Run build iteration
+        run_build_iteration $iter
+
+        # Sync beads periodically
+        if [ $((iter % 5)) -eq 0 ]; then
+            bd sync 2>/dev/null || true
+        fi
+    done
+
+    # Final status
+    echo "" >> "$STATUS_FILE"
+    echo "---" >> "$STATUS_FILE"
+    echo "## Final State" >> "$STATUS_FILE"
+    echo "**Completed**: $(date -Iseconds)" >> "$STATUS_FILE"
+    echo "**Iterations**: $iter" >> "$STATUS_FILE"
+    if [ "$completed" = "1" ]; then
+        echo "**Status**: SUCCESS" >> "$STATUS_FILE"
+    else
+        echo "**Status**: MAX_ITERATIONS" >> "$STATUS_FILE"
+    fi
+    echo "" >> "$STATUS_FILE"
+    echo "### Beads Summary" >> "$STATUS_FILE"
+    bd list --json 2>/dev/null | jq -r '.[] | "- [\(.status)] \(.title)"' >> "$STATUS_FILE" || true
+
+    # Print summary
+    echo ""
+    echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║             Build Complete                ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BLUE}Iterations:${NC} $iter"
+    echo -e "${BLUE}Status:${NC} .agent/STATUS.md"
+    echo -e "${BLUE}Tasks:${NC} bd list --json"
+    echo ""
+
+    # Show summary of completed vs remaining
+    local done_count
+    local remaining_count
+    done_count=$(bd list --status closed --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    remaining_count=$(bd ready --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    echo -e "${GREEN}✓ Completed:${NC} $done_count tasks"
+    if [ "$remaining_count" != "0" ]; then
+        echo -e "${YELLOW}○ Remaining:${NC} $remaining_count tasks"
+    fi
+}
+
+main
