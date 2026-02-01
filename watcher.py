@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 # Config
 VOICE_MEMOS_DIR = Path(os.environ.get(
     "VOICE_MEMOS_DIR",
-    "~/Library/Mobile Documents/com~apple~CloudDocs/Voice Memos"
+    "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 )).expanduser()
 OPENCLAW_URL = os.environ.get("OPENCLAW_URL", "http://100.126.13.70:18789")
 OPENCLAW_TOKEN = os.environ.get("OPENCLAW_TOKEN", "")
