@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Penny Voice Relay
-Transcribes voice memos and sends to Telegram (primary) and OpenClaw (optional).
+Transcribes voice memos from iCloud and sends to Telegram.
 """
 import os
 import sys
@@ -24,10 +24,6 @@ VOICE_MEMOS_DIR = Path(os.environ.get(
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 PROCESSED_FILE = Path("~/.penny/processed.txt").expanduser()
-
-# OpenClaw config (optional - for dual-destination delivery)
-OPENCLAW_SSH_HOST = os.environ.get("OPENCLAW_SSH_HOST", "100.126.13.70")  # OCI-Dev Tailscale IP
-OPENCLAW_CHAT_ID = os.environ.get("OPENCLAW_CHAT_ID", "7884781716")
 
 
 def get_file_hash(path):
@@ -85,46 +81,6 @@ def send_to_telegram(transcript):
         log.error(f"Failed to send: {e}")
 
 
-def send_to_openclaw(transcript):
-    """Send transcript to Telegram via OpenClaw CLI on OCI-Dev.
-
-    This is optional - logs warning on failure but doesn't block the pipeline.
-    """
-    import subprocess
-    import shlex
-
-    if not OPENCLAW_SSH_HOST:
-        log.debug("OpenClaw not configured, skipping")
-        return
-
-    # Escape the transcript for shell safety
-    message = f"🎤 Voice memo:\n\n{transcript}"
-
-    try:
-        # SSH to OCI-Dev and run OpenClaw CLI
-        ssh_cmd = (
-            f"ssh -o ConnectTimeout=10 -o BatchMode=yes {OPENCLAW_SSH_HOST} "
-            f"/home/ubuntu/.nvm/versions/node/v24.13.0/bin/openclaw "
-            f"message send --channel telegram --target {OPENCLAW_CHAT_ID} "
-            f"--message {shlex.quote(message)}"
-        )
-        result = subprocess.run(
-            ssh_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            log.info("Sent to OpenClaw successfully")
-        else:
-            log.warning(f"OpenClaw send failed: {result.stderr.strip() or result.stdout.strip()}")
-    except subprocess.TimeoutExpired:
-        log.warning("OpenClaw send timed out (SSH connection?)")
-    except Exception as e:
-        log.warning(f"OpenClaw send failed: {e}")
-
-
 class VoiceMemoHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
@@ -141,8 +97,7 @@ class VoiceMemoHandler(FileSystemEventHandler):
             return
         try:
             transcript = transcribe(path)
-            send_to_telegram(transcript)    # Primary - always send to Telegram
-            send_to_openclaw(transcript)    # Optional - logs warning on failure
+            send_to_telegram(transcript)
             mark_processed(path)
         except Exception as e:
             log.error(f"Error processing {path}: {e}")
@@ -158,7 +113,6 @@ def main():
 
     log.info(f"Watching: {VOICE_MEMOS_DIR}")
     log.info(f"Telegram chat: {TELEGRAM_CHAT_ID}")
-    log.info(f"OpenClaw: {'enabled -> ' + OPENCLAW_SSH_HOST if OPENCLAW_SSH_HOST else 'disabled'}")
 
     observer = Observer()
     observer.schedule(VoiceMemoHandler(), str(VOICE_MEMOS_DIR), recursive=False)

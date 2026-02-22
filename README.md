@@ -1,30 +1,23 @@
 # Penny
 
-Voice memo relay. Transcribes and pushes to OpenClaw.
+Voice memo relay. Transcribes and sends to Telegram.
 
-## Architecture
+## Workflow
 
 ```
-Voice Memo (iPhone/Watch)
-    → iCloud sync
+Apple Watch / iPhone Voice Memo
+    → iCloud sync (30-60s)
     → Mac Mini (watcher.py)
     → mlx-whisper transcription
-    → OpenClaw (OCI-Dev)
-    → Telegram via @PennyOCIBot
+    → Telegram Bot API
 ```
 
-## Current Deployment Status
+## Deployment
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| OpenClaw Gateway | OCI-Dev (100.126.13.70:18789) | Running via systemd |
-| Telegram Bot | @PennyOCIBot | Connected |
 | Voice Watcher | Mac Mini (launchd) | Running |
-
-## Voice Input Options
-
-1. **Voice Memos** → iCloud → Mac Mini → Penny watcher → OpenClaw (long-form)
-2. **Telegram Voice Notes** → @PennyOCIBot → OpenClaw (quick messages)
+| Telegram Bot | @PennyMoltBot | Connected |
 
 ## Setup (Mac Mini)
 
@@ -42,34 +35,23 @@ launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist
 launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist
 ```
 
-## OpenClaw (OCI-Dev)
+## Environment Variables
 
-OpenClaw runs as a systemd service with SOPS-encrypted secrets.
+Required in the launchd plist:
 
-```bash
-# Check status
-ssh oci "sudo systemctl status openclaw"
+- `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather
+- `TELEGRAM_CHAT_ID` - Your Telegram chat ID
 
-# View health
-ssh oci "openclaw health"
+Optional:
 
-# View logs
-ssh oci "tail -f /tmp/openclaw/openclaw-*.log"
+- `VOICE_MEMOS_DIR` - Path to Voice Memos (defaults to Mac path)
 
-# Restart
-ssh oci "sudo systemctl restart openclaw"
-```
-
-## Secrets
-
-All secrets are SOPS/Age encrypted in `~/openclaw/secrets.yaml` on OCI-Dev.
+## Deployment from Repo
 
 ```bash
-# Decrypt and view
-cd ~/openclaw
-SOPS_AGE_KEY_FILE=~/.age/key.txt sops -d secrets.yaml
+# Sync to macmini
+rsync -avz --delete /home/ubuntu/github/penny/ macmini:~/penny/ --exclude '.git' --exclude 'docs/sessions'
+
+# Restart the service
+ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist && launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
 ```
-
-## Old Code
-
-The original Penny codebase (~3000 lines) is preserved on the `archive` branch.
