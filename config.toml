@@ -1,0 +1,25 @@
+[llm]
+model = "google/gemini-2.5-flash-lite"
+
+[google_tasks]
+list_name = "My Tasks"
+poll_interval_seconds = 180
+
+[apple_reminders]
+# These must exactly match list names in your Reminders app
+lists = ["Groceries", "Errands", "Home", "Health", "Work", "Kids", "Inbox"]
+default_list = "Inbox"
+
+[voice_memos]
+max_file_size_mb = 50
+whisper_model = "mlx-community/whisper-large-v3-turbo"
+poll_interval_seconds = 60
+startup_process_limit = 5
+
+[webhook]
+port = 5678
+host = "0.0.0.0"
+
+[logging]
+# level: DEBUG, INFO, WARNING, ERROR
+level = "INFO"

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.penny.watcher</string>
+    <string>com.penny.tasks</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/macmini/penny/venv/bin/python3</string>
-        <string>/Users/macmini/penny/watcher.py</string>
+        <string>/Users/macmini/penny/tasks_poller.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -31,9 +31,9 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/macmini/.penny/logs/watcher.log</string>
+    <string>/Users/macmini/.penny/logs/tasks.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/macmini/.penny/logs/watcher.log</string>
+    <string>/Users/macmini/.penny/logs/tasks.log</string>
     <key>WorkingDirectory</key>
     <string>/Users/macmini/penny</string>
 </dict>

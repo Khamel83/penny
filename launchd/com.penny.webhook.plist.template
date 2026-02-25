@@ -14,20 +14,26 @@
         <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <!-- Replace with actual values from SOPS -->
+        <!-- Replace with actual values -->
+        <key>OPENROUTER_API_KEY</key>
+        <string>YOUR_OPENROUTER_API_KEY_HERE</string>
         <key>TELEGRAM_BOT_TOKEN</key>
         <string>YOUR_BOT_TOKEN_HERE</string>
         <key>TELEGRAM_CHAT_ID</key>
         <string>YOUR_CHAT_ID_HERE</string>
+        <key>GOOGLE_CREDENTIALS_FILE</key>
+        <string>/Users/macmini/.penny/google_credentials.json</string>
+        <key>GOOGLE_TOKEN_FILE</key>
+        <string>/Users/macmini/.penny/google_token.json</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/penny-webhook.log</string>
+    <string>/Users/macmini/.penny/logs/webhook.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/penny-webhook.log</string>
+    <string>/Users/macmini/.penny/logs/webhook.log</string>
     <key>WorkingDirectory</key>
     <string>/Users/macmini/penny</string>
 </dict>
