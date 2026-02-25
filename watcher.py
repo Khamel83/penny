@@ -41,6 +41,7 @@ HEALTH_FILE = Path("~/.penny/health.txt").expanduser()
 
 POLL_INTERVAL = 60  # Check every 60 seconds
 HEALTH_CHECK_INTERVAL = 300  # Log health every 5 minutes
+MAX_FILE_SIZE = 50 * 1024 * 1024  # Skip files larger than 50MB
 
 
 def check_dependencies():
@@ -264,6 +265,15 @@ def process_recording(recording):
         log.error(f"File not found for {label}")
         return False
 
+    # Check file size
+    file_size = audio_path.stat().st_size
+    if file_size > MAX_FILE_SIZE:
+        size_mb = file_size / (1024 * 1024)
+        log.warning(f"Skipping {label} ({size_mb:.1f}MB) - too large")
+        mark_processed(audio_path)
+        set_last_seen_pk(pk)
+        return True
+
     # Check if already processed
     if is_processed(audio_path):
         log.info(f"Already processed: {label}")
@@ -285,7 +295,17 @@ def process_recording(recording):
 
 def process_file(audio_path):
     """Process a single file from disk scan."""
-    log.info(f"Processing file: {audio_path.name}")
+    file_size = audio_path.stat().st_size
+
+    # Skip huge files that would take too long to transcribe
+    if file_size > MAX_FILE_SIZE:
+        size_mb = file_size / (1024 * 1024)
+        log.warning(f"Skipping {audio_path.name} ({size_mb:.1f}MB) - too large")
+        # Mark as processed so we don't keep trying
+        mark_processed(audio_path)
+        return True
+
+    log.info(f"Processing file: {audio_path.name} ({file_size / (1024*1024):.1f}MB)")
 
     if is_processed(audio_path):
         log.info(f"Already processed: {audio_path.name}")
