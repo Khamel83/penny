@@ -10,6 +10,13 @@ venv/
 .env
 .env.local
 
+# Penny secrets — never commit these
+secrets.env
+
+# Google OAuth token — contains live credentials
+google_token.json
+**/google_token.json
+
 # OS
 .DS_Store
 
