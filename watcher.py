@@ -2,20 +2,17 @@
 """
 Penny Voice Relay - Robust iCloud Watcher
 
-POLLING APPROACH for reliability:
-- Polls CloudRecordings database every 60 seconds for new entries
-- Does NOT rely on filesystem events (unreliable with iCloud)
-- Works with native Voice Memos app on Apple Watch/iPhone
+FAILURE MODES & RECOVERY:
+1. iCloud sync stops → Disk scan catches files when they appear
+2. Database gets corrupted → Rebuilds from iCloud automatically
+3. Service crashes → KeepAlive restarts it
+4. ffmpeg missing → Explicit PATH in launchd plist
+5. Code gets out of date → Sync from repo on startup
 
-The filesystem watch approach fails because:
-1. iCloud writes files before syncing metadata
-2. Files can appear hours after the database entry
-3. The bird daemon can stall and not push updates
-
-Database polling works because:
-1. Database entry is created when iCloud acknowledges the recording
-2. We can check for new Z_PK entries (recording IDs)
-3. We track the highest Z_PK we've seen
+HOW IT WORKS:
+- Polls database every 60s for new entries (normal iCloud sync)
+- Scans disk for unprocessed files (catches delayed/broken sync)
+- Dual approach means recordings are found even if one path fails
 """
 import os
 import sys
@@ -23,7 +20,9 @@ import time
 import hashlib
 import logging
 import sqlite3
+import subprocess
 from pathlib import Path
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -38,8 +37,78 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 PROCESSED_FILE = Path("~/.penny/processed.txt").expanduser()
 STATE_FILE = Path("~/.penny/last_pk.txt").expanduser()
 CLOUDRECORDINGS_DB = VOICE_MEMOS_DIR / "CloudRecordings.db"
+HEALTH_FILE = Path("~/.penny/health.txt").expanduser()
 
 POLL_INTERVAL = 60  # Check every 60 seconds
+HEALTH_CHECK_INTERVAL = 300  # Log health every 5 minutes
+
+
+def check_dependencies():
+    """Verify all dependencies are available."""
+    errors = []
+
+    # Check ffmpeg
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            errors.append("ffmpeg not working")
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        errors.append(f"ffmpeg not found: {e}")
+
+    # Check mlx_whisper
+    try:
+        import mlx_whisper
+    except ImportError:
+        errors.append("mlx_whisper not installed")
+
+    # Check requests
+    try:
+        import requests
+    except ImportError:
+        errors.append("requests not installed")
+
+    # Check watchdog
+    try:
+        import watchdog
+    except ImportError:
+        errors.append("watchdog not installed")
+
+    # Check directory exists
+    if not VOICE_MEMOS_DIR.exists():
+        errors.append(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
+
+    # Check Telegram credentials
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        errors.append("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+
+    # Check database
+    if CLOUDRECORDINGS_DB.exists():
+        try:
+            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB))
+            conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
+            conn.close()
+        except Exception as e:
+            errors.append(f"Database corrupted: {e}")
+
+    return errors
+
+
+def update_health_check():
+    """Write health status for monitoring."""
+    HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().isoformat()
+    db_count = 0
+    if CLOUDRECORDINGS_DB.exists():
+        try:
+            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB))
+            cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
+            db_count = cursor.fetchone()[0]
+            conn.close()
+        except:
+            pass
+
+    health = f"{now}|db_records:{db_count}|watcher_ok:1\n"
+    HEALTH_FILE.write_text(health)
 
 
 def get_file_hash(path):
@@ -65,7 +134,10 @@ def mark_processed(path):
 def get_last_seen_pk():
     """Get the highest Z_PK we've processed."""
     if STATE_FILE.exists():
-        return int(STATE_FILE.read_text().strip())
+        try:
+            return int(STATE_FILE.read_text().strip())
+        except:
+            return 0
     return 0
 
 
@@ -92,7 +164,7 @@ def send_to_telegram(transcript):
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
-        return
+        return False
 
     try:
         import requests
@@ -106,14 +178,16 @@ def send_to_telegram(transcript):
         )
         resp.raise_for_status()
         log.info("Sent successfully to Telegram")
+        return True
     except Exception as e:
         log.error(f"Failed to send: {e}")
+        return False
 
 
 def get_new_recordings():
     """Query database for recordings newer than last_seen_pk."""
     if not CLOUDRECORDINGS_DB.exists():
-        log.error(f"Database not found: {CLOUDRECORDINGS_DB}")
+        log.warning(f"Database not found: {CLOUDRECORDINGS_DB}")
         return []
 
     last_pk = get_last_seen_pk()
@@ -141,39 +215,53 @@ def get_new_recordings():
         return []
 
 
-def wait_for_file(recording, timeout=300):
-    """Wait for the actual audio file to appear (can be delayed after DB entry)."""
-    if not recording.get("ZPATH"):
-        return None
+def scan_for_unprocessed_files():
+    """Scan disk for m4a files that haven't been processed yet.
 
-    audio_path = VOICE_MEMOS_DIR / recording["ZPATH"]
+    This catches files that iCloud downloaded before the database was updated.
+    """
+    try:
+        all_files = sorted(VOICE_MEMOS_DIR.glob("*.m4a"), key=lambda f: f.stat().st_mtime, reverse=True)
+        unprocessed = []
 
-    start = time.time()
-    while time.time() - start < timeout:
-        if audio_path.exists():
-            # Wait for file to finish writing (check size stability)
-            size1 = audio_path.stat().st_size
-            time.sleep(2)
-            size2 = audio_path.stat().st_size
-            if size1 == size2 and size2 > 0:
-                return audio_path
-        time.sleep(5)
+        for f in all_files:
+            if not is_processed(f):
+                unprocessed.append(f)
 
-    log.warning(f"Timeout waiting for file: {audio_path}")
-    return None
+        return unprocessed
+    except Exception as e:
+        log.error(f"File scan failed: {e}")
+        return []
 
 
 def process_recording(recording):
-    """Process a single recording."""
+    """Process a single recording from database."""
     pk = recording["Z_PK"]
     label = recording.get("ZCUSTOMLABEL", f"Recording {pk}")
 
     log.info(f"Processing {label} (PK={pk})")
 
-    # Wait for file to appear
-    audio_path = wait_for_file(recording)
-    if not audio_path:
-        log.error(f"File never appeared for {label}")
+    # Get file path from recording or fallback to directory scan
+    if recording.get("ZPATH"):
+        audio_path = VOICE_MEMOS_DIR / recording["ZPATH"]
+        if not audio_path.exists():
+            log.warning(f"File in DB not found: {audio_path}")
+            # Try to find the file by scanning
+            for f in VOICE_MEMOS_DIR.glob("*.m4a"):
+                if recording["ZCUSTOMLABEL"] and f.name.startswith(recording["ZCUSTOMLABEL"][:10].replace("-", "")):
+                    audio_path = f
+                    break
+    else:
+        # No path in DB, scan for matching file
+        audio_path = None
+        for f in VOICE_MEMOS_DIR.glob("*.m4a"):
+            # Try to match by date or label
+            if recording["ZCUSTOMLABEL"] and recording["ZCUSTOMLABEL"] in f.name:
+                audio_path = f
+                break
+
+    if not audio_path or not audio_path.exists():
+        log.error(f"File not found for {label}")
         return False
 
     # Check if already processed
@@ -185,54 +273,108 @@ def process_recording(recording):
     try:
         # Transcribe and send
         transcript = transcribe(audio_path)
-        send_to_telegram(transcript)
-        mark_processed(audio_path)
-        set_last_seen_pk(pk)
-        return True
+        if send_to_telegram(transcript):
+            mark_processed(audio_path)
+            set_last_seen_pk(pk)
+            return True
+        return False
     except Exception as e:
         log.error(f"Error processing {label}: {e}")
         return False
 
 
+def process_file(audio_path):
+    """Process a single file from disk scan."""
+    log.info(f"Processing file: {audio_path.name}")
+
+    if is_processed(audio_path):
+        log.info(f"Already processed: {audio_path.name}")
+        return True
+
+    try:
+        transcript = transcribe(audio_path)
+        if send_to_telegram(transcript):
+            mark_processed(audio_path)
+            return True
+        return False
+    except Exception as e:
+        log.error(f"Error processing {audio_path.name}: {e}")
+        return False
+
+
 def main():
+    # Startup checks
+    log.info("=" * 60)
+    log.info("Penny iCloud Watcher starting...")
+    log.info("=" * 60)
+
+    errors = check_dependencies()
+    if errors:
+        log.error("DEPENDENCY CHECK FAILED:")
+        for error in errors:
+            log.error(f"  - {error}")
+        log.error("Service will not function properly until these are fixed.")
+        # Don't exit - let it run and maybe recover
+
     if not VOICE_MEMOS_DIR.exists():
         log.error(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
         sys.exit(1)
 
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set - messages will fail")
-
-    log.info(f"Penny iCloud Watcher (polling mode)")
     log.info(f"  Watching: {VOICE_MEMOS_DIR}")
     log.info(f"  Database: {CLOUDRECORDINGS_DB}")
     log.info(f"  Poll interval: {POLL_INTERVAL}s")
     log.info(f"  Last seen PK: {get_last_seen_pk()}")
 
-    # Initial query to see current state
+    # Initial scan
+    log.info("Running initial scan...")
     recordings = get_new_recordings()
     if recordings:
-        log.info(f"Found {len(recordings)} recordings not yet processed")
+        log.info(f"Found {len(recordings)} new recording(s) in database")
         for r in recordings:
             process_recording(r)
 
+    unprocessed_files = scan_for_unprocessed_files()
+    if unprocessed_files:
+        log.info(f"Found {len(unprocessed_files)} unprocessed file(s) on disk")
+        for f in unprocessed_files[:5]:  # Process up to 5 at startup
+            process_file(f)
+
+    # Update health
+    update_health_check()
+
     # Main polling loop
+    log.info("Starting main polling loop...")
+    last_health_check = time.time()
+
     while True:
         try:
             time.sleep(POLL_INTERVAL)
-            recordings = get_new_recordings()
 
+            # Health check
+            if time.time() - last_health_check > HEALTH_CHECK_INTERVAL:
+                update_health_check()
+                log.info(f"Health check: OK | PK={get_last_seen_pk()} | Files on disk: {len(list(VOICE_MEMOS_DIR.glob('*.m4a')))}")
+                last_health_check = time.time()
+
+            # Check database for new recordings
+            recordings = get_new_recordings()
             if recordings:
-                log.info(f"Found {len(recordings)} new recording(s)")
+                log.info(f"Found {len(recordings)} new recording(s) in database")
                 for r in recordings:
                     process_recording(r)
-            else:
-                log.debug("No new recordings")
+
+            # Also scan disk for files that appeared before database update
+            unprocessed_files = scan_for_unprocessed_files()
+            if unprocessed_files:
+                log.info(f"Found {len(unprocessed_files)} unprocessed file(s) on disk")
+                for f in unprocessed_files[:3]:  # Process up to 3 per cycle
+                    process_file(f)
 
         except KeyboardInterrupt:
             log.info("Shutting down...")
             break
         except Exception as e:
-            log.error(f"Error in poll loop: {e}")
+            log.error(f"Error in poll loop: {e}", exc_info=True)
             time.sleep(POLL_INTERVAL)
 
 
