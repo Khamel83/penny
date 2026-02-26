@@ -127,7 +127,7 @@ done"
 
 ## Requirements
 
-- **Apple Silicon Mac** (M1 or later) — required. Whisper transcription uses Apple's MLX framework, which only runs on Apple Silicon. Intel Macs will not work.
+- **Mac** — required for AppleScript access to Reminders and Notes. This repo uses MLX-based Whisper (Apple Silicon only), but any Whisper backend would work on Intel if you swap it out. An always-on Mac Mini is the natural fit.
 - macOS with Homebrew
 - Python 3.11+
 - ffmpeg (`brew install ffmpeg`)
