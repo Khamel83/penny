@@ -86,13 +86,13 @@ def check_dependencies():
         errors.append("requests not installed")
     if not VOICE_MEMOS_DIR.exists():
         errors.append(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
-    if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
+    if cfg.notifications.telegram_enabled and (not cfg.telegram_bot_token or not cfg.telegram_chat_id):
         errors.append("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
     if not cfg.openrouter_api_key:
         errors.append("OPENROUTER_API_KEY not set — items will fall back to Inbox")
     if CLOUDRECORDINGS_DB.exists():
         try:
-            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB))
+            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
             conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
             conn.close()
         except Exception as e:
@@ -108,7 +108,7 @@ def update_health_check():
     db_count = 0
     if CLOUDRECORDINGS_DB.exists():
         try:
-            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB))
+            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
             cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
             db_count = cursor.fetchone()[0]
             conn.close()
@@ -242,7 +242,7 @@ def get_new_recordings():
 
     last_pk = get_last_seen_pk()
     try:
-        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB))
+        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""

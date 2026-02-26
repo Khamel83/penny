@@ -25,8 +25,6 @@ def add_note(text: str, folder_name: str = "Penny", source: str = "") -> bool:
     title = f"Penny — {timestamp}"
     safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
 
-    safe_body = f"{safe_text}"
-
     script = f'''
 tell application "Notes"
     set targetFolder to missing value
@@ -39,7 +37,7 @@ tell application "Notes"
     if targetFolder is missing value then
         set targetFolder to (make new folder with properties {{name:"{safe_folder}"}})
     end if
-    make new note at targetFolder with properties {{name:"{safe_title}", body:"<b>{safe_title}</b><br><br>{safe_body}"}}
+    make new note at targetFolder with properties {{name:"{safe_title}", body:"<b>{safe_title}</b><br><br>{safe_text}"}}
 end tell
 '''
 
