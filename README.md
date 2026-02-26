@@ -1,54 +1,62 @@
 # Penny
 
-Voice-to-reminders system. Speak naturally, items land in the right Apple Reminders list automatically.
+Penny is intelligent middleware between voice and Apple's native apps.
 
-## How It Works
+You speak naturally — to your phone, or a device sitting on the counter — and Penny figures out what you meant, routes it to the right place, and gets out of the way. Reminders go to Apple Reminders, sorted into the right list. Everything else goes to Apple Notes. Nothing gets lost.
 
-### Input: Two ways to add items
-
-**Google Home (kitchen, hands-free)**
 ```
-"Hey Google, add milk eggs and sausages to my tasks"
-→ give any time when prompted
-→ items appear in Apple Reminders within 3 minutes
+Voice front-end  →  Penny (middleware)  →  Apple back-end
+─────────────────────────────────────────────────────────
+iPhone Voice Memo  →  transcribe + classify  →  Reminders / Notes
+Google Home        →  classify             →  Reminders / Notes
 ```
 
-> **⚠️ Critical — do not change this:**
+---
+
+## The architecture
+
+**Front-ends** (how you speak to it):
+- **iPhone Voice Memo** — record anything, hands-free, multiple items at once
+- **Google Home** — add to "My Tasks", give any time when prompted
+
+**Middleware** (Penny, running on an always-on Apple Silicon Mac):
+- Transcribes audio locally with Whisper (no cloud, no cost)
+- Classifies free-form speech into actionable items using an LLM
+- Routes each item to the right Apple list
+
+**Back-end** (Apple's native apps, synced to all your devices via iCloud):
+- **Apple Reminders** — for actionable items, sorted by category
+- **Apple Notes** (Penny folder) — for everything else: thoughts, observations, things that aren't tasks
+
+---
+
+## Routing
+
+| What you say | Where it goes |
+|---|---|
+| "get milk, eggs, sausages" | Reminders → Groceries |
+| "call dentist, pick up dry cleaning" | Reminders → Health, Errands |
+| "fix the leaky faucet" | Reminders → Home |
+| "expense report due Friday" | Reminders → Work |
+| "the weather today is beautiful" | Notes → Penny folder |
+| Any pure thought or observation | Notes → Penny folder |
+
+Reminders lists: Groceries, Errands, Home, Health, Work, Kids, Inbox
+
+One input can produce multiple routed items — "get milk, call dentist, fix faucet" becomes three reminders in three different lists.
+
+---
+
+## Google Home constraint — read this before touching anything
+
+> **⚠️ This is the only way it works. Do not change it.**
+>
 > Google Home will only write to the default Google Tasks list, which must be named **"My Tasks"**.
-> This is not configurable. Google locked down every other integration path (custom list names,
-> third-party apps, IFTTT variable text) between 2022 and 2023. "My Tasks" is the only list
-> Google Home will ever touch via voice. If you rename it, the integration breaks with no
-> workaround. Do not rename it. Do not create a differently-named list and expect it to work.
-> This is the one shot.
+> Google locked down every other integration path between 2022 and 2023 — custom list names,
+> third-party apps, IFTTT variable capture — all gone. "My Tasks" is the one shot.
+> If you rename it, the integration breaks with no workaround.
 
-**iPhone Voice Memo**
-```
-Record a memo: "pick up dry cleaning, call dentist, get milk"
-→ Penny transcribes and classifies automatically
-→ items appear in Apple Reminders within 60 seconds
-```
-
-### What happens in between
-
-1. LLM reads the text and extracts individual actionable items
-2. Each item is classified into the right list
-3. Items are added to Apple Reminders on the Mac Mini (iCloud syncs to your devices)
-4. Telegram notification confirms what was added and where
-5. Google Tasks item is marked complete automatically
-
-### Routing
-
-| Category | Examples |
-|----------|---------|
-| Groceries | milk, eggs, anything food/shopping |
-| Errands | dry cleaning, post office, store visits |
-| Home | repairs, cleaning, maintenance |
-| Health | doctor, dentist, medications, exercise |
-| Work | meetings, deadlines, professional tasks |
-| Kids | school, activities, supplies |
-| Inbox | anything that doesn't clearly fit above |
-
-Pure non-reminders (journal thoughts, music ideas, random notes) are skipped — nothing added.
+Voice command: **"Hey Google, add [items] to my tasks"** — give any time when prompted. The time is discarded; it's just Google's required prompt. Items are crossed off automatically after Penny processes them.
 
 ---
 
@@ -62,10 +70,36 @@ Pure non-reminders (journal thoughts, music ideas, random notes) are skipped —
 
 ---
 
+## Configuration
+
+Non-secret settings live in `config.toml`. The key ones:
+
+```toml
+[notifications]
+telegram_enabled = false   # true to turn Telegram back on, false to silence it
+                           # The code and credentials stay either way
+
+[google_tasks]
+list_name = "My Tasks"     # Do not change — see Google Home constraint above
+
+[apple_reminders]
+lists = ["Groceries", "Errands", "Home", "Health", "Work", "Kids", "Inbox"]
+default_list = "Inbox"
+```
+
+After changing `config.toml`, rsync it to the Mac and restart the affected service:
+
+```bash
+rsync -av config.toml macmini:/Users/macmini/penny/
+ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist && launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
+```
+
+---
+
 ## Operations
 
 ```bash
-# Check all services
+# Check all services are running (exit code 0 = healthy)
 ssh macmini "launchctl list | grep penny"
 
 # View logs
@@ -74,16 +108,15 @@ ssh macmini "tail -f ~/.penny/logs/tasks.log"
 ssh macmini "tail -f ~/.penny/logs/webhook.log"
 
 # Restart a service
-ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist && launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
+ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.SVCNAME.plist && launchctl load ~/Library/LaunchAgents/com.penny.SVCNAME.plist"
 ```
 
 ## Deploy from repo
 
 ```bash
 rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
-  /home/ubuntu/github/penny/ macmini:/Users/macmini/penny/
+  /path/to/penny/ macmini:/Users/macmini/penny/
 
-# Restart all services
 ssh macmini "for svc in watcher webhook tasks; do
   launchctl unload ~/Library/LaunchAgents/com.penny.\${svc}.plist
   launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
@@ -92,66 +125,57 @@ done"
 
 ---
 
-## Configuration
+## Requirements
 
-Non-secret settings in `config.toml`. Secrets (API keys) are set as environment variables in the launchd plists.
-
-Plist templates: `launchd/*.plist.template` — substitute secrets and deploy to `~/Library/LaunchAgents/` on Mac Mini.
-
-Secrets stored encrypted at: `~/github/oneshot/secrets/penny.env.encrypted`
+- **Apple Silicon Mac** (M1 or later) — required. Whisper transcription uses Apple's MLX framework, which only runs on Apple Silicon. Intel Macs will not work.
+- macOS with Homebrew
+- Python 3.11+
+- ffmpeg (`brew install ffmpeg`)
+- Always-on (Mac Mini recommended)
 
 ```bash
-# Decrypt to view
-SOPS_AGE_KEY_FILE=~/.age/key.txt sops --input-type dotenv --output-type dotenv \
-  -d ~/github/oneshot/secrets/penny.env.encrypted
+pip install mlx-whisper requests watchdog flask \
+  google-api-python-client google-auth-httplib2 google-auth-oauthlib tomli
 ```
 
-### Required environment variables (in plists)
+---
+
+## Setup
+
+### Environment variables (set in launchd plists)
 
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | LLM classification via OpenRouter |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (kept even when notifications off) |
 | `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
 | `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials JSON |
 | `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
 
----
+Plist templates with placeholders: `launchd/*.plist.template`
 
-## Google Tasks setup (one-time)
+### One-time macOS permissions
 
-OAuth credentials and token live at:
-- `~/.penny/google_credentials.json`
-- `~/.penny/google_token.json`
+Two approvals required, each permanent after the first:
 
-To re-authorize: run `scripts/google_auth.py` and follow the console flow.
+1. **System Settings → Privacy & Security → Automation → Python → Reminders** ✓
+2. **System Settings → Privacy & Security → Automation → Python → Notes** ✓
 
-Google Cloud project needs Tasks API enabled.
-App runs in Testing mode — your Google account must be listed as a test user in the OAuth consent screen.
+### Google Tasks setup
 
----
-
-## macOS TCC permission (one-time)
-
-Python needs permission to write to Apple Reminders. Grant it once at:
-
-**System Settings → Privacy & Security → Automation → Python → Reminders ✓**
-
-This persists permanently — never needs to be done again.
+OAuth credentials and token live at `~/.penny/` on the Mac.
+Google Cloud project needs Tasks API enabled, app in Testing mode with your account as a test user.
+To re-authorize: run `scripts/google_auth.py`.
 
 ---
 
-## Runtime state (Mac Mini)
-
-All runtime files live at `~/.penny/`:
+## Runtime state (Mac Mini, never commit these)
 
 | File | Purpose |
 |------|---------|
-| `logs/watcher.log` | Voice memo poller log |
-| `logs/tasks.log` | Google Tasks poller log |
-| `logs/webhook.log` | Webhook server log |
-| `last_pk.txt` | Last processed voice memo (don't delete) |
-| `processed.txt` | Processed memo IDs (deduplication) |
-| `synced_tasks.txt` | Processed Google Tasks IDs (deduplication) |
-| `google_token.json` | Google OAuth token (auto-refreshes) |
-| `google_credentials.json` | Google OAuth app credentials |
+| `~/.penny/logs/` | Service logs |
+| `~/.penny/last_pk.txt` | Last processed voice memo — do not delete |
+| `~/.penny/processed.txt` | Processed memo hashes (deduplication) |
+| `~/.penny/synced_tasks.txt` | Processed Google Tasks IDs (deduplication) |
+| `~/.penny/google_token.json` | Google OAuth token (auto-refreshes) |
+| `~/.penny/google_credentials.json` | Google OAuth app credentials |
