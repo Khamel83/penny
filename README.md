@@ -118,8 +118,8 @@ OAuth credentials and token live at:
 
 To re-authorize: run `scripts/google_auth.py` and follow the console flow.
 
-Google Cloud project: `neon-feat-488623-u3` (Penny) — Tasks API enabled.
-App is in Testing mode — `zoheri@gmail.com` must be listed as a test user.
+Google Cloud project needs Tasks API enabled.
+App runs in Testing mode — your Google account must be listed as a test user in the OAuth consent screen.
 
 ---
 
