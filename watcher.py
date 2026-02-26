@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from classifier import classify
-from reminders import add_reminder
+from reminders import add_reminder, add_note
 
 cfg = get_config()
 
@@ -214,18 +214,21 @@ def build_result_message(transcript: str, result: dict, source: str) -> str:
 # ===== Pipeline =====
 
 def classify_and_route(transcript: str, source: str = "iCloud") -> bool:
-    """Classify transcript, add items to Reminders, send Telegram summary."""
+    """Classify transcript, add items to Reminders or Notes, send Telegram for reminders."""
     result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
 
-    if not result.get("skip"):
+    if result.get("skip"):
+        # Not a reminder — save to Apple Notes Penny folder, no Telegram
+        add_note(transcript, folder_name="Penny", source=source)
+    else:
         for entry in result.get("items", []):
             target_list = entry["category"].capitalize()
             if target_list not in cfg.apple_reminders.lists:
                 target_list = cfg.apple_reminders.default_list
             add_reminder(entry["item"], target_list, cfg.apple_reminders.default_list)
+        msg = build_result_message(transcript, result, source)
+        send_telegram(msg)
 
-    msg = build_result_message(transcript, result, source)
-    send_telegram(msg)
     return True
 
 

@@ -1,13 +1,66 @@
 #!/usr/bin/env python3
 """
-Apple Reminders integration via AppleScript.
+Apple Reminders and Notes integration via AppleScript.
 
-Adds items to named Reminders lists on macOS using osascript.
+Adds items to named Reminders lists, and creates notes in Apple Notes,
+using osascript on macOS.
 """
 import subprocess
 import logging
+from datetime import datetime
 
 log = logging.getLogger(__name__)
+
+
+def add_note(text: str, folder_name: str = "Penny", source: str = "") -> bool:
+    """
+    Create a new note in the named Apple Notes folder.
+
+    Falls back to the default Notes account root if the folder doesn't exist.
+    Returns True on success, False on failure.
+    """
+    safe_text = text.replace("\\", "\\\\").replace('"', '\\"')
+    safe_folder = folder_name.replace("\\", "\\\\").replace('"', '\\"')
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    title = f"Penny — {timestamp}"
+    if source:
+        title += f" ({source})"
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+
+    script = f'''
+tell application "Notes"
+    set targetFolder to missing value
+    repeat with f in folders
+        if name of f is "{safe_folder}" then
+            set targetFolder to f
+            exit repeat
+        end if
+    end repeat
+    if targetFolder is missing value then
+        set targetFolder to (make new folder with properties {{name:"{safe_folder}"}})
+    end if
+    make new note at targetFolder with properties {{name:"{safe_title}", body:"{safe_text}"}}
+end tell
+'''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            log.error(f"AppleScript error adding note: {result.stderr.strip()}")
+            return False
+        log.info(f"Added note to {folder_name}: '{text[:60]}'")
+        return True
+    except subprocess.TimeoutExpired:
+        log.error("AppleScript timed out adding note")
+        return False
+    except Exception as e:
+        log.error(f"Failed to add note: {e}")
+        return False
 
 
 def add_reminder(item_text: str, list_name: str, fallback_list: str = "Inbox") -> bool:

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from classifier import classify
-from reminders import add_reminder
+from reminders import add_reminder, add_note
 
 log = logging.getLogger(__name__)
 
@@ -179,13 +179,18 @@ def poll_once(service, tasklist_id: str, cfg) -> int:
         # Classify
         result = classify(task_title, cfg.openrouter_api_key, cfg.llm.model)
 
-        # Add to Reminders
-        if not result.get("skip"):
+        # Route result
+        if result.get("skip"):
+            # Not a reminder — save to Apple Notes Penny folder, no Telegram
+            add_note(task_title, folder_name="Penny", source="Google Tasks")
+        else:
             for entry in result.get("items", []):
                 target_list = entry["category"].capitalize()
                 if target_list not in cfg.apple_reminders.lists:
                     target_list = cfg.apple_reminders.default_list
                 add_reminder(entry["item"], target_list, cfg.apple_reminders.default_list)
+            msg = build_result_message(task_title, result)
+            send_telegram(msg, cfg.telegram_bot_token, cfg.telegram_chat_id)
 
         # Record as synced before marking complete (so a Tasks API failure
         # doesn't cause us to re-process on the next poll)
@@ -203,10 +208,6 @@ def poll_once(service, tasklist_id: str, cfg) -> int:
                 f"Could not mark '{task_title}' complete in Tasks: {e}. "
                 "Will retry next poll."
             )
-
-        # Telegram notification
-        msg = build_result_message(task_title, result)
-        send_telegram(msg, cfg.telegram_bot_token, cfg.telegram_chat_id)
 
         processed += 1
 
