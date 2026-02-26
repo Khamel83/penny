@@ -22,7 +22,7 @@ def add_note(text: str, folder_name: str = "Penny", source: str = "") -> bool:
     """
     safe_folder = folder_name.replace("\\", "\\\\").replace('"', '\\"')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    title = f"Penny — {timestamp}"
+    title = timestamp
     safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
     # Add a blank first line so Notes shows spacing between the note title and body text.
     body_html = "<br>" + html.escape(text).replace(chr(10), "<br>").replace(chr(13), "")
