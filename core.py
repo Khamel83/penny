@@ -194,6 +194,7 @@ def normalize_transcript_text(transcript: str) -> str:
         return ""
     return cleaned
 
+
 def _target_reminders_list(category: str) -> str:
     target_list = category.capitalize()
     if target_list not in cfg.apple_reminders.lists:

@@ -56,7 +56,7 @@ Templates for these services are located in `launchd/`.
 - **LLM Prompting:** Classification logic is centralized in `classifier.py`. Categories must match the lists defined in Apple Reminders (defined in `config.toml`).
 - **State Management:** Runtime state (processed file hashes, sync tokens) is kept in `~/.penny/` to ensure idempotency across restarts.
 - **Logging:** Logs are stored in `~/.penny/logs/`.
-- **Testing:** (TODO) No automated tests currently exist. Manual verification is performed by observing logs and checking the Reminders/Notes apps.
+- **Testing:** Unit tests live in `tests/`. Run them via `python3 scripts/trust_check.py` (also compiles all Python, validates config invariants, and checks launchd templates). Core pipeline, classifier fallback, and tasks poller idempotency are all covered.
 
 ## Deployment
 

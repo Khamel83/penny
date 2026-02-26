@@ -39,7 +39,7 @@ MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
 def transcribe(path):
     import mlx_whisper
-    log.info(f"Transcribing: {path}")
+    log.info("Transcribing: %s", path)
     result = mlx_whisper.transcribe(
         str(path),
         path_or_hf_repo=cfg.voice_memos.whisper_model,
@@ -66,7 +66,7 @@ def upload():
         return jsonify({"error": "No audio file — expected form field 'audio'"}), 400
 
     audio_file = request.files["audio"]
-    log.info(f"Upload received: {audio_file.filename}")
+    log.info("Upload received: %s", audio_file.filename)
 
     temp_path = None
     with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
@@ -87,7 +87,7 @@ def upload():
             return jsonify({"status": "ok", "message": "already processed"})
 
         transcript = transcribe(temp_path)
-        log.info(f"Transcript: {transcript[:100]}...")
+        log.info("Transcript: %s...", transcript[:100])
 
         result = classify_and_route(transcript, source="Shortcut")
         mark_processed(file_hash, WEBHOOK_PROCESSED_FILE)
@@ -100,7 +100,7 @@ def upload():
         })
 
     except Exception as e:
-        log.error(f"Upload error: {e}", exc_info=True)
+        log.error("Upload error: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if temp_path is not None:
@@ -122,9 +122,13 @@ def ingest():
         return jsonify({"error": "Empty text"}), 400
 
     source = data.get("source", "text")
-    log.info(f"Ingest ({source}): {text[:100]}...")
+    log.info("Ingest (%s): %s...", source, text[:100])
 
-    result = classify_and_route(text, source=source)
+    try:
+        result = classify_and_route(text, source=source)
+    except Exception as e:
+        log.error("Ingest error: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
     return jsonify({
         "status": "ok",
@@ -137,8 +141,8 @@ def ingest():
 
 def main():
     log.info("Starting Penny Webhook Server")
-    log.info(f"  Port: {cfg.webhook.port}")
-    log.info(f"  LLM model: {cfg.llm.model}")
+    log.info("  Port: %s", cfg.webhook.port)
+    log.info("  LLM model: %s", cfg.llm.model)
 
     app.run(host=cfg.webhook.host, port=cfg.webhook.port, use_reloader=False)
 
