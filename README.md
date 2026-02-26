@@ -13,6 +13,14 @@ Voice-to-reminders system. Speak naturally, items land in the right Apple Remind
 → items appear in Apple Reminders within 3 minutes
 ```
 
+> **⚠️ Critical — do not change this:**
+> Google Home will only write to the default Google Tasks list, which must be named **"My Tasks"**.
+> This is not configurable. Google locked down every other integration path (custom list names,
+> third-party apps, IFTTT variable text) between 2022 and 2023. "My Tasks" is the only list
+> Google Home will ever touch via voice. If you rename it, the integration breaks with no
+> workaround. Do not rename it. Do not create a differently-named list and expect it to work.
+> This is the one shot.
+
 **iPhone Voice Memo**
 ```
 Record a memo: "pick up dry cleaning, call dentist, get milk"
