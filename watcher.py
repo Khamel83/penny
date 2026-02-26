@@ -411,7 +411,7 @@ def main():
             unprocessed = scan_for_unprocessed_files()
             if unprocessed:
                 log.info(f"Found {len(unprocessed)} unprocessed file(s) on disk")
-                for f in unprocessed[:3]:
+                for f in unprocessed[: cfg.voice_memos.startup_process_limit]:
                     process_file(f)
 
         except KeyboardInterrupt:

@@ -19,7 +19,7 @@ def add_note(text: str, folder_name: str = "Penny", source: str = "") -> bool:
     Falls back to the default Notes account root if the folder doesn't exist.
     Returns True on success, False on failure.
     """
-    safe_text = text.replace("\\", "\\\\").replace('"', '\\"')
+    safe_text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
     safe_folder = folder_name.replace("\\", "\\\\").replace('"', '\\"')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = f"Penny — {timestamp}"
@@ -71,7 +71,7 @@ def add_reminder(item_text: str, list_name: str, fallback_list: str = "Inbox") -
     Returns True on success, False on failure.
     """
     # Escape for AppleScript string literals
-    safe_item = item_text.replace("\\", "\\\\").replace('"', '\\"')
+    safe_item = item_text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
     safe_list = list_name.replace("\\", "\\\\").replace('"', '\\"')
     safe_fallback = fallback_list.replace("\\", "\\\\").replace('"', '\\"')
 
