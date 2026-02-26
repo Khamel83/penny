@@ -63,6 +63,11 @@ class LoggingConfig:
 
 
 @dataclass
+class NotificationsConfig:
+    telegram_enabled: bool
+
+
+@dataclass
 class Config:
     llm: LLMConfig
     google_tasks: GoogleTasksConfig
@@ -70,6 +75,7 @@ class Config:
     voice_memos: VoiceMemosConfig
     webhook: WebhookConfig
     logging: LoggingConfig
+    notifications: NotificationsConfig
     # Secrets — from environment variables
     openrouter_api_key: str
     telegram_bot_token: str
@@ -119,6 +125,9 @@ def get_config() -> Config:
         ),
         logging=LoggingConfig(
             level=raw["logging"]["level"],
+        ),
+        notifications=NotificationsConfig(
+            telegram_enabled=raw.get("notifications", {}).get("telegram_enabled", True),
         ),
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN"),

@@ -189,8 +189,9 @@ def poll_once(service, tasklist_id: str, cfg) -> int:
                 if target_list not in cfg.apple_reminders.lists:
                     target_list = cfg.apple_reminders.default_list
                 add_reminder(entry["item"], target_list, cfg.apple_reminders.default_list)
-            msg = build_result_message(task_title, result)
-            send_telegram(msg, cfg.telegram_bot_token, cfg.telegram_chat_id)
+            if cfg.notifications.telegram_enabled:
+                msg = build_result_message(task_title, result)
+                send_telegram(msg, cfg.telegram_bot_token, cfg.telegram_chat_id)
 
         # Record as synced before marking complete (so a Tasks API failure
         # doesn't cause us to re-process on the next poll)

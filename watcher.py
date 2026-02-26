@@ -226,8 +226,9 @@ def classify_and_route(transcript: str, source: str = "iCloud") -> bool:
             if target_list not in cfg.apple_reminders.lists:
                 target_list = cfg.apple_reminders.default_list
             add_reminder(entry["item"], target_list, cfg.apple_reminders.default_list)
-        msg = build_result_message(transcript, result, source)
-        send_telegram(msg)
+        if cfg.notifications.telegram_enabled:
+            msg = build_result_message(transcript, result, source)
+            send_telegram(msg)
 
     return True
 

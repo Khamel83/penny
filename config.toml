@@ -23,3 +23,7 @@ host = "0.0.0.0"
 [logging]
 # level: DEBUG, INFO, WARNING, ERROR
 level = "INFO"
+
+[notifications]
+# Set to false to silence Telegram without removing the integration
+telegram_enabled = false
