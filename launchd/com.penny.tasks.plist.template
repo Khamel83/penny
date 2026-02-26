@@ -31,9 +31,9 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/macmini/.penny/logs/tasks.log</string>
+    <string>/Users/macmini/.penny/logs/tasks.system.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/macmini/.penny/logs/tasks.log</string>
+    <string>/Users/macmini/.penny/logs/tasks.system.log</string>
     <key>WorkingDirectory</key>
     <string>/Users/macmini/penny</string>
 </dict>
