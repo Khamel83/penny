@@ -1,32 +1,32 @@
+#!/usr/bin/env python3
+"""Poll iCloud Voice Memos, transcribe new recordings, and route them through Penny."""
+from __future__ import annotations
+
+import logging
 import os
-import sys
-import time
 import sqlite3
 import subprocess
-import logging
-from pathlib import Path
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
-from core import (
-    setup_logging,
-    get_file_hash,
-    is_processed,
-    mark_processed,
-    classify_and_route,
-    PROCESSED_FILE
-)
+from core import classify_and_route, get_file_hash, is_processed, mark_processed, setup_logging
 
 cfg = get_config()
 log = setup_logging("watcher")
 
 # Paths
-VOICE_MEMOS_DIR = Path(os.environ.get(
-    "VOICE_MEMOS_DIR",
-    "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
-)).expanduser()
+VOICE_MEMOS_DIR = Path(
+    os.environ.get(
+        "VOICE_MEMOS_DIR",
+        "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings",
+    )
+).expanduser()
 STATE_FILE = Path("~/.penny/last_pk.txt").expanduser()
 CLOUDRECORDINGS_DB = VOICE_MEMOS_DIR / "CloudRecordings.db"
 HEALTH_FILE = Path("~/.penny/health.txt").expanduser()
@@ -34,243 +34,293 @@ HEALTH_FILE = Path("~/.penny/health.txt").expanduser()
 POLL_INTERVAL = cfg.voice_memos.poll_interval_seconds
 HEALTH_CHECK_INTERVAL = 300
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
+FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
 
 
 # ===== Dependencies =====
 
-def check_dependencies():
-    errors = []
+def check_dependencies() -> tuple[List[str], List[str]]:
+    """Return (errors, warnings) for startup dependency checks."""
+    errors: List[str] = []
+    warnings: List[str] = []
+
     try:
         result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
         if result.returncode != 0:
-            errors.append("ffmpeg not working")
+            errors.append("ffmpeg found but not working")
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         errors.append(f"ffmpeg not found: {e}")
+
     try:
         import mlx_whisper  # noqa: F401
     except ImportError:
         errors.append("mlx_whisper not installed")
+
     try:
         import requests  # noqa: F401
     except ImportError:
         errors.append("requests not installed")
+
     if not VOICE_MEMOS_DIR.exists():
         errors.append(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
-    if cfg.notifications.telegram_enabled and (not cfg.telegram_bot_token or not cfg.telegram_chat_id):
-        errors.append("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+
+    if cfg.notifications.telegram_enabled and (
+        not cfg.telegram_bot_token or not cfg.telegram_chat_id
+    ):
+        errors.append("Telegram is enabled but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing")
+
     if not cfg.openrouter_api_key:
-        errors.append("OPENROUTER_API_KEY not set — items will fall back to Inbox")
+        warnings.append("OPENROUTER_API_KEY not set — classification falls back to Inbox")
+
     if CLOUDRECORDINGS_DB.exists():
         try:
-            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
-            conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
-            conn.close()
+            with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
+                conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
         except Exception as e:
-            errors.append(f"Database corrupted: {e}")
-    return errors
+            errors.append(f"Database corrupted or unreadable: {e}")
+
+    return errors, warnings
 
 
 # ===== Health =====
 
-def update_health_check():
+def _db_recordings_count() -> int:
+    if not CLOUDRECORDINGS_DB.exists():
+        return 0
+    try:
+        with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+def update_health_check() -> None:
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now().isoformat()
-    db_count = 0
-    if CLOUDRECORDINGS_DB.exists():
-        try:
-            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
-            cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
-            db_count = cursor.fetchone()[0]
-            conn.close()
-        except Exception:
-            pass
-    HEALTH_FILE.write_text(f"{now}|db_records:{db_count}|watcher_ok:1\n")
+    HEALTH_FILE.write_text(
+        f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1\n",
+        encoding="utf-8",
+    )
 
 
 # ===== State (last seen DB primary key) =====
 
-def get_last_seen_pk():
-    if STATE_FILE.exists():
-        try:
-            return int(STATE_FILE.read_text().strip())
-        except Exception:
-            return 0
-    return 0
+def get_last_seen_pk() -> int:
+    if not STATE_FILE.exists():
+        return 0
+    try:
+        return int(STATE_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        return 0
 
 
-def set_last_seen_pk(pk):
+def set_last_seen_pk(pk: int) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(str(pk))
+    STATE_FILE.write_text(str(pk), encoding="utf-8")
 
 
 # ===== Transcription =====
 
-def transcribe(path):
+def transcribe(path: Path) -> str:
     import mlx_whisper
-    log.info(f"Transcribing: {path}")
+
+    log.info("Transcribing: %s", path)
     result = mlx_whisper.transcribe(
         str(path),
         path_or_hf_repo=cfg.voice_memos.whisper_model,
     )
-    return result["text"].strip()
+    return str(result.get("text", "")).strip()
 
 
 # ===== Database polling =====
 
-def get_new_recordings():
+def get_new_recordings() -> List[Dict[str, Any]]:
     if not CLOUDRECORDINGS_DB.exists():
-        log.warning(f"Database not found: {CLOUDRECORDINGS_DB}")
+        log.warning("Database not found: %s", CLOUDRECORDINGS_DB)
         return []
 
     last_pk = get_last_seen_pk()
     try:
-        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
-            FROM ZCLOUDRECORDING
-            WHERE Z_PK > ?
-            ORDER BY Z_PK ASC
-        """, (last_pk,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
+                FROM ZCLOUDRECORDING
+                WHERE Z_PK > ?
+                ORDER BY Z_PK ASC
+                """,
+                (last_pk,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        log.error(f"Database query failed: {e}")
+        log.error("Database query failed: %s", e)
         return []
 
 
-def scan_for_unprocessed_files():
+def _safe_mtime(path: Path) -> float:
     try:
-        all_files = sorted(
-            VOICE_MEMOS_DIR.glob("*.m4a"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
-        return [f for f in all_files if not is_processed(get_file_hash(f))]
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def scan_for_unprocessed_files() -> List[Path]:
+    try:
+        all_files = list(VOICE_MEMOS_DIR.glob("*.m4a"))
     except Exception as e:
-        log.error(f"File scan failed: {e}")
+        log.error("File scan failed: %s", e)
         return []
+
+    all_files.sort(key=_safe_mtime, reverse=True)
+    unprocessed: List[Path] = []
+
+    for audio_file in all_files:
+        try:
+            file_hash = get_file_hash(audio_file)
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log.warning("Could not hash %s during scan: %s", audio_file.name, e)
+            continue
+
+        if not is_processed(file_hash):
+            unprocessed.append(audio_file)
+
+    return unprocessed
 
 
 # ===== Processing =====
 
-def process_recording(recording):
-    pk = recording["Z_PK"]
+def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
+    raw_path = recording.get("ZPATH")
+    label = recording.get("ZCUSTOMLABEL") or ""
+
+    if raw_path:
+        audio_path = VOICE_MEMOS_DIR / str(raw_path)
+        if audio_path.exists():
+            return audio_path
+        log.warning("File in DB not found yet: %s", audio_path)
+
+    if label:
+        normalized_prefix = str(label)[:10].replace("-", "")
+        for candidate in VOICE_MEMOS_DIR.glob("*.m4a"):
+            name = candidate.name
+            if label in name or (normalized_prefix and name.startswith(normalized_prefix)):
+                return candidate
+
+    return None
+
+
+def _process_audio_file(audio_path: Path) -> bool:
+    file_size = audio_path.stat().st_size
+    if file_size > MAX_FILE_SIZE:
+        log.warning(
+            "Skipping %s (%.1fMB) — too large",
+            audio_path.name,
+            file_size / (1024 * 1024),
+        )
+        mark_processed(get_file_hash(audio_path))
+        return True
+
+    file_hash = get_file_hash(audio_path)
+    if is_processed(file_hash):
+        log.info("Already processed: %s", audio_path.name)
+        return True
+
+    transcript = transcribe(audio_path)
+    classify_and_route(transcript, source="iCloud")
+    mark_processed(file_hash)
+    return True
+
+
+def process_recording(recording: Dict[str, Any]) -> bool:
+    pk = int(recording["Z_PK"])
     label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
-    log.info(f"Processing {label} (PK={pk})")
+    log.info("Processing %s (PK=%s)", label, pk)
 
-    if recording.get("ZPATH"):
-        audio_path = VOICE_MEMOS_DIR / recording["ZPATH"]
-        if not audio_path.exists():
-            log.warning(f"File in DB not found: {audio_path}")
-            for f in VOICE_MEMOS_DIR.glob("*.m4a"):
-                if recording["ZCUSTOMLABEL"] and f.name.startswith(
-                    recording["ZCUSTOMLABEL"][:10].replace("-", "")
-                ):
-                    audio_path = f
-                    break
-    else:
-        audio_path = None
-        for f in VOICE_MEMOS_DIR.glob("*.m4a"):
-            if recording["ZCUSTOMLABEL"] and recording["ZCUSTOMLABEL"] in f.name:
-                audio_path = f
-                break
-
+    audio_path = _find_audio_path_for_recording(recording)
     if not audio_path or not audio_path.exists():
-        log.error(f"File not found for {label}")
+        log.error("File not found for %s (PK=%s); will retry via later DB poll or disk scan", label, pk)
         return False
 
-    file_size = audio_path.stat().st_size
-    if file_size > MAX_FILE_SIZE:
-        log.warning(f"Skipping {label} ({file_size / (1024*1024):.1f}MB) — too large")
-        mark_processed(get_file_hash(audio_path))
-        set_last_seen_pk(pk)
-        return True
-
-    file_hash = get_file_hash(audio_path)
-    if is_processed(file_hash):
-        log.info(f"Already processed: {label}")
-        set_last_seen_pk(pk)
-        return True
-
     try:
-        transcript = transcribe(audio_path)
-        classify_and_route(transcript, source="iCloud")
-        mark_processed(file_hash)
+        _process_audio_file(audio_path)
         set_last_seen_pk(pk)
         return True
     except Exception as e:
-        log.error(f"Error processing {label}: {e}")
+        log.error("Error processing %s (PK=%s): %s", label, pk, e, exc_info=True)
         return False
 
 
-def process_file(audio_path):
-    file_size = audio_path.stat().st_size
-    if file_size > MAX_FILE_SIZE:
-        log.warning(f"Skipping {audio_path.name} ({file_size / (1024*1024):.1f}MB) — too large")
-        mark_processed(get_file_hash(audio_path))
-        return True
-
-    log.info(f"Processing file: {audio_path.name} ({file_size / (1024*1024):.1f}MB)")
-
-    file_hash = get_file_hash(audio_path)
-    if is_processed(file_hash):
-        log.info(f"Already processed: {audio_path.name}")
-        return True
-
+def process_file(audio_path: Path) -> bool:
     try:
-        transcript = transcribe(audio_path)
-        classify_and_route(transcript, source="iCloud")
-        mark_processed(file_hash)
-        return True
-    except Exception as e:
-        log.error(f"Error processing {audio_path.name}: {e}")
+        log.info(
+            "Processing file: %s (%.1fMB)",
+            audio_path.name,
+            audio_path.stat().st_size / (1024 * 1024),
+        )
+        return _process_audio_file(audio_path)
+    except FileNotFoundError:
+        log.warning("File disappeared before processing: %s", audio_path)
         return False
+    except Exception as e:
+        log.error("Error processing %s: %s", audio_path.name, e, exc_info=True)
+        return False
+
+
+def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
+    if not recordings:
+        return
+    log.info("Found %s new recording(s)", len(recordings))
+    for recording in recordings:
+        process_recording(recording)
+
+
+def _process_disk_backlog(limit: int) -> None:
+    unprocessed = scan_for_unprocessed_files()
+    if not unprocessed:
+        return
+    log.info("Found %s unprocessed file(s) on disk", len(unprocessed))
+    for audio_file in unprocessed[:limit]:
+        process_file(audio_file)
 
 
 # ===== Main =====
 
-def main():
+def main() -> None:
     log.info("=" * 60)
     log.info("Penny iCloud Watcher starting...")
     log.info("=" * 60)
 
-    errors = check_dependencies()
+    errors, warnings = check_dependencies()
+    if warnings:
+        for warning in warnings:
+            log.warning("Startup warning: %s", warning)
     if errors:
         log.error("DEPENDENCY CHECK FAILED:")
         for error in errors:
-            log.error(f"  - {error}")
-        log.error("Service will not function properly until these are fixed.")
+            log.error("  - %s", error)
+        log.error("Service may not function properly until these are fixed.")
 
     if not VOICE_MEMOS_DIR.exists():
-        log.error(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
+        log.error("Voice Memos directory not found: %s", VOICE_MEMOS_DIR)
         sys.exit(1)
 
-    log.info(f"  Watching: {VOICE_MEMOS_DIR}")
-    log.info(f"  Database: {CLOUDRECORDINGS_DB}")
-    log.info(f"  Poll interval: {POLL_INTERVAL}s")
-    log.info(f"  LLM model: {cfg.llm.model}")
-    log.info(f"  Last seen PK: {get_last_seen_pk()}")
+    log.info("  Watching: %s", VOICE_MEMOS_DIR)
+    log.info("  Database: %s", CLOUDRECORDINGS_DB)
+    log.info("  Poll interval: %ss", POLL_INTERVAL)
+    log.info("  LLM model: %s", cfg.llm.model)
+    log.info("  Last seen PK: %s", get_last_seen_pk())
 
-    # Initial scan
     log.info("Running initial scan...")
-    recordings = get_new_recordings()
-    if recordings:
-        log.info(f"Found {len(recordings)} new recording(s) in database")
-        for r in recordings:
-            process_recording(r)
-
-    unprocessed = scan_for_unprocessed_files()
-    if unprocessed:
-        log.info(f"Found {len(unprocessed)} unprocessed file(s) on disk")
-        for f in unprocessed[: cfg.voice_memos.startup_process_limit]:
-            process_file(f)
-
+    _process_db_batch(get_new_recordings())
+    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     update_health_check()
 
-    # Main polling loop
     log.info("Starting main polling loop...")
     last_health_check = time.time()
 
@@ -281,222 +331,20 @@ def main():
             if time.time() - last_health_check > HEALTH_CHECK_INTERVAL:
                 update_health_check()
                 log.info(
-                    f"Health check: OK | PK={get_last_seen_pk()} "
-                    f"| Files: {len(list(VOICE_MEMOS_DIR.glob('*.m4a')))}"
+                    "Health check: OK | PK=%s | Files: %s",
+                    get_last_seen_pk(),
+                    len(list(VOICE_MEMOS_DIR.glob("*.m4a"))),
                 )
                 last_health_check = time.time()
 
-            recordings = get_new_recordings()
-            if recordings:
-                log.info(f"Found {len(recordings)} new recording(s)")
-                for r in recordings:
-                    process_recording(r)
-
-            unprocessed = scan_for_unprocessed_files()
-            if unprocessed:
-                log.info(f"Found {len(unprocessed)} unprocessed file(s) on disk")
-                for f in unprocessed[: cfg.voice_memos.startup_process_limit]:
-                    process_file(f)
+            _process_db_batch(get_new_recordings())
+            _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
 
         except KeyboardInterrupt:
             log.info("Shutting down...")
             break
         except Exception as e:
-            log.error(f"Error in poll loop: {e}", exc_info=True)
-            time.sleep(POLL_INTERVAL)
-
-
-if __name__ == "__main__":
-    main()
-
-
-
-# ===== Database polling =====
-
-def get_new_recordings():
-    if not CLOUDRECORDINGS_DB.exists():
-        log.warning(f"Database not found: {CLOUDRECORDINGS_DB}")
-        return []
-
-    last_pk = get_last_seen_pk()
-    try:
-        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
-            FROM ZCLOUDRECORDING
-            WHERE Z_PK > ?
-            ORDER BY Z_PK ASC
-        """, (last_pk,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-    except Exception as e:
-        log.error(f"Database query failed: {e}")
-        return []
-
-
-def scan_for_unprocessed_files():
-    try:
-        all_files = sorted(
-            VOICE_MEMOS_DIR.glob("*.m4a"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
-        return [f for f in all_files if not is_processed(f)]
-    except Exception as e:
-        log.error(f"File scan failed: {e}")
-        return []
-
-
-# ===== Processing =====
-
-def process_recording(recording):
-    pk = recording["Z_PK"]
-    label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
-    log.info(f"Processing {label} (PK={pk})")
-
-    if recording.get("ZPATH"):
-        audio_path = VOICE_MEMOS_DIR / recording["ZPATH"]
-        if not audio_path.exists():
-            log.warning(f"File in DB not found: {audio_path}")
-            for f in VOICE_MEMOS_DIR.glob("*.m4a"):
-                if recording["ZCUSTOMLABEL"] and f.name.startswith(
-                    recording["ZCUSTOMLABEL"][:10].replace("-", "")
-                ):
-                    audio_path = f
-                    break
-    else:
-        audio_path = None
-        for f in VOICE_MEMOS_DIR.glob("*.m4a"):
-            if recording["ZCUSTOMLABEL"] and recording["ZCUSTOMLABEL"] in f.name:
-                audio_path = f
-                break
-
-    if not audio_path or not audio_path.exists():
-        log.error(f"File not found for {label}")
-        return False
-
-    file_size = audio_path.stat().st_size
-    if file_size > MAX_FILE_SIZE:
-        log.warning(f"Skipping {label} ({file_size / (1024*1024):.1f}MB) — too large")
-        mark_processed(audio_path)
-        set_last_seen_pk(pk)
-        return True
-
-    if is_processed(audio_path):
-        log.info(f"Already processed: {label}")
-        set_last_seen_pk(pk)
-        return True
-
-    try:
-        transcript = transcribe(audio_path)
-        classify_and_route(transcript, source="iCloud")
-        mark_processed(audio_path)
-        set_last_seen_pk(pk)
-        return True
-    except Exception as e:
-        log.error(f"Error processing {label}: {e}")
-        return False
-
-
-def process_file(audio_path):
-    file_size = audio_path.stat().st_size
-    if file_size > MAX_FILE_SIZE:
-        log.warning(f"Skipping {audio_path.name} ({file_size / (1024*1024):.1f}MB) — too large")
-        mark_processed(audio_path)
-        return True
-
-    log.info(f"Processing file: {audio_path.name} ({file_size / (1024*1024):.1f}MB)")
-
-    if is_processed(audio_path):
-        log.info(f"Already processed: {audio_path.name}")
-        return True
-
-    try:
-        transcript = transcribe(audio_path)
-        classify_and_route(transcript, source="iCloud")
-        mark_processed(audio_path)
-        return True
-    except Exception as e:
-        log.error(f"Error processing {audio_path.name}: {e}")
-        return False
-
-
-# ===== Main =====
-
-def main():
-    log.info("=" * 60)
-    log.info("Penny iCloud Watcher starting...")
-    log.info("=" * 60)
-
-    errors = check_dependencies()
-    if errors:
-        log.error("DEPENDENCY CHECK FAILED:")
-        for error in errors:
-            log.error(f"  - {error}")
-        log.error("Service will not function properly until these are fixed.")
-
-    if not VOICE_MEMOS_DIR.exists():
-        log.error(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
-        sys.exit(1)
-
-    log.info(f"  Watching: {VOICE_MEMOS_DIR}")
-    log.info(f"  Database: {CLOUDRECORDINGS_DB}")
-    log.info(f"  Poll interval: {POLL_INTERVAL}s")
-    log.info(f"  LLM model: {cfg.llm.model}")
-    log.info(f"  Last seen PK: {get_last_seen_pk()}")
-
-    # Initial scan
-    log.info("Running initial scan...")
-    recordings = get_new_recordings()
-    if recordings:
-        log.info(f"Found {len(recordings)} new recording(s) in database")
-        for r in recordings:
-            process_recording(r)
-
-    unprocessed = scan_for_unprocessed_files()
-    if unprocessed:
-        log.info(f"Found {len(unprocessed)} unprocessed file(s) on disk")
-        for f in unprocessed[: cfg.voice_memos.startup_process_limit]:
-            process_file(f)
-
-    update_health_check()
-
-    # Main polling loop
-    log.info("Starting main polling loop...")
-    last_health_check = time.time()
-
-    while True:
-        try:
-            time.sleep(POLL_INTERVAL)
-
-            if time.time() - last_health_check > HEALTH_CHECK_INTERVAL:
-                update_health_check()
-                log.info(
-                    f"Health check: OK | PK={get_last_seen_pk()} "
-                    f"| Files: {len(list(VOICE_MEMOS_DIR.glob('*.m4a')))}"
-                )
-                last_health_check = time.time()
-
-            recordings = get_new_recordings()
-            if recordings:
-                log.info(f"Found {len(recordings)} new recording(s)")
-                for r in recordings:
-                    process_recording(r)
-
-            unprocessed = scan_for_unprocessed_files()
-            if unprocessed:
-                log.info(f"Found {len(unprocessed)} unprocessed file(s) on disk")
-                for f in unprocessed[: cfg.voice_memos.startup_process_limit]:
-                    process_file(f)
-
-        except KeyboardInterrupt:
-            log.info("Shutting down...")
-            break
-        except Exception as e:
-            log.error(f"Error in poll loop: {e}", exc_info=True)
+            log.error("Error in poll loop: %s", e, exc_info=True)
             time.sleep(POLL_INTERVAL)
 
 

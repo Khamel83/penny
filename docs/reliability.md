@@ -28,12 +28,12 @@ Monitor this file to detect if the service is alive.
 
 The watcher now checks all dependencies on startup:
 - ffmpeg availability
-- Python packages (mlx_whisper, requests, watchdog)
+- Python packages (mlx_whisper, requests)
 - Voice Memos directory
 - Telegram credentials
 - Database integrity
 
-If any check fails, it logs to `/tmp/penny-watcher.log`.
+If any check fails, it logs to `~/.penny/logs/watcher.log` (and `watcher.system.log` via launchd).
 
 ### 4. Dual Detection Method
 
@@ -79,7 +79,7 @@ This tells you:
 ssh macmini "launchctl list | grep penny"
 
 # Check recent logs
-ssh macmini "tail -20 /tmp/penny-watcher.log"
+ssh macmini "tail -20 ~/.penny/logs/watcher.log"
 
 # Check health file
 ssh macmini "cat ~/.penny/health.txt"
@@ -163,21 +163,21 @@ if ! ssh macmini "launchctl list | grep -q com.penny.watcher"; then
 fi
 
 # Check health file is recent (within 10 minutes)
-HEALTH_TIME=$(ssh macmini "cut -d'|' -f1 ~/.penny/health.txt | cut -d'T' -f2 | cut -d'.' -f1")
-HEALTH_EPOCH=$(date -j -f "%H:%M:%S" "$HEALTH_TIME" +%s 2>/dev/null || echo 0)
-NOW_epoch=$(date +%s)
-if [ $((NOW_epoch - HEALTH_EPOCH)) -gt 600 ]; then
+HEALTH_TS=$(ssh macmini "cut -d'|' -f1 ~/.penny/health.txt | cut -d'.' -f1")
+HEALTH_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$HEALTH_TS" +%s 2>/dev/null || echo 0)
+NOW_EPOCH=$(date +%s)
+if [ $((NOW_EPOCH - HEALTH_EPOCH)) -gt 600 ]; then
     echo "FAIL: Health file is old (stale service)"
     exit 1
 fi
 
 # Check recent log activity
-if ! ssh macmini "tail -1 /tmp/penny-watcher.log | grep -q 'Health check'"; then
+if ! ssh macmini "tail -1 ~/.penny/logs/watcher.log | grep -q 'Health check'"; then
     echo "WARN: No recent health checks in log"
 fi
 
 echo "OK: Penny service is healthy"
-ssh macmini "tail -1 /tmp/penny-watcher.log"
+ssh macmini "tail -1 ~/.penny/logs/watcher.log"
 ```
 
 ## Summary: Why This Won't Break

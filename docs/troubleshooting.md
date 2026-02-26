@@ -70,7 +70,7 @@ The watcher polls the database every 60 seconds. Verify it's running:
 ssh macmini "launchctl list | grep penny"
 
 # Check log
-ssh macmini "tail -f /tmp/penny-watcher.log"
+ssh macmini "tail -f ~/.penny/logs/watcher.log"
 
 # Check last seen PK
 ssh macmini "cat ~/.penny/last_pk.txt"

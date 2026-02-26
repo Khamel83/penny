@@ -118,5 +118,6 @@ def classify(transcript: str, api_key: str, model: str) -> Dict[str, Any]:
 def _fallback(transcript: str) -> Dict[str, Any]:
     """Fallback: put raw transcript in Inbox so nothing is lost."""
     log.warning("Classification failed — falling back to Inbox with raw transcript")
-    item_text = transcript[:200] + ("..." if len(transcript) > 200 else "")
+    # Keep the full transcript so an API outage does not silently drop details.
+    item_text = transcript.strip()
     return {"items": [{"item": item_text, "category": "inbox"}], "fallback": True}

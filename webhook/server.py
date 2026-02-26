@@ -33,6 +33,7 @@ app = Flask(__name__)
 
 # Dedicated state for webhook uploads
 WEBHOOK_PROCESSED_FILE = Path("~/.penny/processed_webhook.txt").expanduser()
+MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
 # ===== Transcription =====
 
@@ -67,11 +68,19 @@ def upload():
     audio_file = request.files["audio"]
     log.info(f"Upload received: {audio_file.filename}")
 
+    temp_path = None
     with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
         audio_file.save(f.name)
         temp_path = Path(f.name)
 
     try:
+        file_size = temp_path.stat().st_size
+        if file_size > MAX_FILE_SIZE:
+            size_mb = file_size / (1024 * 1024)
+            max_mb = cfg.voice_memos.max_file_size_mb
+            log.warning("Rejected upload %s (%.1fMB > %sMB)", audio_file.filename, size_mb, max_mb)
+            return jsonify({"error": f"Audio file too large ({size_mb:.1f}MB > {max_mb}MB)"}), 413
+
         file_hash = get_file_hash(temp_path)
         if is_processed(file_hash, WEBHOOK_PROCESSED_FILE):
             log.info("Already processed this file")
@@ -94,7 +103,8 @@ def upload():
         log.error(f"Upload error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
-        temp_path.unlink(missing_ok=True)
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 @app.route("/ingest", methods=["POST"])
@@ -130,7 +140,7 @@ def main():
     log.info(f"  Port: {cfg.webhook.port}")
     log.info(f"  LLM model: {cfg.llm.model}")
 
-    app.run(host=cfg.webhook.host, port=cfg.webhook.port)
+    app.run(host=cfg.webhook.host, port=cfg.webhook.port, use_reloader=False)
 
 
 if __name__ == "__main__":

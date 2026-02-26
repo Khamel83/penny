@@ -114,6 +114,8 @@ ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.SVCNAME.plist && 
 ## Deploy from repo
 
 ```bash
+python3 scripts/trust_check.py
+
 rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
   /path/to/penny/ macmini:/Users/macmini/penny/
 
@@ -122,6 +124,8 @@ ssh macmini "for svc in watcher webhook tasks; do
   launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
 done"
 ```
+
+`scripts/trust_check.py` is the pre-deploy sanity gate (compile, config invariants, launchd template checks, unit tests).
 
 ---
 

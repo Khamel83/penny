@@ -29,7 +29,8 @@ Contains: *.m4a files (119 files currently), CloudRecordings.db
 
 ### Logs
 ```
-/tmp/penny-watcher.log      # Service output and errors
+~/.penny/logs/watcher.log         # Application log (rotating)
+~/.penny/logs/watcher.system.log  # launchd stdout/stderr capture
 ```
 
 ## Current State
@@ -53,7 +54,7 @@ Contains: *.m4a files (119 files currently), CloudRecordings.db
 ssh macmini "launchctl list | grep penny"
 
 # Check recent logs
-ssh macmini "tail -20 /tmp/penny-watcher.log"
+ssh macmini "tail -20 ~/.penny/logs/watcher.log"
 
 # Check health file
 ssh macmini "cat ~/.penny/health.txt"
@@ -118,7 +119,8 @@ sudo pmset -a sleep 0 displaysleep 0 disksleep 0
 - ~/.penny/processed.txt - Recording hashes
 - ~/.penny/last_pk.txt - Last database PK
 - ~/.penny/health.txt - Health status
-- /tmp/penny-watcher.log - Service logs
+- ~/.penny/logs/watcher.log - Application logs
+- ~/.penny/logs/watcher.system.log - launchd stdout/stderr logs
 - ~/Library/LaunchAgents/com.penny.watcher.plist - Has secrets
 
 ## Repository Structure

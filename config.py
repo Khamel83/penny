@@ -95,9 +95,11 @@ def get_config() -> Config:
     with open(CONFIG_PATH, "rb") as f:
         raw = tomllib.load(f)
 
-    def env(key: str, default: str = "") -> str:
+    notifications_enabled = raw.get("notifications", {}).get("telegram_enabled", True)
+
+    def env(key: str, default: str = "", warn_if_missing: bool = True) -> str:
         val = os.environ.get(key, default)
-        if not val:
+        if not val and warn_if_missing:
             print(f"WARNING: {key} not set in environment", file=sys.stderr)
         return val
 
@@ -127,11 +129,11 @@ def get_config() -> Config:
             level=raw["logging"]["level"],
         ),
         notifications=NotificationsConfig(
-            telegram_enabled=raw.get("notifications", {}).get("telegram_enabled", True),
+            telegram_enabled=notifications_enabled,
         ),
         openrouter_api_key=env("OPENROUTER_API_KEY"),
-        telegram_bot_token=env("TELEGRAM_BOT_TOKEN"),
-        telegram_chat_id=env("TELEGRAM_CHAT_ID"),
+        telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
+        telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),
         google_credentials_file=Path(
             os.environ.get("GOOGLE_CREDENTIALS_FILE", "~/.penny/google_credentials.json")
         ).expanduser(),

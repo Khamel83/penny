@@ -5,6 +5,7 @@ Apple Reminders and Notes integration via AppleScript.
 Adds items to named Reminders lists, and creates notes in Apple Notes,
 using osascript on macOS.
 """
+import html
 import subprocess
 import logging
 from datetime import datetime
@@ -19,11 +20,13 @@ def add_note(text: str, folder_name: str = "Penny", source: str = "") -> bool:
     Falls back to the default Notes account root if the folder doesn't exist.
     Returns True on success, False on failure.
     """
-    safe_text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
     safe_folder = folder_name.replace("\\", "\\\\").replace('"', '\\"')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = f"Penny — {timestamp}"
     safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    # Add a blank first line so Notes shows spacing between the note title and body text.
+    body_html = "<br>" + html.escape(text).replace(chr(10), "<br>").replace(chr(13), "")
+    safe_body_html = body_html.replace("\\", "\\\\").replace('"', '\\"')
 
     script = f'''
 tell application "Notes"
@@ -37,7 +40,7 @@ tell application "Notes"
     if targetFolder is missing value then
         set targetFolder to (make new folder with properties {{name:"{safe_folder}"}})
     end if
-    make new note at targetFolder with properties {{name:"{safe_title}", body:"<b>{safe_title}</b><br><br>{safe_text}"}}
+    make new note at targetFolder with properties {{name:"{safe_title}", body:"{safe_body_html}"}}
 end tell
 '''
 

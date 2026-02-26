@@ -3,18 +3,21 @@
 Penny Core Logic
 Shared pipeline, notifications, and deduplication for all Penny services.
 """
+from __future__ import annotations
+
 import hashlib
 import logging
 import logging.handlers
+import os
+import re
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
 
 import requests
 
-from config import get_config
 from classifier import classify
-from reminders import add_reminder, add_note
+from config import get_config
+from reminders import add_note, add_reminder
 
 cfg = get_config()
 
@@ -41,38 +44,54 @@ CATEGORY_EMOJI = {
     "inbox": "📝",
 }
 
-def setup_logging(service_name: str):
+WHISPER_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
+
+
+class RoutingError(RuntimeError):
+    """Raised when Penny successfully transcribes/classifies but cannot persist the result."""
+
+
+def setup_logging(service_name: str) -> logging.Logger:
     """Setup rotating file logging for a service."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / f"{service_name}.log"
-    
+
     level = getattr(logging, cfg.logging.level.upper(), logging.INFO)
-    
-    # Root logger setup
+
     logger = logging.getLogger()
     logger.setLevel(level)
-    
-    # Remove existing handlers to avoid duplicates
+
+    # Reset handlers so multiple imports / re-entry do not duplicate logs.
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-        
+        try:
+            handler.close()
+        except Exception:
+            pass
+
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    
-    # Rotating file handler (5 files, 5MB each)
+
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5*1024*1024, backupCount=5
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    
-    # Console handler
+
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    
+
     return logging.getLogger(service_name)
 
+
 # ===== Deduplication =====
+
+def _normalize_identifier(identifier: str | Path) -> str:
+    return str(identifier)
+
 
 def get_file_hash(path: Path) -> str:
     """Get MD5 hash of a file in chunks to save memory."""
@@ -82,28 +101,40 @@ def get_file_hash(path: Path) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def is_processed(identifier: str, state_file: Path = PROCESSED_FILE) -> bool:
+
+def is_processed(identifier: str | Path, state_file: Path = PROCESSED_FILE) -> bool:
     """Check if a file hash or task ID has already been processed."""
+    token = _normalize_identifier(identifier)
     if not state_file.exists():
         return False
-    # Using a set for O(1) lookups if the file grows large
-    with state_file.open("r") as f:
-        processed = {line.strip() for line in f}
-    return identifier in processed
 
-def mark_processed(identifier: str, state_file: Path = PROCESSED_FILE):
-    """Record an identifier as processed atomically."""
+    with state_file.open("r", encoding="utf-8") as f:
+        processed = {line.strip() for line in f if line.strip()}
+    return token in processed
+
+
+def mark_processed(identifier: str | Path, state_file: Path = PROCESSED_FILE) -> None:
+    """Record an identifier as processed, flushing to disk before returning."""
+    token = _normalize_identifier(identifier)
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic-ish write: append and flush
-    with state_file.open("a") as f:
-        f.write(f"{identifier}
-")
+    with state_file.open("a", encoding="utf-8") as f:
+        f.write(f"{token}\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            # Some filesystems do not support fsync on this handle; best effort is enough.
+            pass
+
 
 # ===== Telegram =====
 
-def send_telegram(message: str) -> bool:
+def send_telegram(message: str, *, force: bool = False) -> bool:
+    if not force and not cfg.notifications.telegram_enabled:
+        return False
     if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
         return False
+
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{cfg.telegram_bot_token}/sendMessage",
@@ -113,24 +144,27 @@ def send_telegram(message: str) -> bool:
         resp.raise_for_status()
         return True
     except Exception as e:
-        logging.getLogger("penny.core").error(f"Telegram send failed: {e}")
+        logging.getLogger("penny.core").error("Telegram send failed: %s", e)
         return False
+
 
 def build_result_message(transcript: str, result: Dict[str, Any], source: str) -> str:
     emoji = SOURCE_EMOJI.get(source, "📱")
     excerpt = transcript[:200] + ("..." if len(transcript) > 200 else "")
 
     if result.get("skip"):
-        return f"⏭️ Not a reminder ({emoji} {source}):
-
-📋 "{excerpt}""
+        return f'⏭️ Not a reminder ({emoji} {source}):\n\n📋 "{excerpt}"'
 
     items = result.get("items", [])
     fallback = result.get("fallback", False)
 
     by_category: Dict[str, List[str]] = {}
     for entry in items:
-        by_category.setdefault(entry["category"], []).append(entry["item"])
+        category = entry.get("category", "inbox")
+        item_text = str(entry.get("item", "")).strip()
+        if not item_text:
+            continue
+        by_category.setdefault(category, []).append(item_text)
 
     prefix = (
         f"⚠️ Classification failed — added to Inbox ({emoji} {source}):"
@@ -141,32 +175,66 @@ def build_result_message(transcript: str, result: Dict[str, Any], source: str) -
     for cat, cat_items in by_category.items():
         e = CATEGORY_EMOJI.get(cat, "📝")
         lines.append(f"  {e} {cat.capitalize()}: {', '.join(cat_items)}")
-    lines += ["", f"📋 "{excerpt}""]
-    return "
-".join(lines)
+    lines += ["", f'📋 "{excerpt}"']
+    return "\n".join(lines)
+
 
 # ===== Pipeline =====
+
+def normalize_transcript_text(transcript: str) -> str:
+    """Strip common Whisper control-token artifacts and normalize whitespace."""
+    raw = str(transcript or "")
+    cleaned = WHISPER_TOKEN_RE.sub(" ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # Heuristic: near-empty remnants from token-heavy output (e.g. "SE<|hr|><|hr|>").
+    if "<|" in raw and len(cleaned) <= 3:
+        return ""
+    if cleaned and not any(ch.isalnum() for ch in cleaned):
+        return ""
+    return cleaned
+
+def _target_reminders_list(category: str) -> str:
+    target_list = category.capitalize()
+    if target_list not in cfg.apple_reminders.lists:
+        return cfg.apple_reminders.default_list
+    return target_list
+
 
 def classify_and_route(transcript: str, source: str) -> Dict[str, Any]:
     """
     Core pipeline: Text -> Classifier -> Reminders/Notes -> Telegram.
-    Returns the classification result.
+
+    Raises RoutingError when Apple-side writes fail so callers do not mark items as processed.
+    Returns the classifier result on success.
     """
     log = logging.getLogger("penny.core")
+    transcript = normalize_transcript_text(transcript)
     result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
 
     if result.get("skip"):
-        log.info(f"Skipping routing for non-reminder: {result.get('reason')}")
-        add_note(transcript, folder_name="Penny", source=source)
-    else:
-        for entry in result.get("items", []):
-            target_list = entry["category"].capitalize()
-            if target_list not in cfg.apple_reminders.lists:
-                target_list = cfg.apple_reminders.default_list
-            add_reminder(entry["item"], target_list, cfg.apple_reminders.default_list)
-        
-        if cfg.notifications.telegram_enabled:
-            msg = build_result_message(transcript, result, source)
-            send_telegram(msg)
+        log.info("Skipping routing for non-reminder: %s", result.get("reason"))
+        note_text = transcript or "(No intelligible speech detected.)"
+        if not add_note(note_text, folder_name="Penny", source=source):
+            raise RoutingError("Failed to add transcript to Apple Notes")
+        return result
+
+    items = result.get("items", [])
+    if not isinstance(items, list) or not items:
+        raise RoutingError("Classifier returned no routable items")
+
+    for entry in items:
+        item_text = str(entry.get("item", "")).strip()
+        category = str(entry.get("category", "inbox")).strip().lower()
+        if not item_text:
+            continue
+        target_list = _target_reminders_list(category)
+        ok = add_reminder(item_text, target_list, cfg.apple_reminders.default_list)
+        if not ok:
+            raise RoutingError(f"Failed to add reminder to '{target_list}': {item_text[:80]}")
+
+    if cfg.notifications.telegram_enabled:
+        msg = build_result_message(transcript, result, source)
+        send_telegram(msg)
 
     return result
