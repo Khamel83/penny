@@ -1,133 +1,149 @@
 # Penny
 
-Voice memo relay for Apple Watch/iPhone → Telegram transcription.
+Voice-to-reminders system. Speak naturally, items land in the right Apple Reminders list automatically.
 
-## Workflow
+## How It Works
 
-Two options for getting voice memos from iPhone to Mac Mini:
+### Input: Two ways to add items
 
-### Option 1: iCloud Sync (Default)
+**Google Home (kitchen, hands-free)**
 ```
-Apple Watch / iPhone Voice Memo
-    → iCloud sync (can be unreliable)
-    → Mac Mini (watcher.py)
-    → mlx-whisper transcription
-    → @PennyMoltBot on Telegram
+"Hey Google, add milk eggs and sausages to my tasks"
+→ give any time when prompted
+→ items appear in Apple Reminders within 3 minutes
 ```
 
-### Option 2: Webhook Direct Upload (More Reliable)
+**iPhone Voice Memo**
 ```
-Apple Watch / iPhone Voice Memo
-    → iOS Shortcut (POST to webhook)
-    → Mac Mini (webhook/server.py)
-    → mlx-whisper transcription
-    → @PennyMoltBot on Telegram
+Record a memo: "pick up dry cleaning, call dentist, get milk"
+→ Penny transcribes and classifies automatically
+→ items appear in Apple Reminders within 60 seconds
 ```
 
-The webhook approach bypasses iCloud sync entirely and is more reliable.
+### What happens in between
 
-## Deployment
+1. LLM reads the text and extracts individual actionable items
+2. Each item is classified into the right list
+3. Items are added to Apple Reminders on the Mac Mini (iCloud syncs to your devices)
+4. Telegram notification confirms what was added and where
+5. Google Tasks item is marked complete automatically
 
-| Component | Location | Status |
-|-----------|----------|--------|
-| Voice Watcher (iCloud) | macmini (launchd) | Running |
-| Webhook Server (Direct) | macmini (launchd) | Optional |
-| Telegram Bot | @PennyMoltBot | Connected |
+### Routing
 
-## Requirements
+| Category | Examples |
+|----------|---------|
+| Groceries | milk, eggs, anything food/shopping |
+| Errands | dry cleaning, post office, store visits |
+| Home | repairs, cleaning, maintenance |
+| Health | doctor, dentist, medications, exercise |
+| Work | meetings, deadlines, professional tasks |
+| Kids | school, activities, supplies |
+| Inbox | anything that doesn't clearly fit above |
 
-- macOS with Homebrew
-- Python 3.10+ with `mlx-whisper`, `requests`, `watchdog`, `flask`
-- ffmpeg (`brew install ffmpeg`)
+Pure non-reminders (journal thoughts, music ideas, random notes) are skipped — nothing added.
+
+---
+
+## Services (running on Mac Mini as launchd agents)
+
+| Service | File | What it does |
+|---------|------|-------------|
+| `com.penny.watcher` | `watcher.py` | Polls iCloud Voice Memos every 60s |
+| `com.penny.tasks` | `tasks_poller.py` | Polls Google Tasks every 3 min |
+| `com.penny.webhook` | `webhook/server.py` | HTTP server on port 5678 for direct uploads |
+
+---
+
+## Operations
 
 ```bash
-pip install mlx-whisper requests watchdog flask
-```
-
-## Setup (Mac Mini)
-
-The watcher runs from `/Users/macmini/penny/` with a virtualenv.
-
-```bash
-# Check status
-launchctl list | grep penny
+# Check all services
+ssh macmini "launchctl list | grep penny"
 
 # View logs
-tail -f /tmp/penny-watcher.log
+ssh macmini "tail -f ~/.penny/logs/watcher.log"
+ssh macmini "tail -f ~/.penny/logs/tasks.log"
+ssh macmini "tail -f ~/.penny/logs/webhook.log"
 
-# Restart
-launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist
-launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist
-```
-
-## Environment Variables
-
-Required in the launchd plist:
-
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-| `PATH` | Must include `/opt/homebrew/bin` |
-
-Optional:
-
-| Variable | Default |
-|----------|---------|
-| `VOICE_MEMOS_DIR` | `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings` |
-
-## Deployment from Repo
-
-```bash
-# Sync to macmini
-rsync -avz --delete /home/ubuntu/github/penny/ macmini:~/penny/ --exclude '.git' --exclude 'docs/sessions'
-
-# Restart the service
+# Restart a service
 ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist && launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
 ```
 
-## Adding Destinations
+## Deploy from repo
 
-To add another destination (OpenClaw, Discord, etc.), add a function in `watcher.py`:
-
-```python
-def send_to_X(transcript):
-    # POST to wherever
-    pass
-
-# Then call it in process():
-send_to_telegram(transcript)
-send_to_X(transcript)  # add this
-```
-
-## Related
-
-- **@PennyOCIBot** - OpenClaw bot for Telegram voice notes (separate system)
-
-## Webhook Setup (iOS Shortcut Alternative)
-
-If iCloud sync is unreliable, use the webhook approach:
-
-### 1. Deploy webhook server on macmini
 ```bash
-# Copy webhook server
-scp webhook/server.py macmini:~/penny/
+rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
+  /home/ubuntu/github/penny/ macmini:/Users/macmini/penny/
 
-# Create launchd service (see launchd/com.penny.webhook.plist.template)
-# Load service
-ssh macmini "launchctl load ~/Library/LaunchAgents/com.penny.webhook.plist"
+# Restart all services
+ssh macmini "for svc in watcher webhook tasks; do
+  launchctl unload ~/Library/LaunchAgents/com.penny.\${svc}.plist
+  launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
+done"
 ```
 
-### 2. Create iOS Shortcut
+---
 
-Create a shortcut that:
-1. Takes voice memo input (or records new audio)
-2. POSTs to: `https://<macmini-tailscale-ip>:5678/upload`
-3. Uses form-data with key `audio` containing the audio file
+## Configuration
 
-Shortcut URL format:
+Non-secret settings in `config.toml`. Secrets (API keys) are set as environment variables in the launchd plists.
+
+Plist templates: `launchd/*.plist.template` — substitute secrets and deploy to `~/Library/LaunchAgents/` on Mac Mini.
+
+Secrets stored encrypted at: `~/github/oneshot/secrets/penny.env.encrypted`
+
+```bash
+# Decrypt to view
+SOPS_AGE_KEY_FILE=~/.age/key.txt sops --input-type dotenv --output-type dotenv \
+  -d ~/github/oneshot/secrets/penny.env.encrypted
 ```
-https://100.113.216.27:5678/upload
-```
 
-(Note: Use macmini's Tailscale IP for private network access)
+### Required environment variables (in plists)
+
+| Variable | Description |
+|----------|-------------|
+| `OPENROUTER_API_KEY` | LLM classification via OpenRouter |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
+| `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials JSON |
+| `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
+
+---
+
+## Google Tasks setup (one-time)
+
+OAuth credentials and token live at:
+- `~/.penny/google_credentials.json`
+- `~/.penny/google_token.json`
+
+To re-authorize: run `scripts/google_auth.py` and follow the console flow.
+
+Google Cloud project: `neon-feat-488623-u3` (Penny) — Tasks API enabled.
+App is in Testing mode — `zoheri@gmail.com` must be listed as a test user.
+
+---
+
+## macOS TCC permission (one-time)
+
+Python needs permission to write to Apple Reminders. Grant it once at:
+
+**System Settings → Privacy & Security → Automation → Python → Reminders ✓**
+
+This persists permanently — never needs to be done again.
+
+---
+
+## Runtime state (Mac Mini)
+
+All runtime files live at `~/.penny/`:
+
+| File | Purpose |
+|------|---------|
+| `logs/watcher.log` | Voice memo poller log |
+| `logs/tasks.log` | Google Tasks poller log |
+| `logs/webhook.log` | Webhook server log |
+| `last_pk.txt` | Last processed voice memo (don't delete) |
+| `processed.txt` | Processed memo IDs (deduplication) |
+| `synced_tasks.txt` | Processed Google Tasks IDs (deduplication) |
+| `google_token.json` | Google OAuth token (auto-refreshes) |
+| `google_credentials.json` | Google OAuth app credentials |
