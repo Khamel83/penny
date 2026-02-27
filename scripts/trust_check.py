@@ -29,6 +29,7 @@ REQUIRED_LAUNCHD_KEYS = (
     "<key>PATH</key>",
     "<key>StandardOutPath</key>",
     "<key>StandardErrorPath</key>",
+    "<key>SoftResourceLimits</key>",
 )
 
 
@@ -64,7 +65,7 @@ def _is_main_guard(node: ast.If) -> bool:
 
 
 def check_duplicate_entrypoints(py_files: List[Path]) -> None:
-    print("[2/5] Checking for duplicate __main__ entrypoints...", flush=True)
+    print("[2/6] Checking for duplicate __main__ entrypoints...", flush=True)
     offenders: List[Tuple[Path, int]] = []
     for path in py_files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -77,8 +78,48 @@ def check_duplicate_entrypoints(py_files: List[Path]) -> None:
     print("  OK: no duplicate entrypoints found", flush=True)
 
 
+def check_sqlite_context_manager_antipattern(py_files: List[Path]) -> None:
+    """Check for 'with sqlite3.connect()' which leaks connections.
+
+    The sqlite3 context manager manages TRANSACTIONS, not connections.
+    Using 'with sqlite3.connect()' leaves connections open.
+    """
+    print("[3/6] Checking for sqlite3 connection leaks...", flush=True)
+    offenders: List[Tuple[Path, int]] = []
+    for path in py_files:
+        # Skip test files and this script itself
+        if "test_" in path.name or path.name == "trust_check.py":
+            continue
+
+        text = path.read_text(encoding="utf-8")
+        # Look for the anti-pattern: with sqlite3.connect(...)
+        if "with sqlite3.connect(" in text:
+            # Find line numbers, excluding comments
+            lines = text.split("\n")
+            line_nums = []
+            for i, line in enumerate(lines):
+                if "with sqlite3.connect(" in line:
+                    # Skip if it's in a comment
+                    code = line.split("#")[0]
+                    if "with sqlite3.connect(" in code:
+                        line_nums.append(i + 1)
+            if line_nums:
+                offenders.append((path, line_nums))
+    if offenders:
+        details = "; ".join(
+            f"{path.relative_to(ROOT)}: line(s) {nums}" for path, nums in offenders
+        )
+        raise SystemExit(
+            f"FAIL: sqlite3 connection leak detected!\n"
+            f"  'with sqlite3.connect()' does NOT close connections.\n"
+            f"  Use 'conn = sqlite3.connect()' + 'finally: conn.close()' instead.\n"
+            f"  Found in: {details}"
+        )
+    print("  OK: no sqlite3 connection leaks found", flush=True)
+
+
 def check_config_invariants() -> None:
-    print("[3/5] Validating config invariants...", flush=True)
+    print("[4/6] Validating config invariants...", flush=True)
 
     # Keep runtime state/log writes in /tmp during validation.
     os.environ.setdefault("HOME", "/tmp/penny_trust_check_home")
@@ -111,7 +152,7 @@ def check_config_invariants() -> None:
 
 
 def check_launchd_templates() -> None:
-    print("[4/5] Validating launchd templates...", flush=True)
+    print("[5/6] Validating launchd templates...", flush=True)
     template_paths = sorted((ROOT / "launchd").glob("*.plist.template"))
     if not template_paths:
         raise SystemExit("FAIL: No launchd templates found in launchd/")
@@ -125,7 +166,7 @@ def check_launchd_templates() -> None:
 
 
 def run_unit_tests() -> None:
-    print("[5/5] Running unit tests...", flush=True)
+    print("[6/6] Running unit tests...", flush=True)
     cmd = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     subprocess.run(cmd, cwd=ROOT, check=True)
     print("  OK: unit tests passed", flush=True)
@@ -138,6 +179,7 @@ def main() -> None:
 
     compile_all(py_files)
     check_duplicate_entrypoints(py_files)
+    check_sqlite_context_manager_antipattern(py_files)
     check_config_invariants()
     check_launchd_templates()
     run_unit_tests()
