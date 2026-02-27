@@ -36,5 +36,10 @@
     <string>/Users/macmini/.penny/logs/watcher.system.log</string>
     <key>WorkingDirectory</key>
     <string>/Users/macmini/penny</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>1024</integer>
+    </dict>
 </dict>
 </plist>

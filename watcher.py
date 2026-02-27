@@ -73,11 +73,15 @@ def check_dependencies() -> tuple[List[str], List[str]]:
         warnings.append("OPENROUTER_API_KEY not set — classification falls back to Inbox")
 
     if CLOUDRECORDINGS_DB.exists():
+        conn = None
         try:
-            with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
-                conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
+            conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+            conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
         except Exception as e:
             errors.append(f"Database corrupted or unreadable: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     return errors, warnings
 
@@ -87,13 +91,17 @@ def check_dependencies() -> tuple[List[str], List[str]]:
 def _db_recordings_count() -> int:
     if not CLOUDRECORDINGS_DB.exists():
         return 0
+    conn = None
     try:
-        with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
-            row = cursor.fetchone()
-            return int(row[0]) if row else 0
+        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+        cursor = conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
     except Exception:
         return 0
+    finally:
+        if conn:
+            conn.close()
 
 
 def update_health_check() -> None:
@@ -142,23 +150,27 @@ def get_new_recordings() -> List[Dict[str, Any]]:
         return []
 
     last_pk = get_last_seen_pk()
+    conn = None
     try:
-        with sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
-                FROM ZCLOUDRECORDING
-                WHERE Z_PK > ?
-                ORDER BY Z_PK ASC
-                """,
-                (last_pk,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
+            FROM ZCLOUDRECORDING
+            WHERE Z_PK > ?
+            ORDER BY Z_PK ASC
+            """,
+            (last_pk,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         log.error("Database query failed: %s", e)
         return []
+    finally:
+        if conn:
+            conn.close()
 
 
 def _safe_mtime(path: Path) -> float:
