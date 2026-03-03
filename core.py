@@ -46,6 +46,18 @@ CATEGORY_EMOJI = {
 
 WHISPER_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
 
+# Phrases that, when they appear at the start of a transcript, force routing to
+# Apple Notes regardless of what the LLM would otherwise decide.
+_NOTE_TRIGGER_RE = re.compile(
+    r"^\s*(note[:\-]\s*|note to self\b|save\s+(this\s+)?as\s+(a\s+)?note\b|this\s+is\s+a\s+note\b)",
+    re.IGNORECASE,
+)
+
+
+def _strip_note_trigger(transcript: str) -> str:
+    """Remove a leading note-trigger phrase so it doesn't pollute the saved note."""
+    return _NOTE_TRIGGER_RE.sub("", transcript).strip()
+
 
 class RoutingError(RuntimeError):
     """Raised when Penny successfully transcribes/classifies but cannot persist the result."""
@@ -211,6 +223,17 @@ def classify_and_route(transcript: str, source: str) -> Dict[str, Any]:
     """
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
+
+    if _NOTE_TRIGGER_RE.match(transcript):
+        log.info("Note trigger detected — routing directly to Apple Notes")
+        note_text = _strip_note_trigger(transcript) or transcript
+        if not add_note(note_text, folder_name="Penny", source=source):
+            raise RoutingError("Failed to add transcript to Apple Notes")
+        result: Dict[str, Any] = {"skip": True, "reason": "explicit note trigger"}
+        if cfg.notifications.telegram_enabled:
+            send_telegram(build_result_message(transcript, result, source))
+        return result
+
     result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
 
     if result.get("skip"):

@@ -30,10 +30,11 @@ Categories (pick exactly one per item):
 
 Rules:
 1. If the transcript has NO actionable items (journal entry, note to someone, music idea, random thought, etc.) respond with: {"skip": true, "reason": "<brief reason>"}
-2. Extract ALL distinct actionable items, even if there are many in one memo
-3. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
-4. When in doubt about category, use inbox
-5. Respond ONLY with valid JSON — no explanation, no markdown fences
+2. If the transcript is a complex research request, multi-step analysis, or planning session — where the whole context matters and breaking it into individual reminders would lose meaning — respond with: {"skip": true, "reason": "complex project note"}. Examples: financial analysis comparing multiple options with trade-offs, evaluating a major purchase decision, trip planning across many factors, any memo that reads like a project brief or research assignment rather than a to-do list.
+3. Extract ALL distinct actionable items, even if there are many in one memo
+4. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
+5. When in doubt about category, use inbox
+6. Respond ONLY with valid JSON — no explanation, no markdown fences
 
 Output for reminders:
 {"items": [{"item": "milk", "category": "groceries"}, {"item": "call dentist", "category": "health"}]}
