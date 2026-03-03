@@ -59,6 +59,24 @@ def _strip_note_trigger(transcript: str) -> str:
     return _NOTE_TRIGGER_RE.sub("", transcript).strip()
 
 
+def _is_repetitive_garbage(text: str) -> bool:
+    """Return True if text is a Whisper hallucination made of a repeated substring.
+
+    Whisper sometimes fills silence or noise with a short token repeated hundreds
+    of times (e.g. "strstrstrstr..."). There's nothing useful to route.
+    """
+    stripped = re.sub(r"\s+", "", text.lower())
+    if len(stripped) < 20:
+        return False
+    for n in range(2, 8):
+        prefix = stripped[:n]
+        expected = (prefix * ((len(stripped) // n) + 1))[:len(stripped)]
+        match_ratio = sum(a == b for a, b in zip(stripped, expected)) / len(stripped)
+        if match_ratio >= 0.9:
+            return True
+    return False
+
+
 class RoutingError(RuntimeError):
     """Raised when Penny successfully transcribes/classifies but cannot persist the result."""
 
@@ -203,6 +221,11 @@ def normalize_transcript_text(transcript: str) -> str:
     if "<|" in raw and len(cleaned) <= 3:
         return ""
     if cleaned and not any(ch.isalnum() for ch in cleaned):
+        return ""
+    if _is_repetitive_garbage(cleaned):
+        logging.getLogger("penny.core").warning(
+            "Dropping repetitive-garbage transcript (Whisper hallucination): %r…", cleaned[:40]
+        )
         return ""
     return cleaned
 
