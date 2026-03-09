@@ -64,7 +64,11 @@ def main():
     flow = InstalledAppFlow.from_client_secrets_file(
         str(cfg.google_credentials_file), SCOPES
     )
-    creds = flow.run_local_server(port=0)
+    creds = flow.run_local_server(
+        port=0,
+        access_type='offline',  # CRITICAL: enables long-lived refresh tokens
+        prompt='consent'        # Ensures consent dialog and refresh token
+    )
 
     cfg.google_token_file.parent.mkdir(parents=True, exist_ok=True)
     cfg.google_token_file.write_text(creds.to_json())
