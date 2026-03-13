@@ -284,6 +284,18 @@ def process_file(audio_path: Path) -> bool:
         return False
 
 
+def _trigger_icloud_sync() -> None:
+    """Open VoiceMemos in the background to force iCloud to sync new recordings."""
+    try:
+        subprocess.run(
+            ["open", "-g", "-a", "VoiceMemos"],
+            check=False,
+            capture_output=True,
+        )
+    except Exception as e:
+        log.warning("Could not trigger VoiceMemos sync: %s", e)
+
+
 def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     if not recordings:
         return
@@ -329,6 +341,8 @@ def main() -> None:
     log.info("  Last seen PK: %s", get_last_seen_pk())
 
     log.info("Running initial scan...")
+    _trigger_icloud_sync()
+    time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
     _process_db_batch(get_new_recordings())
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     update_health_check()
@@ -349,6 +363,7 @@ def main() -> None:
                 )
                 last_health_check = time.time()
 
+            _trigger_icloud_sync()
             _process_db_batch(get_new_recordings())
             _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
 

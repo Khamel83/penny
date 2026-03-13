@@ -91,14 +91,19 @@ ssh macmini "cat ~/.penny/health.txt"
 
 **Symptoms**: New recordings don't appear in database
 
+**Root cause**: CloudKit (Voice Memos sync) requires the **VoiceMemos app to be running**. Unlike iCloud Drive, it does not sync in the background via the `bird` daemon.
+
+**Prevention (deployed 2026-03-12)**:
+- VoiceMemos is added as a **login item** (starts hidden on every boot)
+- Watcher calls `open -g -a VoiceMemos` before every poll cycle (60s)
+
 **Detection**: Disk scan finds unprocessed files
 
-**Recovery**: Automatic - disk scan catches them when they appear
+**Recovery**: Automatic
 
 **Manual fix**:
 ```bash
-# Force iCloud sync restart
-ssh macmini "killall bird && open -a VoiceMemos"
+ssh macmini "open -g -a VoiceMemos"
 ```
 
 ### Mode 2: Database Gets Corrupted
@@ -184,10 +189,12 @@ ssh macmini "tail -1 ~/.penny/logs/watcher.log"
 
 1. **Auto-start on boot** - launchd `RunAtLoad`
 2. **Auto-restart on crash** - launchd `KeepAlive`
-3. **Startup dependency checks** - Fails fast if something wrong
-4. **Dual detection methods** - Database + disk scanning
-5. **Health status file** - Can be monitored externally
-6. **Regular health logging** - Every 5 minutes
-7. **Explicit PATH** - ffmpeg always found
+3. **VoiceMemos always running** - Login item ensures iCloud always syncs
+4. **Periodic sync trigger** - Watcher opens VoiceMemos in background every 60s
+5. **Startup dependency checks** - Fails fast if something wrong
+6. **Dual detection methods** - Database + disk scanning
+7. **Health status file** - Can be monitored externally
+8. **Regular health logging** - Every 5 minutes
+9. **Explicit PATH** - ffmpeg always found
 
 The system has multiple layers of redundancy. If any component fails, there's a backup.
