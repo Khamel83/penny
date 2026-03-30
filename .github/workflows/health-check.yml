@@ -22,15 +22,15 @@ jobs:
           fi
           echo "All 3 services present."
 
-      - name: Check for crashed services (non-zero exit codes)
+      - name: Check all services are running (have a PID)
         run: |
-          FAILED=$(ssh macmini "launchctl list | grep penny" | awk '{if ($2 != "0" && $2 != "-") print $0}')
-          if [ -n "$FAILED" ]; then
-            echo "ERROR: Services with non-zero exit codes:"
-            echo "$FAILED"
+          STOPPED=$(ssh macmini "launchctl list | grep penny" | awk '{if ($1 == "-") print $3}')
+          if [ -n "$STOPPED" ]; then
+            echo "ERROR: Services not running:"
+            echo "$STOPPED"
             exit 1
           fi
-          echo "No crashed services."
+          echo "All services have a PID (running)."
 
       - name: Check watcher is polling (log updated in last 15 min)
         run: |
