@@ -1,0 +1,56 @@
+name: Penny Health Check
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 9am UTC daily (2am PT)
+  workflow_dispatch:      # allow manual trigger
+
+jobs:
+  health-check:
+    runs-on: [self-hosted, oci-dev]
+
+    steps:
+      - name: Check launchd services
+        run: |
+          ssh macmini "launchctl list | grep penny" | tee /tmp/penny_status.txt
+          # Expect 3 lines with com.penny.*
+          COUNT=$(grep -c "com.penny" /tmp/penny_status.txt)
+          if [ "$COUNT" -ne 3 ]; then
+            echo "ERROR: Expected 3 penny services, found $COUNT"
+            cat /tmp/penny_status.txt
+            exit 1
+          fi
+          echo "All 3 services present."
+
+      - name: Check for crashed services (non-zero exit codes)
+        run: |
+          FAILED=$(ssh macmini "launchctl list | grep penny" | awk '{if ($2 != "0" && $2 != "-") print $0}')
+          if [ -n "$FAILED" ]; then
+            echo "ERROR: Services with non-zero exit codes:"
+            echo "$FAILED"
+            exit 1
+          fi
+          echo "No crashed services."
+
+      - name: Check watcher is polling (log updated in last 15 min)
+        run: |
+          LAST=$(ssh macmini "stat -f '%m' ~/.penny/logs/watcher.log")
+          NOW=$(date +%s)
+          AGE=$(( NOW - LAST ))
+          if [ "$AGE" -gt 900 ]; then
+            echo "ERROR: Watcher log last updated ${AGE}s ago (>15 min)"
+            ssh macmini "tail -5 ~/.penny/logs/watcher.log"
+            exit 1
+          fi
+          echo "Watcher log updated ${AGE}s ago. OK."
+
+      - name: Check tasks poller connected
+        run: |
+          ERRORS=$(ssh macmini "tail -20 ~/.penny/logs/tasks.system.log" | grep -c "ERROR" || true)
+          RECENT_OK=$(ssh macmini "tail -20 ~/.penny/logs/tasks.system.log" | grep -c "connected\|Processed\|No new tasks" || true)
+          if [ "$ERRORS" -gt 0 ] && [ "$RECENT_OK" -eq 0 ]; then
+            echo "ERROR: Tasks poller has recent errors and no successes"
+            ssh macmini "tail -20 ~/.penny/logs/tasks.system.log"
+            exit 1
+          fi
+          echo "Tasks poller OK."
