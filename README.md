@@ -108,7 +108,22 @@ ssh macmini "tail -f ~/.penny/logs/tasks.log"
 ssh macmini "tail -f ~/.penny/logs/webhook.log"
 
 # Restart a service
-ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.SVCNAME.plist && launchctl load ~/Library/LaunchAgents/com.penny.SVCNAME.plist"
+ssh macmini "launchctl stop com.penny.SVCNAME && launchctl start com.penny.SVCNAME"
+```
+
+### Automated health monitoring
+
+A GitHub Actions workflow (`.github/workflows/health-check.yml`) runs daily at 9am UTC on a
+self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
+- All 3 services have a running PID
+- Watcher log updated in the last 15 minutes
+- Tasks poller connected to Google Tasks
+
+If any check fails, GitHub sends an email. No emails = everything is healthy.
+
+The runner is installed as a systemd service on oci-dev:
+```bash
+sudo systemctl status actions.runner.Khamel83-penny.oci-dev.service
 ```
 
 ## Deploy from repo
@@ -168,8 +183,15 @@ Two approvals required, each permanent after the first:
 ### Google Tasks setup
 
 OAuth credentials and token live at `~/.penny/` on the Mac.
-Google Cloud project needs Tasks API enabled, app in Testing mode with your account as a test user.
-To re-authorize: run `scripts/google_auth.py`.
+
+Google Cloud project `neon-feat-488623-u3` (Penny), Tasks API enabled.
+**The app is published (Production mode)** — refresh tokens do not expire.
+
+To re-authorize (should never be needed again): run `scripts/google_auth.py` on the Mac.
+
+> **Why "Testing" mode kills the token every 7 days:** Google limits refresh token lifetime for apps
+> in Testing mode. Publishing the app (APIs & Services → OAuth consent screen → Publish App) removes
+> this restriction. The app does not need Google verification for personal use.
 
 ---
 
