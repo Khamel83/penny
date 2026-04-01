@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +35,9 @@ POLL_INTERVAL = cfg.voice_memos.poll_interval_seconds
 HEALTH_CHECK_INTERVAL = 300
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
+# Only process files created within this window. Prevents re-processing old files
+# when VoiceMemos touches their mtimes during sync or restart.
+MAX_FILE_AGE = timedelta(hours=24)
 
 
 # ===== Dependencies =====
@@ -189,8 +192,14 @@ def scan_for_unprocessed_files() -> List[Path]:
 
     all_files.sort(key=_safe_mtime, reverse=True)
     unprocessed: List[Path] = []
+    cutoff = time.time() - MAX_FILE_AGE.total_seconds()
 
     for audio_file in all_files:
+        # Skip files older than MAX_FILE_AGE — they're either already processed
+        # or were touched by VoiceMemos/CloudKit without actual content changes.
+        if _safe_mtime(audio_file) < cutoff:
+            break  # sorted by mtime desc, so all remaining are even older
+
         try:
             file_hash = get_file_hash(audio_file)
         except FileNotFoundError:
@@ -300,8 +309,14 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     if not recordings:
         return
     log.info("Found %s new recording(s)", len(recordings))
-    for recording in recordings:
+    for recording in recordings[:FILE_SCAN_PROCESS_LIMIT]:
         process_recording(recording)
+    if len(recordings) > FILE_SCAN_PROCESS_LIMIT:
+        log.info(
+            "Batch capped at %s of %s recordings (remaining will process next cycle)",
+            FILE_SCAN_PROCESS_LIMIT,
+            len(recordings),
+        )
 
 
 def _process_disk_backlog(limit: int) -> None:
