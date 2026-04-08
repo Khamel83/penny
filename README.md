@@ -64,9 +64,10 @@ Voice command: **"Hey Google, add [items] to my tasks"** — give any time when 
 
 | Service | File | What it does |
 |---------|------|-------------|
-| `com.penny.watcher` | `watcher.py` | Polls iCloud Voice Memos every 60s |
-| `com.penny.tasks` | `tasks_poller.py` | Polls Google Tasks every 3 min |
-| `com.penny.webhook` | `webhook/server.py` | HTTP server on port 5678 for direct uploads |
+| `com.penny.watcher` | `watcher.py` | Polls iCloud Voice Memos every 60s, transcribes via Whisper, classifies and routes |
+| `com.penny.tasks` | `tasks_poller.py` | Polls Google Tasks every 3 min, routes to Apple Reminders |
+| `com.penny.webhook` | `webhook/server.py` | HTTP server on port 5678 for direct uploads and text ingestion |
+| `com.penny.export` | `scripts/export_transcripts.py` | Dumps transcript history to JSON and rsyncs to homelab every 6h |
 
 ---
 
@@ -85,6 +86,12 @@ list_name = "My Tasks"     # Do not change — see Google Home constraint above
 [apple_reminders]
 lists = ["Groceries", "Errands", "Home", "Health", "Work", "Kids", "Inbox"]
 default_list = "Inbox"
+
+[voice_memos]
+max_file_size_mb = 50
+whisper_model = "mlx-community/whisper-large-v3-turbo"
+poll_interval_seconds = 60
+startup_process_limit = 5
 ```
 
 After changing `config.toml`, rsync it to the Mac and restart the affected service:
@@ -199,9 +206,13 @@ To re-authorize (should never be needed again): run `scripts/google_auth.py` on 
 
 | File | Purpose |
 |------|---------|
+| `~/.penny/transcripts.db` | SQLite transcript log — single source of truth for all transcriptions |
+| `~/.penny/transcript_history.json` | Periodic JSON export (backed up to homelab) |
 | `~/.penny/logs/` | Service logs |
-| `~/.penny/last_pk.txt` | Last processed voice memo — do not delete |
-| `~/.penny/processed.txt` | Processed memo hashes (deduplication) |
-| `~/.penny/synced_tasks.txt` | Processed Google Tasks IDs (deduplication) |
+| `~/.penny/last_pk.txt` | Last processed voice memo PK — do not delete |
+| `~/.penny/health.txt` | Watcher health status (written every 5 min) |
+| `~/.penny/health_tasks.txt` | Tasks poller health status |
 | `~/.penny/google_token.json` | Google OAuth token (auto-refreshes) |
 | `~/.penny/google_credentials.json` | Google OAuth app credentials |
+
+Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`) are still present but superseded by `transcripts.db`.

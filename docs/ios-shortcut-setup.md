@@ -8,7 +8,7 @@ Create a new Shortcut with these actions:
 
 1. **Record Audio** - Duration: "Ask When Running" or "Set to 0 for manual stop"
 2. **Get Contents of URL** - POST to webhook
-   - URL: `http://100.113.216.27:5678/upload`
+   - URL: `http://macmini:5678/upload`
    - Headers: None
    - Request Body: Form
      - audio: Variable (select the recorded audio)
@@ -32,7 +32,7 @@ If you prefer the native Voice Memos app:
 1. Create Shortcut with:
    - **Find Voice Memos** - Filter: "Created in last 1 minute"
    - **Repeat with Each**:
-     - **Get Contents of URL** - POST to `http://100.113.216.27:5678/upload`
+     - **Get Contents of URL** - POST to `http://macmini:5678/upload`
      - Form field: audio = Repeat Item
 
 2. Create Automation:
@@ -44,12 +44,11 @@ If you prefer the native Voice Memos app:
 
 ## Webhook URL
 
-- **Local network**: `http://100.113.216.27:5678/upload`
-- **Via Tailscale**: `http://macmini:5678/upload` (if iPhone has Tailscale)
+- **Via Tailscale**: `http://macmini:5678/upload` (use this — works on any network)
+- **Local network**: `http://100.113.216.27:5678/upload` (hardcoded Tailscale IP)
 
 ## Testing
 
 1. Run the shortcut
 2. Record something short
-3. Check Telegram for transcript (should appear within 30 seconds)
-4. Check webhook log: `ssh macmini "tail -f /tmp/penny-webhook.log"`
+3. Check webhook log: `ssh macmini "tail -f ~/.penny/logs/webhook.log"`

@@ -1,92 +1,117 @@
 # Penny Deployment on Mac Mini
 
-## Exact File Locations
+## File Locations
 
 ### Service Files
 ```
 /Users/macmini/penny/
-├── watcher.py              # Main watcher script (runs via launchd)
-├── venv/                   # Python virtual environment
+├── watcher.py              # Voice memo poller + Whisper transcription + routing
+├── tasks_poller.py         # Google Tasks poller → Apple Reminders
 ├── webhook/
-│   └── server.py          # Webhook server (optional, not currently running)
-└── .penny/                 # Runtime state directory
-    ├── processed.txt       # Hashes of transcribed recordings (15 lines)
-    ├── last_pk.txt         # Last database PK processed (117)
-    └── health.txt          # Health status (written every 5 min)
+│   └── server.py           # HTTP server for direct uploads and text ingestion
+├── core.py                 # Shared pipeline, hashing, Telegram, logging
+├── classifier.py           # LLM classification (OpenRouter)
+├── reminders.py            # AppleScript interface to Reminders/Notes
+├── transcript_log.py       # SQLite transcript database (dedup + history)
+├── config.py               # Config loader (config.toml + env vars)
+├── config.toml             # Non-secret settings
+├── scripts/
+│   ├── trust_check.py      # Pre-deploy validation
+│   ├── google_auth.py      # Google OAuth setup
+│   └── export_transcripts.py  # Periodic backup to homelab
+├── launchd/                # plist templates (substitute secrets and deploy)
+│   ├── com.penny.watcher.plist.template
+│   ├── com.penny.webhook.plist.template
+│   ├── com.penny.tasks.plist.template
+│   └── com.penny.export.plist.template
+├── tests/                  # Unit tests
+└── venv/                   # Python virtual environment
 ```
 
-### Launchd Service
+### Runtime State
 ```
-~/Library/LaunchAgents/com.penny.watcher.plist
+~/.penny/
+├── transcripts.db          # SQLite DB — single source of truth for all transcriptions
+├── transcript_history.json # JSON export (backed up to homelab every 6h)
+├── last_pk.txt             # Last processed voice memo PK
+├── health.txt              # Watcher health status (written every 5 min)
+├── health_tasks.txt        # Tasks poller health status
+├── google_token.json       # Google OAuth token (auto-refreshes)
+├── google_credentials.json # Google OAuth app credentials
+└── logs/
+    ├── watcher.log         # Application log (rotating)
+    ├── watcher.system.log  # launchd stdout/stderr
+    ├── webhook.log
+    ├── tasks.log
+    └── export.system.log
 ```
-Contains: PATH, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 ### Voice Memos Directory
 ```
 ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/
 ```
-Contains: *.m4a files (119 files currently), CloudRecordings.db
+Contains: *.m4a files, CloudRecordings.db (iCloud Voice Memos database)
 
-### Logs
+### Launchd Services
 ```
-~/.penny/logs/watcher.log         # Application log (rotating)
-~/.penny/logs/watcher.system.log  # launchd stdout/stderr capture
+~/Library/LaunchAgents/com.penny.{watcher,webhook,tasks,export}.plist
 ```
 
-## Current State
+## Services
 
-### Service Status
-- Running: YES (PID 35027)
-- Launchd label: com.penny.watcher
-- Last PK processed: 117
-- Processed recordings: 15
-- Voice memos on disk: 119
-
-### Environment
-- Python: `/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3`
-- ffmpeg: `/opt/homebrew/bin/ffmpeg`
-- Virtual env: `/Users/macmini/penny/venv`
+| Service | File | Interval | Description |
+|---------|------|----------|-------------|
+| `com.penny.watcher` | `watcher.py` | 60s | Polls iCloud Voice Memos DB, transcribes via Whisper, classifies and routes |
+| `com.penny.tasks` | `tasks_poller.py` | 180s | Polls Google Tasks API, routes items to Apple Reminders |
+| `com.penny.webhook` | `webhook/server.py` | continuous | HTTP server on port 5678 (direct uploads + text ingestion) |
+| `com.penny.export` | `scripts/export_transcripts.py` | 6h | Dumps transcripts.db to JSON, rsyncs to homelab |
 
 ## Verification Commands
 
 ```bash
-# Check service is running
+# Check all services
 ssh macmini "launchctl list | grep penny"
 
-# Check recent logs
-ssh macmini "tail -20 ~/.penny/logs/watcher.log"
-
-# Check health file
+# Check health
 ssh macmini "cat ~/.penny/health.txt"
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X
 
-# Check processed count
-ssh macmini "wc -l ~/.penny/processed.txt"
+# Check transcript database
+ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT status, COUNT(*) FROM transcripts GROUP BY status;'"
 
 # Check last PK
 ssh macmini "cat ~/.penny/last_pk.txt"
 
-# Check voice memos directory
-ssh macmini "ls ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/" | wc -l
+# View logs
+ssh macmini "tail -20 ~/.penny/logs/watcher.log"
 
-# Restart service
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
+# Restart a service
+ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
 ```
 
 ## Recovery Procedures
 
 ### If Service Stops Running
 ```bash
-ssh macmini "launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
+ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
 ```
 
-### If Database Gets Corrupted
+### If CloudRecordings.db Gets Corrupted
 ```bash
 ssh macmini "rm ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db*"
 ssh macmini "killall bird && open -a VoiceMemos"
 ```
 
+### If transcripts.db Gets Corrupted
+```bash
+ssh macmini "rm ~/.penny/transcripts.db"
+# Re-create on next watcher startup via init_db()
+# Migrated entries from old processed.txt files will be re-imported
+ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
+```
+
 ### After System Reboot
-Service should auto-start via `RunAtLoad`. Verify:
+All services auto-start via `RunAtLoad`. Verify:
 ```bash
 ssh macmini "launchctl list | grep penny"
 ```
@@ -94,53 +119,33 @@ ssh macmini "launchctl list | grep penny"
 ## How to Deploy Code Updates
 
 ```bash
-# From local machine
-rsync -avz /home/ubuntu/github/penny/ macmini:~/penny/ --exclude '.git' --exclude 'docs/sessions'
+python3 scripts/trust_check.py
 
-# Restart service on mac mini
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
+rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
+  /home/ubuntu/github/penny/ macmini:/Users/macmini/penny/
+
+ssh macmini "for svc in watcher webhook tasks export; do
+  launchctl unload ~/Library/LaunchAgents/com.penny.\${svc}.plist
+  launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
+done"
 ```
 
-## Power Settings (Currently)
+## Files Not in Git
+
+- `~/.penny/` — all runtime state (transcripts.db, logs, health files, Google tokens)
+- `~/Library/LaunchAgents/com.penny.*.plist` — contain secrets (OPENROUTER_API_KEY, etc.)
+- Templates at `launchd/*.plist.template` have placeholder values
+
+## Power Settings
 
 From `pmset -g`:
 - sleep: 1 (but prevented by screensharingd, powerd)
-- disksleep: 10 (hard drives sleep after 10 min)
-- displaysleep: 0 (display never sleeps)
-- autorestart: 1 (auto-restart after power failure)
+- disksleep: 10
+- displaysleep: 0
+- autorestart: 1
 
-**Note**: disksleep=10 means hard drives may sleep. To fully disable sleep, run:
-```bash
-sudo pmset -a sleep 0 displaysleep 0 disksleep 0
-```
+## Backup
 
-## Files Not in Git (Generated on mac mini)
-
-- ~/.penny/processed.txt - Recording hashes
-- ~/.penny/last_pk.txt - Last database PK
-- ~/.penny/health.txt - Health status
-- ~/.penny/logs/watcher.log - Application logs
-- ~/.penny/logs/watcher.system.log - launchd stdout/stderr logs
-- ~/Library/LaunchAgents/com.penny.watcher.plist - Has secrets
-
-## Repository Structure
-
-```
-/home/ubuntu/github/penny/
-├── watcher.py              # Main script (deployed to macmini)
-├── webhook/
-│   └── server.py          # Webhook server (optional)
-├── launchd/
-│   ├── com.penny.watcher.plist.template
-│   └── com.penny.webhook.plist.template
-├── docs/
-│   ├── reliability.md     # Reliability guide
-│   ├── troubleshooting.md
-│   └── ios-shortcut-setup.md
-├── macmini-setup.md       # Setup guide
-└── README.md
-```
-
-## Date: 2026-02-24
-
-Last verified: Service running, processing recordings, health checks pending.
+Transcript history is backed up to homelab every 6 hours via `com.penny.export`:
+- Local: `~/.penny/transcript_history.json`
+- Remote: `homelab:~/backups/penny/transcript_history.json`

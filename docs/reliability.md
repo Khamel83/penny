@@ -4,86 +4,71 @@
 
 ### 1. Service Auto-Start (RunAtLoad + KeepAlive)
 
-The launchd plist has both `RunAtLoad` and `KeepAlive`:
+All launchd plists have both `RunAtLoad` and `KeepAlive`:
 - `RunAtLoad` = Starts when mac mini boots
 - `KeepAlive` = Restarts if it crashes
 
 Verify:
 ```bash
 ssh macmini "launchctl list | grep penny"
-# Should show com.penny.watcher with a PID
+# Should show com.penny.watcher, com.penny.webhook, com.penny.tasks, com.penny.export
 ```
 
-### 2. Health Check File
+### 2. Health Check Files
 
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Shows: timestamp|db_records:XXX|watcher_ok:1
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X
 ```
 
-Monitor this file to detect if the service is alive.
+Fields:
+- `db_records` — total recordings in CloudRecordings.db
+- `watcher_ok` — watcher service healthy (1/0)
+- `voicememos` — VoiceMemos app running (1/0)
+- `pending` — transcripts awaiting routing
 
 ### 3. Dependency Checks on Startup
 
-The watcher now checks all dependencies on startup:
+The watcher checks all dependencies before entering the poll loop:
 - ffmpeg availability
 - Python packages (mlx_whisper, requests)
-- Voice Memos directory
-- Telegram credentials
-- Database integrity
+- Voice Memos directory exists
+- Telegram credentials (if enabled)
+- CloudRecordings.db integrity
 
-If any check fails, it logs to `~/.penny/logs/watcher.log` (and `watcher.system.log` via launchd).
+If any check fails, it logs to `~/.penny/logs/watcher.log`.
 
 ### 4. Dual Detection Method
 
 The watcher uses TWO methods to find recordings:
 
-**Method 1: Database Polling**
-- Polls `CloudRecordings.db` every 60 seconds
-- Finds new Z_PK entries (recording IDs)
-- Works when iCloud sync is working normally
+**Method 1: Database Polling (primary)**
+- Polls `CloudRecordings.db` every 60 seconds for `Z_PK > last_seen_pk`
+- Finds new recording entries via primary key
+- Deduplicates via `transcripts.db` content hash
 
-**Method 2: Disk Scanning**
-- Scans for unprocessed `.m4a` files on disk
+**Method 2: Disk Scanning (backup)**
+- Scans for unprocessed `.m4a` files on disk (age < 24h)
+- Checks against `transcripts.db` content hash to avoid re-processing
 - Catches files that appear before database updates
 - Handles delayed/broken iCloud sync
 
-Both methods run in parallel. If one fails, the other still works.
+Both methods run every cycle. The age cutoff prevents re-processing when VoiceMemos touches file mtimes.
 
-### 5. Regular Health Logging
+### 5. Transcript Database (Single Source of Truth)
 
-Every 5 minutes, the watcher logs:
-```
-Health check: OK | PK=117 | Files on disk: 119
-```
+All transcriptions are persisted to `~/.penny/transcripts.db` (SQLite) before routing:
+- `content_hash` (MD5) UNIQUE constraint prevents duplicates
+- Status tracking: `pending` → `routed` / `failed`
+- Failed transcripts are retried every cycle (up to 5 at a time)
+- Write-before-route ensures nothing is lost even if routing fails
 
-This tells you:
-- Service is running (OK)
-- Last processed recording (PK=117)
-- Total files in Voice Memos directory
+### 6. Periodic Backup
 
-## What to Do After Mac Mini Restart
-
-### Automatic (Nothing Required)
-
-1. Service auto-starts via launchd
-2. Dependency checks run
-3. Initial scan processes any missed recordings
-4. Polling loop begins
-
-### Verify It's Working
-
-```bash
-# Check service is running
-ssh macmini "launchctl list | grep penny"
-
-# Check recent logs
-ssh macmini "tail -20 ~/.penny/logs/watcher.log"
-
-# Check health file
-ssh macmini "cat ~/.penny/health.txt"
-```
+`com.penny.export` runs every 6 hours:
+- Dumps all transcript records to `~/.penny/transcript_history.json`
+- Rsyncs to `homelab:~/backups/penny/`
 
 ## Failure Modes & Recovery
 
@@ -91,35 +76,46 @@ ssh macmini "cat ~/.penny/health.txt"
 
 **Symptoms**: New recordings don't appear in database
 
-**Root cause**: CloudKit (Voice Memos sync) requires the **VoiceMemos app to be running**. Unlike iCloud Drive, it does not sync in the background via the `bird` daemon.
+**Root cause**: CloudKit (Voice Memos sync) requires the **VoiceMemos app to be running**. Unlike iCloud Drive, it does not sync in the background.
 
-**Prevention (deployed 2026-03-12)**:
-- VoiceMemos is added as a **login item** (starts hidden on every boot)
-- Watcher calls `open -g -a VoiceMemos` before every poll cycle (60s)
+**Prevention**:
+- VoiceMemos is a login item (starts hidden on boot)
+- Watcher calls `open -g -a VoiceMemos` before every poll cycle
 
 **Detection**: Disk scan finds unprocessed files
 
-**Recovery**: Automatic
+**Recovery**: Automatic (watcher opens VoiceMemos every 60s)
 
 **Manual fix**:
 ```bash
 ssh macmini "open -g -a VoiceMemos"
 ```
 
-### Mode 2: Database Gets Corrupted
+### Mode 2: CloudRecordings.db Gets Corrupted
 
-**Symptoms**: Database queries fail
-
-**Detection**: Startup check logs "Database corrupted"
+**Symptoms**: Database queries fail, watcher logs "Database corrupted"
 
 **Recovery**:
 ```bash
-# Delete database to force rebuild
 ssh macmini "rm ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db*"
+ssh macmini "killall bird && open -a VoiceMemos"
 ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 ```
 
-### Mode 3: ffmpeg Path Issues
+### Mode 3: transcripts.db Gets Corrupted
+
+**Symptoms**: Transcripts not being logged, dedup failing
+
+**Recovery**:
+```bash
+ssh macmini "rm ~/.penny/transcripts.db"
+ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
+# init_db() re-creates the table on startup
+# Old processed.txt files will be re-migrated (hashes only, no transcripts)
+# Homelab backup can restore transcript text: homelab:~/backups/penny/transcript_history.json
+```
+
+### Mode 4: ffmpeg Path Issues
 
 **Symptoms**: "ffmpeg not found" errors
 
@@ -127,74 +123,37 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 
 **Prevention**: PATH is set in launchd plist
 
-**Manual check**:
-```bash
-ssh macmini "/opt/homebrew/bin/ffmpeg -version"
-```
-
-### Mode 4: Service Stops Running
+### Mode 5: Service Stops Running
 
 **Symptoms**: No PID in launchctl list
 
-**Recovery**: KeepAlive should restart it automatically
+**Recovery**: KeepAlive should restart automatically
 
 **Manual restart**:
 ```bash
-ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
+ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.SVCNAME"
 ```
 
-### Mode 5: Code Gets Out of Date
+### Mode 6: Routing Fails (AppleScript errors)
 
-**Prevention**: Deploy latest code from repo
+**Symptoms**: Transcripts logged with `status=failed` in database
 
-**Re-sync**:
+**Recovery**: Automatic — watcher retries up to 5 failed transcripts per cycle
+
+**Manual check**:
 ```bash
-rsync -avz /home/ubuntu/github/penny/ macmini:~/penny/ --exclude '.git' --exclude 'docs/sessions'
-ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
-```
-
-## Monitoring Script
-
-Create this script to check Penny health:
-
-```bash
-#!/bin/bash
-# check_penny_health.sh
-
-# Check service is running
-if ! ssh macmini "launchctl list | grep -q com.penny.watcher"; then
-    echo "FAIL: Penny service not running"
-    exit 1
-fi
-
-# Check health file is recent (within 10 minutes)
-HEALTH_TS=$(ssh macmini "cut -d'|' -f1 ~/.penny/health.txt | cut -d'.' -f1")
-HEALTH_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$HEALTH_TS" +%s 2>/dev/null || echo 0)
-NOW_EPOCH=$(date +%s)
-if [ $((NOW_EPOCH - HEALTH_EPOCH)) -gt 600 ]; then
-    echo "FAIL: Health file is old (stale service)"
-    exit 1
-fi
-
-# Check recent log activity
-if ! ssh macmini "tail -1 ~/.penny/logs/watcher.log | grep -q 'Health check'"; then
-    echo "WARN: No recent health checks in log"
-fi
-
-echo "OK: Penny service is healthy"
-ssh macmini "tail -1 ~/.penny/logs/watcher.log"
+ssh macmini "sqlite3 ~/.penny/transcripts.db \"SELECT id, error_message FROM transcripts WHERE status='failed';\""
 ```
 
 ## Summary: Why This Won't Break
 
-1. **Auto-start on boot** - launchd `RunAtLoad`
-2. **Auto-restart on crash** - launchd `KeepAlive`
-3. **VoiceMemos always running** - Login item ensures iCloud always syncs
-4. **Periodic sync trigger** - Watcher opens VoiceMemos in background every 60s
-5. **Startup dependency checks** - Fails fast if something wrong
-6. **Dual detection methods** - Database + disk scanning
-7. **Health status file** - Can be monitored externally
-8. **Regular health logging** - Every 5 minutes
-9. **Explicit PATH** - ffmpeg always found
-
-The system has multiple layers of redundancy. If any component fails, there's a backup.
+1. **Auto-start on boot** — launchd `RunAtLoad`
+2. **Auto-restart on crash** — launchd `KeepAlive`
+3. **VoiceMemos always running** — Login item + watcher opens it every 60s
+4. **Dual detection** — Database polling + disk scanning
+5. **Transcript persistence** — Written to SQLite before routing (no data loss)
+6. **Deduplication** — content hash UNIQUE + PK tracking + age cutoff
+7. **Automatic retries** — Failed routing retried every cycle
+8. **Health monitoring** — 5-min health file + daily CI health check
+9. **Periodic backup** — JSON export to homelab every 6 hours
+10. **Explicit PATH** — ffmpeg always found

@@ -95,7 +95,7 @@ As a backup to unreliable iCloud sync, create an iOS Shortcut automation:
 
 1. Open Shortcuts app on iPhone
 2. Create Automation: "When Voice Memos is closed"
-3. Action: "Get latest Voice Memo" → "Upload to http://100.113.216.27:5678/upload"
+3. Action: "Get latest Voice Memo" → "Upload to http://macmini:5678/upload"
 4. Turn off "Notify when run"
 
 This sends recordings directly to mac mini when you close the Voice Memos app, bypassing iCloud delays.
