@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.penny.export</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/macmini/penny/venv/bin/python3</string>
+        <string>/Users/macmini/penny/scripts/export_transcripts.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>21600</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/macmini/.penny/logs/export.system.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini/.penny/logs/export.system.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini/penny</string>
+</dict>
+</plist>
