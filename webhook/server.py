@@ -21,18 +21,15 @@ from config import get_config
 from core import (
     setup_logging,
     get_file_hash,
-    is_processed,
-    mark_processed,
     classify_and_route,
 )
+from transcript_log import init_db, insert_transcript, is_already_logged
 
 cfg = get_config()
 log = setup_logging("webhook")
 
 app = Flask(__name__)
 
-# Dedicated state for webhook uploads
-WEBHOOK_PROCESSED_FILE = Path("~/.penny/processed_webhook.txt").expanduser()
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
 # ===== Transcription =====
@@ -82,15 +79,22 @@ def upload():
             return jsonify({"error": f"Audio file too large ({size_mb:.1f}MB > {max_mb}MB)"}), 413
 
         file_hash = get_file_hash(temp_path)
-        if is_processed(file_hash, WEBHOOK_PROCESSED_FILE):
-            log.info("Already processed this file")
+        if is_already_logged(file_hash):
+            log.info("Already logged this file")
             return jsonify({"status": "ok", "message": "already processed"})
 
         transcript = transcribe(temp_path)
         log.info("Transcript: %s...", transcript[:100])
 
-        result = classify_and_route(transcript, source="Shortcut")
-        mark_processed(file_hash, WEBHOOK_PROCESSED_FILE)
+        row_id = insert_transcript(
+            content_hash=file_hash,
+            source="Shortcut",
+            transcript=transcript,
+        )
+        if row_id is not None:
+            result = classify_and_route(transcript, source="Shortcut", row_id=row_id)
+        else:
+            result = {"skip": True, "reason": "duplicate"}
 
         return jsonify({
             "status": "ok",
@@ -124,8 +128,23 @@ def ingest():
     source = data.get("source", "text")
     log.info("Ingest (%s): %s...", source, text[:100])
 
+    import hashlib as _hashlib
+
+    content_hash = _hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    if is_already_logged(content_hash):
+        return jsonify({"status": "ok", "message": "already processed"})
+
     try:
-        result = classify_and_route(text, source=source)
+        row_id = insert_transcript(
+            content_hash=content_hash,
+            source=source,
+            transcript=text,
+        )
+        if row_id is not None:
+            result = classify_and_route(text, source=source, row_id=row_id)
+        else:
+            result = {"skip": True, "reason": "duplicate"}
     except Exception as e:
         log.error("Ingest error: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
@@ -140,6 +159,7 @@ def ingest():
 # ===== Main =====
 
 def main():
+    init_db()
     log.info("Starting Penny Webhook Server")
     log.info("  Port: %s", cfg.webhook.port)
     log.info("  LLM model: %s", cfg.llm.model)

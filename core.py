@@ -10,20 +10,19 @@ import logging
 import logging.handlers
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
 import requests
 
-from classifier import classify
+from classifier import classify, detect_content_type
 from config import get_config
 from reminders import add_note, add_reminder
+from transcript_log import mark_failed, mark_routed
 
 cfg = get_config()
 
-# Shared state paths
-PROCESSED_FILE = Path("~/.penny/processed.txt").expanduser()
-SYNCED_TASKS_FILE = Path("~/.penny/synced_tasks.txt").expanduser()
 LOG_DIR = Path("~/.penny/logs").expanduser()
 
 SOURCE_EMOJI = {
@@ -87,10 +86,7 @@ def setup_logging(service_name: str) -> logging.Logger:
     return logging.getLogger(service_name)
 
 
-# ===== Deduplication =====
-
-def _normalize_identifier(identifier: str | Path) -> str:
-    return str(identifier)
+# ===== Hashing =====
 
 
 def get_file_hash(path: Path) -> str:
@@ -100,31 +96,6 @@ def get_file_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(4096), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def is_processed(identifier: str | Path, state_file: Path = PROCESSED_FILE) -> bool:
-    """Check if a file hash or task ID has already been processed."""
-    token = _normalize_identifier(identifier)
-    if not state_file.exists():
-        return False
-
-    with state_file.open("r", encoding="utf-8") as f:
-        processed = {line.strip() for line in f if line.strip()}
-    return token in processed
-
-
-def mark_processed(identifier: str | Path, state_file: Path = PROCESSED_FILE) -> None:
-    """Record an identifier as processed, flushing to disk before returning."""
-    token = _normalize_identifier(identifier)
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    with state_file.open("a", encoding="utf-8") as f:
-        f.write(f"{token}\n")
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            # Some filesystems do not support fsync on this handle; best effort is enough.
-            pass
 
 
 # ===== Telegram =====
@@ -202,40 +173,101 @@ def _target_reminders_list(category: str) -> str:
     return target_list
 
 
-def classify_and_route(transcript: str, source: str) -> Dict[str, Any]:
+def classify_and_route(
+    transcript: str, source: str, row_id: int | None = None
+) -> Dict[str, Any]:
     """
-    Core pipeline: Text -> Classifier -> Reminders/Notes -> Telegram.
+    Core pipeline: Content type detection -> Classifier -> Reminders/Notes -> Telegram.
+
+    Three-way routing:
+    - action_items: extract todos via classifier -> add to Reminders
+    - long_note: save to Apple Notes (no reminders)
+    - unclear: save to Notes + create reference reminder in Inbox
+
+    If row_id is provided, updates the transcript log status on success/failure.
 
     Raises RoutingError when Apple-side writes fail so callers do not mark items as processed.
     Returns the classifier result on success.
     """
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
-    result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
 
-    if result.get("skip"):
-        log.info("Skipping routing for non-reminder: %s", result.get("reason"))
-        note_text = transcript or "(No intelligible speech detected.)"
-        if not add_note(note_text, folder_name="Penny", source=source):
-            raise RoutingError("Failed to add transcript to Apple Notes")
+    if not transcript:
+        if row_id is not None:
+            mark_failed(row_id, "empty transcript after normalization")
+        return {"skip": True, "reason": "empty transcript"}
+
+    content_type = detect_content_type(
+        transcript, cfg.openrouter_api_key, cfg.llm.model
+    )
+
+    try:
+        if content_type == "long_note":
+            log.info("Routing as long note to Apple Notes")
+            if not add_note(transcript, folder_name="Penny", source=source):
+                raise RoutingError("Failed to save long note to Apple Notes")
+            if row_id is not None:
+                mark_routed(row_id, {"type": "long_note"}, "note in Penny")
+            return {"skip": True, "reason": "long_note"}
+
+        if content_type == "unclear":
+            log.info("Unclear content — saving to Notes with reference reminder")
+            if not add_note(transcript, folder_name="Penny", source=source):
+                raise RoutingError("Failed to save unclear note to Apple Notes")
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %-I:%M %p")
+            ref_text = f"Check Penny notes — {timestamp}"
+            if not add_reminder(ref_text, "Inbox", cfg.apple_reminders.default_list):
+                log.warning("Failed to create reference reminder for unclear note")
+
+            if row_id is not None:
+                mark_routed(
+                    row_id,
+                    {"type": "unclear", "ref_reminder": ref_text},
+                    "note + ref reminder",
+                )
+            return {"skip": True, "reason": "unclear content, saved to Notes with reference"}
+
+        # action_items — use the existing item extractor
+        result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
+
+        if result.get("skip"):
+            log.info("Skipping routing for non-reminder: %s", result.get("reason"))
+            note_text = transcript or "(No intelligible speech detected.)"
+            if not add_note(note_text, folder_name="Penny", source=source):
+                raise RoutingError("Failed to add transcript to Apple Notes")
+            if row_id is not None:
+                mark_routed(row_id, result, "note in Penny")
+            return result
+
+        items = result.get("items", [])
+        if not isinstance(items, list) or not items:
+            raise RoutingError("Classifier returned no routable items")
+
+        routed_count = 0
+        for entry in items:
+            item_text = str(entry.get("item", "")).strip()
+            category = str(entry.get("category", "inbox")).strip().lower()
+            if not item_text:
+                continue
+            target_list = _target_reminders_list(category)
+            ok = add_reminder(item_text, target_list, cfg.apple_reminders.default_list)
+            if not ok:
+                raise RoutingError(
+                    f"Failed to add reminder to '{target_list}': {item_text[:80]}"
+                )
+            routed_count += 1
+
+        if cfg.notifications.telegram_enabled:
+            msg = build_result_message(transcript, result, source)
+            send_telegram(msg)
+
+        if row_id is not None:
+            mark_routed(row_id, result, f"{routed_count} reminder(s)")
+
         return result
 
-    items = result.get("items", [])
-    if not isinstance(items, list) or not items:
-        raise RoutingError("Classifier returned no routable items")
-
-    for entry in items:
-        item_text = str(entry.get("item", "")).strip()
-        category = str(entry.get("category", "inbox")).strip().lower()
-        if not item_text:
-            continue
-        target_list = _target_reminders_list(category)
-        ok = add_reminder(item_text, target_list, cfg.apple_reminders.default_list)
-        if not ok:
-            raise RoutingError(f"Failed to add reminder to '{target_list}': {item_text[:80]}")
-
-    if cfg.notifications.telegram_enabled:
-        msg = build_result_message(transcript, result, source)
-        send_telegram(msg)
-
-    return result
+    except RoutingError as e:
+        if row_id is not None:
+            mark_failed(row_id, str(e))
+        raise

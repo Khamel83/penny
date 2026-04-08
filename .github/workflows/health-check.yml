@@ -54,3 +54,26 @@ jobs:
             exit 1
           fi
           echo "Tasks poller OK."
+
+      - name: Check transcript log exists and has recent entries
+        run: |
+          ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT count(*) FROM transcripts;'" > /tmp/transcript_count.txt
+          COUNT=$(cat /tmp/transcript_count.txt)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "WARNING: Transcript log is empty (may be fresh install)"
+          else
+            echo "Transcript log has $COUNT entries."
+          fi
+          PENDING=$(ssh macmini "sqlite3 ~/.penny/transcripts.db \"SELECT count(*) FROM transcripts WHERE status IN ('pending','failed');\"")
+          if [ "$PENDING" -gt 0 ]; then
+            echo "WARNING: $PENDING transcript(s) stuck in pending/failed state"
+          fi
+
+      - name: Check VoiceMemos is running (required for CloudKit sync)
+        run: |
+          ssh macmini "pgrep -x VoiceMemos" > /dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "ERROR: VoiceMemos is not running — CloudKit sync will fail"
+            exit 1
+          fi
+          echo "VoiceMemos is running."

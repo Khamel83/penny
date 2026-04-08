@@ -12,13 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from core import (
-    SYNCED_TASKS_FILE,
     classify_and_route,
-    is_processed,
-    mark_processed,
     send_telegram,
     setup_logging,
 )
+from transcript_log import init_db, insert_transcript, is_already_logged
 
 log = setup_logging("tasks_poller")
 HEALTH_FILE = Path("~/.penny/health_tasks.txt").expanduser()
@@ -113,7 +111,7 @@ def poll_once(service, tasklist_id: str) -> int:
         if not task_id or not task_title:
             continue
 
-        if is_processed(task_id, SYNCED_TASKS_FILE):
+        if is_already_logged(task_id):
             # Already synced to Reminders/Notes — keep retrying completion in Tasks.
             try:
                 task["status"] = "completed"
@@ -125,20 +123,19 @@ def poll_once(service, tasklist_id: str) -> int:
 
         log.info("New task: '%s'", task_title)
 
+        row_id = insert_transcript(
+            content_hash=task_id,
+            source="Google Tasks",
+            transcript=task_title,
+        )
+
         try:
-            classify_and_route(task_title, source="Google Tasks")
+            if row_id is not None:
+                classify_and_route(task_title, source="Google Tasks", row_id=row_id)
         except Exception as e:
             # Leave it pending in Google Tasks so the next poll can retry.
             log.error("Routing failed for Google Task '%s': %s", task_title, e, exc_info=True)
             continue
-
-        try:
-            # Record as synced before marking complete so a Tasks API failure does not
-            # duplicate work on the next poll.
-            mark_processed(task_id, SYNCED_TASKS_FILE)
-        except Exception as e:
-            log.error("Failed to persist sync state for task '%s': %s", task_title, e, exc_info=True)
-            # Routing already succeeded; still attempt completion to avoid duplicates.
 
         _mark_task_complete(service, tasklist_id, task, task_title)
         processed += 1
@@ -156,6 +153,7 @@ def update_health() -> None:
 # ===== Main =====
 
 def main() -> None:
+    init_db()
     cfg = get_config()
 
     log.info("=" * 60)

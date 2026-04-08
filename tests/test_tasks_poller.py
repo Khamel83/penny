@@ -6,7 +6,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -56,30 +56,42 @@ class TasksPollerTests(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(tasks_poller)
 
-    def test_poll_once_does_not_mark_processed_on_routing_failure(self) -> None:
+    def test_poll_once_does_not_complete_on_routing_failure(self) -> None:
         service = _Service([{"id": "t1", "title": "buy milk"}])
 
-        with patch.object(tasks_poller, "is_processed", return_value=False), patch.object(
+        with patch.object(tasks_poller, "is_already_logged", return_value=False), patch.object(
+            tasks_poller, "insert_transcript", return_value=1
+        ), patch.object(
             tasks_poller, "classify_and_route", side_effect=RuntimeError("route failed")
-        ), patch.object(tasks_poller, "mark_processed") as mark_processed_mock:
+        ):
             count = tasks_poller.poll_once(service, "list-1")
 
         self.assertEqual(count, 0)
-        mark_processed_mock.assert_not_called()
         self.assertEqual(service.tasks().updated, [])
 
-    def test_poll_once_marks_and_completes_on_success(self) -> None:
+    def test_poll_once_routes_and_completes_on_success(self) -> None:
         service = _Service([{"id": "t2", "title": "call dentist"}])
 
-        with patch.object(tasks_poller, "is_processed", return_value=False), patch.object(
-            tasks_poller, "classify_and_route", return_value={"items": [{"item": "call dentist", "category": "health"}]}
-        ), patch.object(tasks_poller, "mark_processed") as mark_processed_mock:
+        with patch.object(tasks_poller, "is_already_logged", return_value=False), patch.object(
+            tasks_poller, "insert_transcript", return_value=1
+        ), patch.object(
+            tasks_poller,
+            "classify_and_route",
+            return_value={"items": [{"item": "call dentist", "category": "health"}]},
+        ):
             count = tasks_poller.poll_once(service, "list-1")
 
         self.assertEqual(count, 1)
-        mark_processed_mock.assert_called_once_with("t2", tasks_poller.SYNCED_TASKS_FILE)
         self.assertEqual(len(service.tasks().updated), 1)
         self.assertEqual(service.tasks().updated[0]["task"], "t2")
+
+    def test_poll_once_skips_already_logged(self) -> None:
+        service = _Service([{"id": "t3", "title": "already done"}])
+
+        with patch.object(tasks_poller, "is_already_logged", return_value=True):
+            count = tasks_poller.poll_once(service, "list-1")
+
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

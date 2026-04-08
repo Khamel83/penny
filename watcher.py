@@ -15,7 +15,13 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
-from core import classify_and_route, get_file_hash, is_processed, mark_processed, setup_logging
+from core import classify_and_route, get_file_hash, setup_logging
+from transcript_log import (
+    init_db,
+    insert_transcript,
+    is_already_logged,
+    get_pending,
+)
 
 cfg = get_config()
 log = setup_logging("watcher")
@@ -107,11 +113,28 @@ def _db_recordings_count() -> int:
             conn.close()
 
 
+def _voicememos_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "VoiceMemos"], capture_output=True, timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _transcripts_pending() -> int:
+    pending = get_pending(limit=1)
+    return len(pending)
+
+
 def update_health_check() -> None:
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now().isoformat()
+    vm = 1 if _voicememos_running() else 0
+    pending = _transcripts_pending()
     HEALTH_FILE.write_text(
-        f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1\n",
+        f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|pending:{pending}\n",
         encoding="utf-8",
     )
 
@@ -183,7 +206,8 @@ def _safe_mtime(path: Path) -> float:
         return 0.0
 
 
-def scan_for_unprocessed_files() -> List[Path]:
+def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
+    """Return list of (path, file_hash) tuples for unprocessed files."""
     try:
         all_files = list(VOICE_MEMOS_DIR.glob("*.m4a"))
     except Exception as e:
@@ -191,7 +215,7 @@ def scan_for_unprocessed_files() -> List[Path]:
         return []
 
     all_files.sort(key=_safe_mtime, reverse=True)
-    unprocessed: List[Path] = []
+    unprocessed: List[tuple[Path, str]] = []
     cutoff = time.time() - MAX_FILE_AGE.total_seconds()
 
     for audio_file in all_files:
@@ -208,8 +232,8 @@ def scan_for_unprocessed_files() -> List[Path]:
             log.warning("Could not hash %s during scan: %s", audio_file.name, e)
             continue
 
-        if not is_processed(file_hash):
-            unprocessed.append(audio_file)
+        if not is_already_logged(file_hash):
+            unprocessed.append((audio_file, file_hash))
 
     return unprocessed
 
@@ -236,7 +260,10 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
-def _process_audio_file(audio_path: Path) -> bool:
+def _process_audio_file(audio_path: Path, file_hash: str | None = None) -> bool:
+    if file_hash is None:
+        file_hash = get_file_hash(audio_path)
+
     file_size = audio_path.stat().st_size
     if file_size > MAX_FILE_SIZE:
         log.warning(
@@ -244,17 +271,28 @@ def _process_audio_file(audio_path: Path) -> bool:
             audio_path.name,
             file_size / (1024 * 1024),
         )
-        mark_processed(get_file_hash(audio_path))
+        insert_transcript(
+            content_hash=file_hash,
+            source="iCloud",
+            transcript="(skipped: file too large)",
+            audio_path=str(audio_path),
+        )
         return True
 
-    file_hash = get_file_hash(audio_path)
-    if is_processed(file_hash):
-        log.info("Already processed: %s", audio_path.name)
+    if is_already_logged(file_hash):
+        log.info("Already logged: %s", audio_path.name)
         return True
 
     transcript = transcribe(audio_path)
-    classify_and_route(transcript, source="iCloud")
-    mark_processed(file_hash)
+
+    row_id = insert_transcript(
+        content_hash=file_hash,
+        source="iCloud",
+        transcript=transcript,
+        audio_path=str(audio_path),
+    )
+    if row_id is not None:
+        classify_and_route(transcript, source="iCloud", row_id=row_id)
     return True
 
 
@@ -277,14 +315,14 @@ def process_recording(recording: Dict[str, Any]) -> bool:
         return False
 
 
-def process_file(audio_path: Path) -> bool:
+def process_file(audio_path: Path, *, file_hash: str | None = None) -> bool:
     try:
         log.info(
             "Processing file: %s (%.1fMB)",
             audio_path.name,
             audio_path.stat().st_size / (1024 * 1024),
         )
-        return _process_audio_file(audio_path)
+        return _process_audio_file(audio_path, file_hash=file_hash)
     except FileNotFoundError:
         log.warning("File disappeared before processing: %s", audio_path)
         return False
@@ -293,16 +331,25 @@ def process_file(audio_path: Path) -> bool:
         return False
 
 
-def _trigger_icloud_sync() -> None:
-    """Open VoiceMemos in the background to force iCloud to sync new recordings."""
+def _ensure_voicememos_running() -> None:
+    """Check if VoiceMemos is running; launch it if not (required for CloudKit sync)."""
     try:
+        result = subprocess.run(
+            ["pgrep", "-x", "VoiceMemos"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return
+        log.warning("VoiceMemos not running — launching for CloudKit sync")
         subprocess.run(
             ["open", "-g", "-a", "VoiceMemos"],
             check=False,
             capture_output=True,
+            timeout=10,
         )
     except Exception as e:
-        log.warning("Could not trigger VoiceMemos sync: %s", e)
+        log.warning("Could not check/launch VoiceMemos: %s", e)
 
 
 def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
@@ -324,8 +371,8 @@ def _process_disk_backlog(limit: int) -> None:
     if not unprocessed:
         return
     log.info("Found %s unprocessed file(s) on disk", len(unprocessed))
-    for audio_file in unprocessed[:limit]:
-        process_file(audio_file)
+    for audio_file, file_hash in unprocessed[:limit]:
+        process_file(audio_file, file_hash=file_hash)
 
 
 # ===== Main =====
@@ -334,6 +381,8 @@ def main() -> None:
     log.info("=" * 60)
     log.info("Penny iCloud Watcher starting...")
     log.info("=" * 60)
+
+    init_db()
 
     errors, warnings = check_dependencies()
     if warnings:
@@ -356,7 +405,7 @@ def main() -> None:
     log.info("  Last seen PK: %s", get_last_seen_pk())
 
     log.info("Running initial scan...")
-    _trigger_icloud_sync()
+    _ensure_voicememos_running()
     time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
     _process_db_batch(get_new_recordings())
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
@@ -378,9 +427,24 @@ def main() -> None:
                 )
                 last_health_check = time.time()
 
-            _trigger_icloud_sync()
+            _ensure_voicememos_running()
             _process_db_batch(get_new_recordings())
             _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
+
+            # Retry any transcripts that failed routing
+            pending = get_pending(limit=5)
+            for row in pending:
+                log.info(
+                    "Retrying pending transcript id=%s (source=%s)",
+                    row["id"],
+                    row["source"],
+                )
+                try:
+                    classify_and_route(
+                        row["transcript"], source=row["source"], row_id=row["id"]
+                    )
+                except Exception as e:
+                    log.error("Retry failed for id=%s: %s", row["id"], e)
 
         except KeyboardInterrupt:
             log.info("Shutting down...")

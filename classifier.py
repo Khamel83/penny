@@ -17,6 +17,19 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox"]
 
+CONTENT_TYPE_PROMPT = """You are analyzing a voice memo or text note. Classify it into exactly one type:
+
+- "action_items": Short, focused notes with clear actionable items (to-dos, reminders, shopping lists). The speaker is clearly asking themselves to do specific things.
+- "long_note": Long entries that are primarily journal entries, brainstorming sessions, meeting notes, stories, or rambling thoughts. May contain some actionable items buried in lots of other content.
+- "unclear": You genuinely cannot tell, or the text is very short and ambiguous.
+
+Rules:
+- Under 150 words with clear action verbs (buy, call, schedule, pick up, remind, etc.) = action_items
+- Over 150 words, or primarily narrative/reflective/brainstorming = long_note
+- Very short text (under 20 words) that could go either way = unclear
+
+Respond with ONLY the type name, nothing else."""
+
 SYSTEM_PROMPT = """You are a personal assistant that extracts actionable reminders from voice memo transcripts.
 
 Categories (pick exactly one per item):
@@ -53,6 +66,11 @@ def classify(transcript: str, api_key: str, model: str) -> Dict[str, Any]:
     """
     if not transcript.strip():
         return {"skip": True, "reason": "empty transcript"}
+
+    # Safety truncation — long notes should be caught by detect_content_type,
+    # but if they slip through, don't burn tokens.
+    if len(transcript) > 4000:
+        transcript = transcript[:4000] + "\n[...truncated]"
 
     if not api_key:
         log.warning("OPENROUTER_API_KEY not set — falling back to Inbox")
@@ -121,3 +139,46 @@ def _fallback(transcript: str) -> Dict[str, Any]:
     # Keep the full transcript so an API outage does not silently drop details.
     item_text = transcript.strip()
     return {"items": [{"item": item_text, "category": "inbox"}], "fallback": True}
+
+
+def detect_content_type(transcript: str, api_key: str, model: str) -> str:
+    """
+    Pre-classify a transcript as 'action_items', 'long_note', or 'unclear'.
+
+    Returns 'unclear' on API failure (safest default).
+    """
+    if not api_key:
+        return "unclear"
+
+    valid_types = {"action_items", "long_note", "unclear"}
+
+    try:
+        resp = requests.post(
+            OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": CONTENT_TYPE_PROMPT},
+                    {"role": "user", "content": f"Transcript: {transcript}"},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 16,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+
+        content = resp.json()["choices"][0]["message"]["content"].strip().lower()
+        if content in valid_types:
+            return content
+
+        log.warning("Unexpected content type response: %s", content)
+        return "unclear"
+
+    except Exception as e:
+        log.error("Content type detection failed: %s", e)
+        return "unclear"
