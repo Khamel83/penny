@@ -21,6 +21,9 @@ from typing import Iterable, List, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 
 EXCLUDE_DIR_NAMES = {".git", "__pycache__", "venv", ".venv"}
+# Note: com.penny.export.plist.template intentionally sets RunAtLoad and
+# KeepAlive to <false/> (StartInterval-based, not persistent). The check
+# verifies the keys exist (reliability documentation), not their values.
 REQUIRED_LAUNCHD_KEYS = (
     "<key>RunAtLoad</key>",
     "<key>KeepAlive</key>",
@@ -41,7 +44,7 @@ def iter_python_files(root: Path) -> Iterable[Path]:
 
 
 def compile_all(py_files: List[Path]) -> None:
-    print("[1/5] Compiling Python files...", flush=True)
+    print("[1/6] Compiling Python files...", flush=True)
     for path in py_files:
         py_compile.compile(str(path), doraise=True)
     print(f"  OK: compiled {len(py_files)} file(s)", flush=True)

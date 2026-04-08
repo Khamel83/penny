@@ -1,0 +1,14 @@
+# Core dependencies
+requests>=2.31.0
+flask>=3.0.0
+
+# Google Tasks integration
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+
+# Config loader (Python < 3.11 only; tomllib is built-in from 3.11+)
+tomli>=2.0.0; python_version < "3.11"
+
+# macOS-only: local Whisper transcription (Apple Silicon)
+mlx-whisper>=0.1.0; sys_platform == "darwin"

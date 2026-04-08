@@ -13,7 +13,7 @@ jobs:
       - name: Check launchd services
         run: |
           ssh macmini "launchctl list | grep penny" | tee /tmp/penny_status.txt
-          # Expect 3 lines with com.penny.*
+          # Expect 3 lines with com.penny.* (watcher, tasks, webhook; export is StartInterval-based)
           COUNT=$(grep -c "com.penny" /tmp/penny_status.txt)
           if [ "$COUNT" -ne 3 ]; then
             echo "ERROR: Expected 3 penny services, found $COUNT"

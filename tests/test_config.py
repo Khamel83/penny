@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Tests for Penny configuration loading."""
+import os
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Set required env vars before importing config
+os.environ.setdefault("HOME", "/tmp/penny_test_home")
+os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-bot")
+os.environ.setdefault("TELEGRAM_CHAT_ID", "12345")
+os.environ.setdefault(
+    "GOOGLE_CREDENTIALS_FILE",
+    "/tmp/penny_test_home/.penny/google_credentials.json",
+)
+os.environ.setdefault(
+    "GOOGLE_TOKEN_FILE",
+    "/tmp/penny_test_home/.penny/google_token.json",
+)
+
+import config  # noqa: E402
+
+
+class ConfigTests(unittest.TestCase):
+    def setUp(self):
+        config._config = None
+        # Force test env vars to avoid picking up real secrets from the environment
+        os.environ["OPENROUTER_API_KEY"] = "test-key"
+        os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
+        os.environ["TELEGRAM_CHAT_ID"] = "12345"
+        os.environ[
+            "GOOGLE_CREDENTIALS_FILE"
+        ] = "/tmp/penny_test_home/.penny/google_credentials.json"
+        os.environ[
+            "GOOGLE_TOKEN_FILE"
+        ] = "/tmp/penny_test_home/.penny/google_token.json"
+
+    def tearDown(self):
+        config._config = None
+
+    def test_get_config_returns_config_with_expected_fields(self):
+        cfg = config.get_config()
+        self.assertEqual(cfg.llm.model, "google/gemini-2.5-flash-lite")
+        self.assertEqual(cfg.google_tasks.list_name, "My Tasks")
+        self.assertEqual(cfg.google_tasks.poll_interval_seconds, 180)
+        self.assertIn("Groceries", cfg.apple_reminders.lists)
+        self.assertEqual(cfg.apple_reminders.default_list, "Inbox")
+        self.assertEqual(cfg.voice_memos.max_file_size_mb, 50)
+        self.assertEqual(cfg.voice_memos.poll_interval_seconds, 60)
+        self.assertEqual(cfg.webhook.port, 5678)
+        self.assertEqual(cfg.openrouter_api_key, "test-key")
+
+    def test_get_config_caches_result(self):
+        cfg1 = config.get_config()
+        cfg2 = config.get_config()
+        self.assertIs(cfg1, cfg2)
+
+    def test_missing_config_toml_exits(self):
+        with patch.object(config, "CONFIG_PATH", Path("/nonexistent/path/config.toml")):
+            with self.assertRaises(SystemExit):
+                config.get_config()
+
+    def test_missing_api_key_prints_warning(self):
+        os.environ.pop("OPENROUTER_API_KEY", None)
+        config._config = None
+        with patch("sys.stderr"):
+            cfg = config.get_config()
+            self.assertEqual(cfg.openrouter_api_key, "")
+        os.environ["OPENROUTER_API_KEY"] = "test-key"
+
+    def test_default_list_in_lists(self):
+        cfg = config.get_config()
+        self.assertIn(cfg.apple_reminders.default_list, cfg.apple_reminders.lists)
+
+    def test_telegram_warning_suppressed_when_disabled(self):
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+        os.environ.pop("TELEGRAM_CHAT_ID", None)
+        config._config = None
+        # telegram_enabled is false in config.toml, so no warning should be printed
+        cfg = config.get_config()
+        self.assertFalse(cfg.telegram_bot_token)
+        self.assertFalse(cfg.telegram_chat_id)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
+        os.environ["TELEGRAM_CHAT_ID"] = "12345"
+
+
+if __name__ == "__main__":
+    unittest.main()

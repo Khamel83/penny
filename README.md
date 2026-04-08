@@ -150,7 +150,7 @@ ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
 
 A GitHub Actions workflow (`.github/workflows/health-check.yml`) runs daily at 9am UTC on a
 self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
-- All 3 services have a running PID
+- All 3 persistent services (watcher, tasks, webhook) have a running PID
 - Watcher log updated in the last 15 minutes
 - Tasks poller connected to Google Tasks
 
@@ -187,7 +187,7 @@ done"
 - Always-on (Mac Mini recommended)
 
 ```bash
-pip install mlx-whisper requests watchdog flask \
+pip install mlx-whisper requests flask \
   google-api-python-client google-auth-httplib2 google-auth-oauthlib tomli
 ```
 

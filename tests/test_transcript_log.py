@@ -193,6 +193,11 @@ class TranscriptLogTests(unittest.TestCase):
 
         self.assertEqual(migrated2, 0)
 
+    def test_is_already_logged_returns_false_on_db_error(self):
+        """Document intentional behavior: DB errors return False (allows retry)."""
+        with patch.object(transcript_log, "_get_conn", side_effect=Exception("DB locked")):
+            self.assertFalse(transcript_log.is_already_logged("any_hash"))
+
 
 if __name__ == "__main__":
     unittest.main()
