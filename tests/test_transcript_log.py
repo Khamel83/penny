@@ -18,7 +18,9 @@ os.environ["HOME"] = "/tmp/penny_test_home"
 os.environ["OPENROUTER_API_KEY"] = "test-key"
 os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
-os.environ["GOOGLE_CREDENTIALS_FILE"] = "/tmp/penny_test_home/.penny/google_credentials.json"
+os.environ["GOOGLE_CREDENTIALS_FILE"] = (
+    "/tmp/penny_test_home/.penny/google_credentials.json"
+)
 os.environ["GOOGLE_TOKEN_FILE"] = "/tmp/penny_test_home/.penny/google_token.json"
 logging.disable(logging.CRITICAL)
 
@@ -29,9 +31,7 @@ class TranscriptLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
-        patch.object(
-            transcript_log, "TRANSCRIPT_DB_PATH", self.db_path
-        ).start()
+        patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
 
@@ -40,9 +40,14 @@ class TranscriptLogTests(unittest.TestCase):
             content_hash="abc123",
             source="iCloud",
             transcript="buy milk",
+            duration_seconds=12.5,
+            ingest_state="transcribed",
         )
         self.assertIsNotNone(row_id)
         self.assertTrue(transcript_log.is_already_logged("abc123"))
+        row = transcript_log.get_transcript(row_id)
+        self.assertEqual(row["duration_seconds"], 12.5)
+        self.assertEqual(row["ingest_state"], "transcribed")
 
     def test_dedup_rejects_duplicate(self) -> None:
         rid1 = transcript_log.insert_transcript(
@@ -75,6 +80,40 @@ class TranscriptLogTests(unittest.TestCase):
         pending = transcript_log.get_pending()
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["id"], row_id)
+
+    def test_update_transcript_progress(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="progress1", source="iCloud", transcript="test"
+        )
+        transcript_log.update_transcript_progress(row_id, {"note_created": True})
+        row = transcript_log.get_transcript(row_id)
+        self.assertIn("note_created", row["routing_progress"])
+
+    def test_voice_memo_ingest_tracking(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            101,
+            label="memo",
+            raw_path="memo.m4a",
+            duration_seconds=42.0,
+        )
+        waiting = transcript_log.get_voice_memo_recordings_waiting_for_file()
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["recording_pk"], 101)
+
+        transcript_log.mark_voice_memo_waiting_for_file(101, "not yet")
+        transcript_log.mark_voice_memo_file_seen(101, "/tmp/memo.m4a")
+        row_id = transcript_log.insert_transcript("hash101", "iCloud", "memo text")
+        transcript_log.link_voice_memo_transcript(
+            101,
+            transcript_row_id=row_id,
+            content_hash="hash101",
+            audio_path="/tmp/memo.m4a",
+        )
+        transcript_log.mark_voice_memo_routed_for_transcript(row_id)
+
+        health = transcript_log.get_voice_memo_health()
+        self.assertEqual(health["latest_recording_pk"], 101)
+        self.assertEqual(health["awaiting_file_count"], 0)
 
     def test_get_pending_excludes_routed(self) -> None:
         transcript_log.insert_transcript("p1", "iCloud", "pending one")

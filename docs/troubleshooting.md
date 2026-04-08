@@ -89,9 +89,9 @@ Once iPhone uploads to iCloud:
 
 Total latency: **2-7 minutes** after iPhone uploads to iCloud.
 
-### Permanent Fix: iOS Automation (Recommended)
+### Alternate Path: iOS Automation (Optional)
 
-As a backup to unreliable iCloud sync, create an iOS Shortcut automation:
+The primary Penny flow is still Apple Watch Voice Memos through iCloud. If you ever need an alternate ingest path for troubleshooting, you can create an iOS Shortcut automation:
 
 1. Open Shortcuts app on iPhone
 2. Create Automation: "When Voice Memos is closed"

@@ -19,7 +19,7 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
 ```
 
 Fields:
@@ -27,6 +27,9 @@ Fields:
 - `watcher_ok` — watcher service healthy (1/0)
 - `voicememos` — VoiceMemos app running (1/0)
 - `pending` — transcripts awaiting routing
+- `latest_recording_pk` — latest Voice Memo PK durably registered in local ingest state
+- `awaiting_file` — DB entries seen but audio file not yet present on disk
+- `voice_memo_failed` — ingest entries that hit a terminal error and need investigation
 
 ### 3. Dependency Checks on Startup
 
@@ -55,6 +58,18 @@ The watcher uses TWO methods to find recordings:
 - Handles delayed/broken iCloud sync
 
 Both methods run every cycle. The age cutoff prevents re-processing when VoiceMemos touches file mtimes.
+
+### 4.5 Explicit Voice Memo Ingest State
+
+Native Voice Memos is the primary ingest path, so Penny now tracks each memo through these states:
+- `discovered` — DB row seen locally
+- `awaiting_file` — DB row exists, file not downloaded yet
+- `file_ready` — file present on disk
+- `transcribed` — transcript persisted locally
+- `routed` — Notes/Reminders write completed
+- `failed` — a durable error occurred and is visible for retry/debugging
+
+This prevents "seen once and lost forever" behavior when CloudKit metadata arrives before the audio file.
 
 ### 5. Transcript Database (Single Source of Truth)
 
@@ -144,6 +159,14 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.SVCNAME"
 ```bash
 ssh macmini "sqlite3 ~/.penny/transcripts.db \"SELECT id, error_message FROM transcripts WHERE status='failed';\""
 ```
+
+### Mode 7: DB Entry Exists But Audio File Is Still Missing
+
+**Symptoms**: `latest_recording_pk` advances but `awaiting_file` stays above zero.
+
+**Meaning**: the Mac has seen Voice Memos metadata in `CloudRecordings.db`, but the actual audio file has not finished downloading from iCloud yet.
+
+**Recovery**: Automatic. The watcher keeps retrying these entries every cycle until the file appears.
 
 ## Summary: Why This Won't Break
 

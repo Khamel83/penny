@@ -5,10 +5,10 @@ Penny is intelligent middleware between voice and Apple's native apps.
 You speak naturally — to your phone, or a device sitting on the counter — and Penny figures out what you meant, routes it to the right place, and gets out of the way. Reminders go to Apple Reminders, sorted into the right list. Everything else goes to Apple Notes. Nothing gets lost.
 
 ```
-Voice front-end  →  Penny (middleware)  →  Apple back-end
-─────────────────────────────────────────────────────────
-iPhone Voice Memo  →  transcribe + classify  →  Reminders / Notes
-Google Home        →  classify             →  Reminders / Notes
+Voice front-end            →  Penny (middleware)  →  Apple back-end
+────────────────────────────────────────────────────────────────────
+Apple Watch Voice Memo     →  transcribe + classify  →  Reminders / Notes
+Google Home                →  classify               →  Reminders / Notes
 ```
 
 ---
@@ -16,7 +16,7 @@ Google Home        →  classify             →  Reminders / Notes
 ## The architecture
 
 **Front-ends** (how you speak to it):
-- **iPhone Voice Memo** — record anything, hands-free, multiple items at once
+- **Apple Watch Voice Memo** — primary input path, synced through Voice Memos/iCloud to the Mac mini
 - **Google Home** — add to "My Tasks", give any time when prompted
 
 **Middleware** (Penny, running on an always-on Apple Silicon Mac):
@@ -40,10 +40,17 @@ Google Home        →  classify             →  Reminders / Notes
 | "expense report due Friday" | Reminders → Work |
 | "the weather today is beautiful" | Notes → Penny folder |
 | Any pure thought or observation | Notes → Penny folder |
+| Short ambiguous memo | Notes → Penny folder + Reminders → Inbox |
 
 Reminders lists: Groceries, Errands, Home, Health, Work, Kids, Inbox
 
 One input can produce multiple routed items — "get milk, call dentist, fix faucet" becomes three reminders in three different lists.
+
+Reliability rules:
+- Voice Memos on Apple Watch is the primary ingest path.
+- Memo duration is used as a soft routing signal, never a hard rule.
+- Short ambiguous memos always go to Notes and also create an Inbox reminder with a timestamped excerpt.
+- Reliability is prioritized over raw speed.
 
 ---
 

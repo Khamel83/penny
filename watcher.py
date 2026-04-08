@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Poll iCloud Voice Memos, transcribe new recordings, and route them through Penny."""
+
 from __future__ import annotations
 
 import logging
@@ -17,10 +18,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from transcript_log import (
+    get_voice_memo_health,
+    get_voice_memo_recordings_waiting_for_file,
     init_db,
     insert_transcript,
     is_already_logged,
     get_pending,
+    link_voice_memo_transcript,
+    mark_voice_memo_failed,
+    mark_voice_memo_file_seen,
+    mark_voice_memo_routed,
+    mark_voice_memo_routed_for_transcript,
+    mark_voice_memo_waiting_for_file,
+    update_transcript_stages,
+    upsert_voice_memo_recording,
 )
 
 cfg = get_config()
@@ -47,6 +58,7 @@ MAX_FILE_AGE = timedelta(hours=24)
 
 
 # ===== Dependencies =====
+
 
 def check_dependencies() -> tuple[List[str], List[str]]:
     """Return (errors, warnings) for startup dependency checks."""
@@ -76,10 +88,14 @@ def check_dependencies() -> tuple[List[str], List[str]]:
     if cfg.notifications.telegram_enabled and (
         not cfg.telegram_bot_token or not cfg.telegram_chat_id
     ):
-        errors.append("Telegram is enabled but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing")
+        errors.append(
+            "Telegram is enabled but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing"
+        )
 
     if not cfg.openrouter_api_key:
-        warnings.append("OPENROUTER_API_KEY not set — classification falls back to Inbox")
+        warnings.append(
+            "OPENROUTER_API_KEY not set — classification falls back to Inbox"
+        )
 
     if CLOUDRECORDINGS_DB.exists():
         conn = None
@@ -96,6 +112,7 @@ def check_dependencies() -> tuple[List[str], List[str]]:
 
 
 # ===== Health =====
+
 
 def _db_recordings_count() -> int:
     if not CLOUDRECORDINGS_DB.exists():
@@ -133,13 +150,20 @@ def update_health_check() -> None:
     now = datetime.now().isoformat()
     vm = 1 if _voicememos_running() else 0
     pending = _transcripts_pending()
+    vm_health = get_voice_memo_health()
     HEALTH_FILE.write_text(
-        f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|pending:{pending}\n",
+        (
+            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|"
+            f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
+            f"awaiting_file:{vm_health['awaiting_file_count']}|"
+            f"voice_memo_failed:{vm_health['failed_count']}\n"
+        ),
         encoding="utf-8",
     )
 
 
 # ===== State (last seen DB primary key) =====
+
 
 def get_last_seen_pk() -> int:
     if not STATE_FILE.exists():
@@ -157,6 +181,7 @@ def set_last_seen_pk(pk: int) -> None:
 
 # ===== Transcription =====
 
+
 def transcribe(path: Path) -> str:
     import mlx_whisper
 
@@ -169,6 +194,7 @@ def transcribe(path: Path) -> str:
 
 
 # ===== Database polling =====
+
 
 def get_new_recordings() -> List[Dict[str, Any]]:
     if not CLOUDRECORDINGS_DB.exists():
@@ -240,6 +266,7 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
 
 # ===== Processing =====
 
+
 def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
     raw_path = recording.get("ZPATH")
     label = recording.get("ZCUSTOMLABEL") or ""
@@ -254,13 +281,21 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
         normalized_prefix = str(label)[:10].replace("-", "")
         for candidate in VOICE_MEMOS_DIR.glob("*.m4a"):
             name = candidate.name
-            if label in name or (normalized_prefix and name.startswith(normalized_prefix)):
+            if label in name or (
+                normalized_prefix and name.startswith(normalized_prefix)
+            ):
                 return candidate
 
     return None
 
 
-def _process_audio_file(audio_path: Path, file_hash: str | None = None) -> bool:
+def _process_audio_file(
+    audio_path: Path,
+    file_hash: str | None = None,
+    *,
+    duration_seconds: float | None = None,
+    recording_pk: int | None = None,
+) -> bool:
     if file_hash is None:
         file_hash = get_file_hash(audio_path)
 
@@ -276,41 +311,91 @@ def _process_audio_file(audio_path: Path, file_hash: str | None = None) -> bool:
             source="iCloud",
             transcript="(skipped: file too large)",
             audio_path=str(audio_path),
+            duration_seconds=duration_seconds,
+            ingest_state="skipped_too_large",
+            file_seen_at=datetime.now().isoformat(),
         )
+        if recording_pk is not None:
+            mark_voice_memo_failed(recording_pk, "file too large")
         return True
 
     if is_already_logged(file_hash):
         log.info("Already logged: %s", audio_path.name)
         return True
 
+    file_seen_at = datetime.now().isoformat()
+    transcription_started_at = datetime.now().isoformat()
     transcript = transcribe(audio_path)
+    transcription_completed_at = datetime.now().isoformat()
 
     row_id = insert_transcript(
         content_hash=file_hash,
         source="iCloud",
         transcript=transcript,
         audio_path=str(audio_path),
+        duration_seconds=duration_seconds,
+        ingest_state="transcribed",
+        file_seen_at=file_seen_at,
+        transcription_started_at=transcription_started_at,
+        transcription_completed_at=transcription_completed_at,
     )
     if row_id is not None:
-        classify_and_route(transcript, source="iCloud", row_id=row_id)
+        if recording_pk is not None:
+            link_voice_memo_transcript(
+                recording_pk,
+                transcript_row_id=row_id,
+                content_hash=file_hash,
+                audio_path=str(audio_path),
+            )
+        classify_and_route(
+            transcript,
+            source="iCloud",
+            row_id=row_id,
+            duration_seconds=duration_seconds,
+        )
+        update_transcript_stages(row_id, ingest_state="routed")
+        if recording_pk is not None:
+            mark_voice_memo_routed(recording_pk)
     return True
 
 
 def process_recording(recording: Dict[str, Any]) -> bool:
     pk = int(recording["Z_PK"])
     label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
+    raw_path = str(recording.get("ZPATH") or "")
+    duration_seconds = (
+        float(recording.get("ZDURATION"))
+        if recording.get("ZDURATION") is not None
+        else None
+    )
+    upsert_voice_memo_recording(
+        pk,
+        label=label,
+        raw_path=raw_path,
+        duration_seconds=duration_seconds,
+    )
     log.info("Processing %s (PK=%s)", label, pk)
 
     audio_path = _find_audio_path_for_recording(recording)
     if not audio_path or not audio_path.exists():
-        log.error("File not found for %s (PK=%s); will retry via later DB poll or disk scan", label, pk)
+        log.error(
+            "File not found for %s (PK=%s); will retry via later DB poll or disk scan",
+            label,
+            pk,
+        )
+        mark_voice_memo_waiting_for_file(pk, "file not downloaded yet")
         return False
 
     try:
-        _process_audio_file(audio_path)
-        set_last_seen_pk(pk)
+        mark_voice_memo_file_seen(pk, str(audio_path))
+        _process_audio_file(
+            audio_path,
+            duration_seconds=duration_seconds,
+            recording_pk=pk,
+        )
         return True
     except Exception as e:
+        mark_voice_memo_failed(pk, str(e))
         log.error("Error processing %s (PK=%s): %s", label, pk, e, exc_info=True)
         return False
 
@@ -356,8 +441,23 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     if not recordings:
         return
     log.info("Found %s new recording(s)", len(recordings))
+    max_registered_pk = get_last_seen_pk()
     for recording in recordings[:FILE_SCAN_PROCESS_LIMIT]:
+        pk = int(recording["Z_PK"])
+        upsert_voice_memo_recording(
+            pk,
+            label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
+            raw_path=str(recording.get("ZPATH") or ""),
+            duration_seconds=(
+                float(recording.get("ZDURATION"))
+                if recording.get("ZDURATION") is not None
+                else None
+            ),
+        )
+        max_registered_pk = max(max_registered_pk, pk)
         process_recording(recording)
+    if max_registered_pk > get_last_seen_pk():
+        set_last_seen_pk(max_registered_pk)
     if len(recordings) > FILE_SCAN_PROCESS_LIMIT:
         log.info(
             "Batch capped at %s of %s recordings (remaining will process next cycle)",
@@ -375,7 +475,24 @@ def _process_disk_backlog(limit: int) -> None:
         process_file(audio_file, file_hash=file_hash)
 
 
+def _retry_waiting_for_files(limit: int) -> None:
+    waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
+    if not waiting:
+        return
+    log.info("Retrying %s recording(s) awaiting file download", len(waiting))
+    for row in waiting:
+        process_recording(
+            {
+                "Z_PK": row["recording_pk"],
+                "ZCUSTOMLABEL": row.get("label"),
+                "ZPATH": row.get("raw_path"),
+                "ZDURATION": row.get("duration_seconds"),
+            }
+        )
+
+
 # ===== Main =====
+
 
 def main() -> None:
     log.info("=" * 60)
@@ -408,6 +525,7 @@ def main() -> None:
     _ensure_voicememos_running()
     time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
     _process_db_batch(get_new_recordings())
+    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     update_health_check()
 
@@ -429,6 +547,7 @@ def main() -> None:
 
             _ensure_voicememos_running()
             _process_db_batch(get_new_recordings())
+            _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
             _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
 
             # Retry any transcripts that failed routing
@@ -441,8 +560,14 @@ def main() -> None:
                 )
                 try:
                     classify_and_route(
-                        row["transcript"], source=row["source"], row_id=row["id"]
+                        row["transcript"],
+                        source=row["source"],
+                        row_id=row["id"],
+                        duration_seconds=row.get("duration_seconds"),
                     )
+                    update_transcript_stages(row["id"], ingest_state="routed")
+                    if row["source"] == "iCloud":
+                        mark_voice_memo_routed_for_transcript(row["id"])
                 except Exception as e:
                     log.error("Retry failed for id=%s: %s", row["id"], e)
 

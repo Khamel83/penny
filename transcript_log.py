@@ -10,13 +10,14 @@ The log serves two purposes:
 1. Deduplication (content_hash UNIQUE constraint)
 2. Persistence (full transcript saved before routing, so nothing is lost)
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import sqlite3
-from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -44,16 +45,53 @@ def init_db() -> None:
                 source          TEXT NOT NULL,
                 transcript      TEXT NOT NULL,
                 audio_path      TEXT,
+                duration_seconds REAL,
                 status          TEXT NOT NULL DEFAULT 'pending',
+                ingest_state    TEXT,
                 routing_result  TEXT,
+                routing_progress TEXT,
                 error_message   TEXT,
+                discovered_at   TEXT,
+                file_seen_at    TEXT,
+                transcription_started_at TEXT,
+                transcription_completed_at TEXT,
+                routing_started_at TEXT,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                last_error_at   TEXT,
                 routed_at       TEXT,
                 routed_to       TEXT
             )
         """)
+        _ensure_transcript_columns(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_memo_ingest (
+                recording_pk INTEGER PRIMARY KEY,
+                label TEXT,
+                raw_path TEXT,
+                duration_seconds REAL,
+                audio_path TEXT,
+                content_hash TEXT,
+                transcript_row_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'discovered',
+                error_message TEXT,
+                file_missing_count INTEGER NOT NULL DEFAULT 0,
+                discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                file_seen_at TEXT,
+                transcribed_at TEXT,
+                routed_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_voice_memo_ingest_status ON voice_memo_ingest(status)"
         )
         conn.commit()
 
@@ -73,20 +111,71 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()
+    }
+    required_columns = {
+        "duration_seconds": "ALTER TABLE transcripts ADD COLUMN duration_seconds REAL",
+        "ingest_state": "ALTER TABLE transcripts ADD COLUMN ingest_state TEXT",
+        "routing_progress": "ALTER TABLE transcripts ADD COLUMN routing_progress TEXT",
+        "discovered_at": "ALTER TABLE transcripts ADD COLUMN discovered_at TEXT",
+        "file_seen_at": "ALTER TABLE transcripts ADD COLUMN file_seen_at TEXT",
+        "transcription_started_at": "ALTER TABLE transcripts ADD COLUMN transcription_started_at TEXT",
+        "transcription_completed_at": "ALTER TABLE transcripts ADD COLUMN transcription_completed_at TEXT",
+        "routing_started_at": "ALTER TABLE transcripts ADD COLUMN routing_started_at TEXT",
+        "updated_at": "ALTER TABLE transcripts ADD COLUMN updated_at TEXT",
+        "last_error_at": "ALTER TABLE transcripts ADD COLUMN last_error_at TEXT",
+    }
+    for column, sql in required_columns.items():
+        if column not in existing:
+            conn.execute(sql)
+
+
+def _json_loads_or_default(raw: str | None, default: Any) -> Any:
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default
+
+
 def insert_transcript(
     content_hash: str,
     source: str,
     transcript: str,
     audio_path: str | None = None,
+    duration_seconds: float | None = None,
+    ingest_state: str | None = None,
+    discovered_at: str | None = None,
+    file_seen_at: str | None = None,
+    transcription_started_at: str | None = None,
+    transcription_completed_at: str | None = None,
 ) -> int | None:
     """Insert a transcript. Returns row id if new, None if duplicate."""
     conn = None
     try:
         conn = _get_conn()
         cursor = conn.execute(
-            """INSERT OR IGNORE INTO transcripts (content_hash, source, transcript, audio_path)
-               VALUES (?, ?, ?, ?)""",
-            (content_hash, source, transcript, audio_path),
+            """INSERT OR IGNORE INTO transcripts (
+                   content_hash, source, transcript, audio_path,
+                   duration_seconds, ingest_state, discovered_at, file_seen_at,
+                   transcription_started_at, transcription_completed_at
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                content_hash,
+                source,
+                transcript,
+                audio_path,
+                duration_seconds,
+                ingest_state,
+                discovered_at,
+                file_seen_at,
+                transcription_started_at,
+                transcription_completed_at,
+            ),
         )
         conn.commit()
         if cursor.lastrowid and cursor.rowcount > 0:
@@ -130,7 +219,10 @@ def get_pending(limit: int = 20) -> list[dict]:
     try:
         conn = _get_conn()
         rows = conn.execute(
-            """SELECT id, content_hash, source, transcript, audio_path
+            """SELECT id, content_hash, source, transcript, audio_path, duration_seconds,
+                      discovered_at, file_seen_at, transcription_started_at,
+                      transcription_completed_at, routing_started_at,
+                      routing_progress, routing_result
                FROM transcripts
                WHERE status IN ('pending', 'failed')
                ORDER BY created_at ASC
@@ -154,10 +246,13 @@ def mark_routed(row_id: int, routing_result: dict, routed_to: str) -> None:
         conn.execute(
             """UPDATE transcripts
                SET status = 'routed',
+                   ingest_state = 'routed',
                    routing_result = ?,
+                   error_message = NULL,
                    routed_at = datetime('now'),
-                   routed_to = ?
-               WHERE id = ?""",
+                   routed_to = ?,
+                   updated_at = datetime('now')
+                WHERE id = ?""",
             (json.dumps(routing_result, default=str), routed_to, row_id),
         )
         conn.commit()
@@ -175,13 +270,339 @@ def mark_failed(row_id: int, error_message: str) -> None:
         conn = _get_conn()
         conn.execute(
             """UPDATE transcripts
-               SET status = 'failed', error_message = ?
-               WHERE id = ?""",
+               SET status = 'failed',
+                   ingest_state = 'failed',
+                   error_message = ?,
+                   last_error_at = datetime('now'),
+                   updated_at = datetime('now')
+                WHERE id = ?""",
             (error_message, row_id),
         )
         conn.commit()
     except Exception as e:
         log.error("Failed to mark failed id=%s: %s", row_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_transcript(row_id: int) -> dict[str, Any] | None:
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM transcripts WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        log.error("Failed to get transcript id=%s: %s", row_id, e)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT routing_progress FROM transcripts WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+        progress = _json_loads_or_default(row[0] if row else None, {})
+        progress.update(patch)
+        conn.execute(
+            """UPDATE transcripts
+               SET routing_progress = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (json.dumps(progress, default=str), row_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to update routing progress id=%s: %s", row_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_transcript_stages(
+    row_id: int,
+    *,
+    ingest_state: str | None = None,
+    audio_path: str | None = None,
+    duration_seconds: float | None = None,
+    discovered_at: str | None = None,
+    file_seen_at: str | None = None,
+    transcription_started_at: str | None = None,
+    transcription_completed_at: str | None = None,
+    routing_started_at: str | None = None,
+) -> None:
+    updates: list[str] = []
+    params: list[Any] = []
+
+    def add(field: str, value: Any) -> None:
+        updates.append(f"{field} = ?")
+        params.append(value)
+
+    if ingest_state is not None:
+        add("ingest_state", ingest_state)
+    if audio_path is not None:
+        add("audio_path", audio_path)
+    if duration_seconds is not None:
+        add("duration_seconds", duration_seconds)
+    if discovered_at is not None:
+        add("discovered_at", discovered_at)
+    if file_seen_at is not None:
+        add("file_seen_at", file_seen_at)
+    if transcription_started_at is not None:
+        add("transcription_started_at", transcription_started_at)
+    if transcription_completed_at is not None:
+        add("transcription_completed_at", transcription_completed_at)
+    if routing_started_at is not None:
+        add("routing_started_at", routing_started_at)
+
+    if not updates:
+        return
+
+    conn = None
+    try:
+        conn = _get_conn()
+        updates.append("updated_at = datetime('now')")
+        params.append(row_id)
+        conn.execute(
+            f"UPDATE transcripts SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to update transcript stages id=%s: %s", row_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def upsert_voice_memo_recording(
+    recording_pk: int,
+    *,
+    label: str,
+    raw_path: str,
+    duration_seconds: float | None,
+) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO voice_memo_ingest (
+                   recording_pk, label, raw_path, duration_seconds,
+                   status, discovered_at, last_seen_at, updated_at
+               )
+               VALUES (?, ?, ?, ?, 'discovered', datetime('now'), datetime('now'), datetime('now'))
+               ON CONFLICT(recording_pk) DO UPDATE SET
+                   label = excluded.label,
+                   raw_path = excluded.raw_path,
+                   duration_seconds = excluded.duration_seconds,
+                   last_seen_at = datetime('now'),
+                   updated_at = datetime('now')""",
+            (recording_pk, label, raw_path, duration_seconds),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to upsert voice memo state pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_waiting_for_file(
+    recording_pk: int, error_message: str | None = None
+) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = 'awaiting_file',
+                   error_message = ?,
+                   file_missing_count = file_missing_count + 1,
+                   updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (error_message, recording_pk),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark voice memo awaiting file pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_file_seen(recording_pk: int, audio_path: str) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = 'file_ready',
+                   audio_path = ?,
+                   file_seen_at = COALESCE(file_seen_at, datetime('now')),
+                   error_message = NULL,
+                   updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (audio_path, recording_pk),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark voice memo file seen pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def link_voice_memo_transcript(
+    recording_pk: int,
+    *,
+    transcript_row_id: int,
+    content_hash: str,
+    audio_path: str,
+    routed: bool = False,
+) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        status = "routed" if routed else "transcribed"
+        routed_sql = ", routed_at = datetime('now')" if routed else ""
+        conn.execute(
+            f"""UPDATE voice_memo_ingest
+                SET transcript_row_id = ?,
+                    content_hash = ?,
+                    audio_path = ?,
+                    status = ?,
+                    transcribed_at = datetime('now'),
+                    error_message = NULL,
+                    updated_at = datetime('now')
+                    {routed_sql}
+                WHERE recording_pk = ?""",
+            (transcript_row_id, content_hash, audio_path, status, recording_pk),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to link voice memo transcript pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_routed(recording_pk: int) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
+                   updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (recording_pk,),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark voice memo routed pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
+                   updated_at = datetime('now')
+               WHERE transcript_row_id = ?""",
+            (transcript_row_id,),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to mark voice memo routed for transcript id=%s: %s",
+            transcript_row_id,
+            e,
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_failed(recording_pk: int, error_message: str) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = 'failed', error_message = ?, updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (error_message, recording_pk),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark voice memo failed pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_voice_memo_recordings_waiting_for_file(limit: int = 20) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT * FROM voice_memo_ingest
+               WHERE status IN ('discovered', 'awaiting_file')
+               ORDER BY discovered_at ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        log.error("Failed to fetch waiting voice memos: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_voice_memo_health() -> dict[str, Any]:
+    conn = None
+    health = {
+        "latest_recording_pk": 0,
+        "awaiting_file_count": 0,
+        "failed_count": 0,
+        "oldest_waiting_discovered_at": None,
+    }
+    try:
+        conn = _get_conn()
+        latest = conn.execute(
+            "SELECT MAX(recording_pk) FROM voice_memo_ingest"
+        ).fetchone()
+        health["latest_recording_pk"] = int(latest[0] or 0)
+
+        awaiting = conn.execute(
+            "SELECT COUNT(*), MIN(discovered_at) FROM voice_memo_ingest WHERE status IN ('discovered', 'awaiting_file')"
+        ).fetchone()
+        health["awaiting_file_count"] = int(awaiting[0] or 0)
+        health["oldest_waiting_discovered_at"] = awaiting[1] if awaiting else None
+
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'failed'"
+        ).fetchone()
+        health["failed_count"] = int(failed[0] or 0)
+        return health
+    except Exception as e:
+        log.error("Failed to fetch voice memo health: %s", e)
+        return health
     finally:
         if conn:
             conn.close()

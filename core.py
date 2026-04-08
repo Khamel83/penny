@@ -3,9 +3,11 @@
 Penny Core Logic
 Shared pipeline, notifications, and deduplication for all Penny services.
 """
+
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import logging.handlers
 import os
@@ -19,7 +21,13 @@ import requests
 from classifier import classify, detect_content_type
 from config import get_config
 from reminders import add_note, add_reminder
-from transcript_log import mark_failed, mark_routed
+from transcript_log import (
+    get_transcript,
+    mark_failed,
+    mark_routed,
+    update_transcript_progress,
+    update_transcript_stages,
+)
 
 cfg = get_config()
 
@@ -68,7 +76,9 @@ def setup_logging(service_name: str) -> logging.Logger:
         except Exception:
             pass
 
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 
     file_handler = logging.handlers.RotatingFileHandler(
         log_file,
@@ -99,6 +109,7 @@ def get_file_hash(path: Path) -> str:
 
 
 # ===== Telegram =====
+
 
 def send_telegram(message: str, *, force: bool = False) -> bool:
     if not force and not cfg.notifications.telegram_enabled:
@@ -152,6 +163,7 @@ def build_result_message(transcript: str, result: Dict[str, Any], source: str) -
 
 # ===== Pipeline =====
 
+
 def normalize_transcript_text(transcript: str) -> str:
     """Strip common Whisper control-token artifacts and normalize whitespace."""
     raw = str(transcript or "")
@@ -173,8 +185,37 @@ def _target_reminders_list(category: str) -> str:
     return target_list
 
 
+def _load_routing_progress(row_id: int | None) -> dict[str, Any]:
+    if row_id is None:
+        return {}
+    row = get_transcript(row_id)
+    if not row or not row.get("routing_progress"):
+        return {}
+    try:
+        parsed = json.loads(row["routing_progress"])
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _short_excerpt(text: str, limit: int = 60) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _reference_reminder_text(transcript: str) -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d %-I:%M %p")
+    excerpt = _short_excerpt(transcript) or "voice memo"
+    return f"Review Penny note ({timestamp}): {excerpt}"
+
+
 def classify_and_route(
-    transcript: str, source: str, row_id: int | None = None
+    transcript: str,
+    source: str,
+    row_id: int | None = None,
+    duration_seconds: float | None = None,
 ) -> Dict[str, Any]:
     """
     Core pipeline: Content type detection -> Classifier -> Reminders/Notes -> Telegram.
@@ -191,34 +232,85 @@ def classify_and_route(
     """
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
+    progress = _load_routing_progress(row_id)
 
     if not transcript:
         if row_id is not None:
             mark_failed(row_id, "empty transcript after normalization")
         return {"skip": True, "reason": "empty transcript"}
 
+    if row_id is not None:
+        update_transcript_stages(
+            row_id,
+            ingest_state="routing",
+            duration_seconds=duration_seconds,
+            routing_started_at=datetime.now().isoformat(),
+        )
+
     content_type = detect_content_type(
-        transcript, cfg.openrouter_api_key, cfg.llm.model
+        transcript,
+        cfg.openrouter_api_key,
+        cfg.llm.model,
+        duration_seconds=duration_seconds,
     )
 
     try:
         if content_type == "long_note":
             log.info("Routing as long note to Apple Notes")
-            if not add_note(transcript, folder_name="Penny", source=source):
-                raise RoutingError("Failed to save long note to Apple Notes")
+            if not progress.get("note_created"):
+                if not add_note(transcript, folder_name="Penny", source=source):
+                    raise RoutingError("Failed to save long note to Apple Notes")
+                if row_id is not None:
+                    update_transcript_progress(
+                        row_id,
+                        {
+                            "note_created": True,
+                            "note_folder": "Penny",
+                            "content_type": "long_note",
+                        },
+                    )
             if row_id is not None:
                 mark_routed(row_id, {"type": "long_note"}, "note in Penny")
             return {"skip": True, "reason": "long_note"}
 
         if content_type == "unclear":
             log.info("Unclear content — saving to Notes with reference reminder")
-            if not add_note(transcript, folder_name="Penny", source=source):
-                raise RoutingError("Failed to save unclear note to Apple Notes")
+            if not progress.get("note_created"):
+                if not add_note(transcript, folder_name="Penny", source=source):
+                    raise RoutingError("Failed to save unclear note to Apple Notes")
+                if row_id is not None:
+                    update_transcript_progress(
+                        row_id,
+                        {
+                            "note_created": True,
+                            "note_folder": "Penny",
+                            "content_type": "unclear",
+                        },
+                    )
 
-            timestamp = datetime.now().strftime("%Y-%m-%d %-I:%M %p")
-            ref_text = f"Check Penny notes — {timestamp}"
-            if not add_reminder(ref_text, "Inbox", cfg.apple_reminders.default_list):
-                log.warning("Failed to create reference reminder for unclear note")
+            ref_text = str(
+                progress.get("reference_reminder_text")
+                or _reference_reminder_text(transcript)
+            )
+            if row_id is not None and not progress.get("reference_reminder_text"):
+                update_transcript_progress(
+                    row_id, {"reference_reminder_text": ref_text}
+                )
+            if not progress.get("reference_reminder_created"):
+                if not add_reminder(
+                    ref_text, "Inbox", cfg.apple_reminders.default_list
+                ):
+                    raise RoutingError(
+                        "Failed to create reference reminder for unclear note"
+                    )
+                if row_id is not None:
+                    update_transcript_progress(
+                        row_id,
+                        {
+                            "reference_reminder_created": True,
+                            "reference_reminder_text": ref_text,
+                        },
+                    )
 
             if row_id is not None:
                 mark_routed(
@@ -226,16 +318,29 @@ def classify_and_route(
                     {"type": "unclear", "ref_reminder": ref_text},
                     "note + ref reminder",
                 )
-            return {"skip": True, "reason": "unclear content, saved to Notes with reference"}
+            return {
+                "skip": True,
+                "reason": "unclear content, saved to Notes with reference",
+            }
 
         # action_items — use the existing item extractor
-        result = classify(transcript, cfg.openrouter_api_key, cfg.llm.model)
+        result = classify(
+            transcript,
+            cfg.openrouter_api_key,
+            cfg.llm.model,
+            duration_seconds=duration_seconds,
+        )
 
         if result.get("skip"):
             log.info("Skipping routing for non-reminder: %s", result.get("reason"))
             note_text = transcript or "(No intelligible speech detected.)"
-            if not add_note(note_text, folder_name="Penny", source=source):
-                raise RoutingError("Failed to add transcript to Apple Notes")
+            if not progress.get("note_created"):
+                if not add_note(note_text, folder_name="Penny", source=source):
+                    raise RoutingError("Failed to add transcript to Apple Notes")
+                if row_id is not None:
+                    update_transcript_progress(
+                        row_id, {"note_created": True, "note_folder": "Penny"}
+                    )
             if row_id is not None:
                 mark_routed(row_id, result, "note in Penny")
             return result
@@ -245,17 +350,28 @@ def classify_and_route(
             raise RoutingError("Classifier returned no routable items")
 
         routed_count = 0
+        created_reminders = set(progress.get("created_reminders", []))
         for entry in items:
             item_text = str(entry.get("item", "")).strip()
             category = str(entry.get("category", "inbox")).strip().lower()
             if not item_text:
                 continue
             target_list = _target_reminders_list(category)
-            ok = add_reminder(item_text, target_list, cfg.apple_reminders.default_list)
-            if not ok:
-                raise RoutingError(
-                    f"Failed to add reminder to '{target_list}': {item_text[:80]}"
+            reminder_key = f"{target_list}|{item_text}"
+            if reminder_key not in created_reminders:
+                ok = add_reminder(
+                    item_text, target_list, cfg.apple_reminders.default_list
                 )
+                if not ok:
+                    raise RoutingError(
+                        f"Failed to add reminder to '{target_list}': {item_text[:80]}"
+                    )
+                created_reminders.add(reminder_key)
+                if row_id is not None:
+                    update_transcript_progress(
+                        row_id,
+                        {"created_reminders": sorted(created_reminders)},
+                    )
             routed_count += 1
 
         if cfg.notifications.telegram_enabled:

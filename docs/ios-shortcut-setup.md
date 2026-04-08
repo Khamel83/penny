@@ -1,6 +1,6 @@
 # iOS Shortcut Setup for Penny (Minute-by-Minute)
 
-This replaces the Voice Memos app with a Shortcut that sends immediately to webhook.
+This is an optional alternate ingest path. The primary Penny flow remains Apple Watch Voice Memos through iCloud sync.
 
 ## Option A: Record & Send Shortcut (Recommended)
 

@@ -74,7 +74,7 @@ ssh macmini "launchctl list | grep penny"
 
 # Check health
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
 
 # Check transcript database
 ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT status, COUNT(*) FROM transcripts GROUP BY status;'"

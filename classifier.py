@@ -5,9 +5,10 @@ LLM-based transcript classifier using OpenRouter.
 Extracts actionable items from voice memo transcripts and classifies
 each into a reminder category. Returns structured JSON.
 """
-import json
+
 import logging
-from typing import Dict, Any
+import json
+from typing import Any, Dict
 
 import requests
 
@@ -55,7 +56,26 @@ Output for non-reminders:
 {"skip": true, "reason": "journal entry about the day"}"""
 
 
-def classify(transcript: str, api_key: str, model: str) -> Dict[str, Any]:
+def _build_context(transcript: str, duration_seconds: float | None = None) -> str:
+    metadata = []
+    if duration_seconds is not None:
+        metadata.append(f"Approximate audio duration: {duration_seconds:.1f} seconds")
+    metadata.append(f"Transcript length: {len(transcript.split())} words")
+    metadata_blob = "\n".join(metadata)
+    return (
+        f"{metadata_blob}\nTranscript: {transcript}"
+        if metadata_blob
+        else f"Transcript: {transcript}"
+    )
+
+
+def classify(
+    transcript: str,
+    api_key: str,
+    model: str,
+    *,
+    duration_seconds: float | None = None,
+) -> Dict[str, Any]:
     """
     Classify a transcript into actionable reminder items.
 
@@ -87,7 +107,12 @@ def classify(transcript: str, api_key: str, model: str) -> Dict[str, Any]:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Transcript: {transcript}"},
+                    {
+                        "role": "user",
+                        "content": _build_context(
+                            transcript, duration_seconds=duration_seconds
+                        ),
+                    },
                 ],
                 "temperature": 0.1,
                 "max_tokens": 512,
@@ -101,7 +126,9 @@ def classify(transcript: str, api_key: str, model: str) -> Dict[str, Any]:
         # Strip markdown code fences if the model wraps the response
         if content.startswith("```"):
             lines = content.split("\n")
-            content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+            content = "\n".join(
+                lines[1:-1] if lines[-1].startswith("```") else lines[1:]
+            )
 
         result = json.loads(content)
 
@@ -141,7 +168,13 @@ def _fallback(transcript: str) -> Dict[str, Any]:
     return {"items": [{"item": item_text, "category": "inbox"}], "fallback": True}
 
 
-def detect_content_type(transcript: str, api_key: str, model: str) -> str:
+def detect_content_type(
+    transcript: str,
+    api_key: str,
+    model: str,
+    *,
+    duration_seconds: float | None = None,
+) -> str:
     """
     Pre-classify a transcript as 'action_items', 'long_note', or 'unclear'.
 
@@ -163,7 +196,12 @@ def detect_content_type(transcript: str, api_key: str, model: str) -> str:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": CONTENT_TYPE_PROMPT},
-                    {"role": "user", "content": f"Transcript: {transcript}"},
+                    {
+                        "role": "user",
+                        "content": _build_context(
+                            transcript, duration_seconds=duration_seconds
+                        ),
+                    },
                 ],
                 "temperature": 0.1,
                 "max_tokens": 16,
