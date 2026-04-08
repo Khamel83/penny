@@ -19,4 +19,5 @@ Canonical docs for Penny live here.
 ## Not Canonical
 
 - `docs/sessions/` is historical session output from tooling, not product documentation.
+- `docs/archive/` is the holding area for retained but non-current project material.
 - Assistant-specific context files are intentionally not kept here unless they are actively maintained.

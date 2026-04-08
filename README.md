@@ -1,8 +1,8 @@
 # Penny
 
-Penny is intelligent middleware between voice and Apple's native apps.
+Penny is voice capture middleware for Apple's native apps.
 
-You speak naturally — to your phone, or a device sitting on the counter — and Penny figures out what you meant, routes it to the right place, and gets out of the way. Reminders go to Apple Reminders, sorted into the right list. Everything else goes to Apple Notes. Nothing gets lost.
+You speak naturally, Penny transcribes and routes it, and the result lands in Apple Reminders or Apple Notes. The primary flow is Apple Watch Voice Memos syncing to a Mac mini. The system is optimized for reliability over speed.
 
 ```
 Voice front-end            →  Penny (middleware)  →  Apple back-end
@@ -35,6 +35,19 @@ Canonical documentation:
 **Back-end** (Apple's native apps, synced to all your devices via iCloud):
 - **Apple Reminders** — for actionable items, sorted by category
 - **Apple Notes** (Penny folder) — for everything else: thoughts, observations, things that aren't tasks
+
+## Repo Map
+
+- `watcher.py` — primary Apple Watch Voice Memos ingest path
+- `transcript_log.py` — SQLite persistence, dedup, ingest state, retry metadata
+- `core.py` — shared routing pipeline
+- `classifier.py` — content-type detection and item extraction
+- `reminders.py` — AppleScript bridge to Notes and Reminders
+- `tasks_poller.py` — Google Home / Google Tasks ingest path
+- `webhook/server.py` — optional direct-upload ingest path
+- `scripts/` — auth, export, and validation helpers
+- `launchd/` — launch agent templates for the Mac mini
+- `docs/` — canonical product and operations documentation
 
 ---
 
