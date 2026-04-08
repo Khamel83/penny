@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.so
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 .venv/
 venv/
 
@@ -19,6 +21,9 @@ google_token.json
 
 # OS
 .DS_Store
+
+# Local tool state
+.janitor/
 
 # Logs
 *.log

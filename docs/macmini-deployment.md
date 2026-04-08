@@ -125,8 +125,7 @@ rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
   /home/ubuntu/github/penny/ macmini:/Users/macmini/penny/
 
 ssh macmini "for svc in watcher webhook tasks export; do
-  launchctl unload ~/Library/LaunchAgents/com.penny.\${svc}.plist
-  launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
+  launchctl kickstart -k gui/\$(id -u)/com.penny.\${svc}
 done"
 ```
 

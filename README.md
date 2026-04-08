@@ -13,6 +13,14 @@ Google Home                →  classify               →  Reminders / Notes
 
 ---
 
+Canonical documentation:
+- `docs/README.md`
+- `docs/reliability.md`
+- `docs/macmini-deployment.md`
+- `docs/troubleshooting.md`
+
+---
+
 ## The architecture
 
 **Front-ends** (how you speak to it):
@@ -105,7 +113,7 @@ After changing `config.toml`, rsync it to the Mac and restart the affected servi
 
 ```bash
 rsync -av config.toml macmini:/Users/macmini/penny/
-ssh macmini "launchctl unload ~/Library/LaunchAgents/com.penny.watcher.plist && launchctl load ~/Library/LaunchAgents/com.penny.watcher.plist"
+ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
 ```
 
 ---
@@ -122,7 +130,7 @@ ssh macmini "tail -f ~/.penny/logs/tasks.log"
 ssh macmini "tail -f ~/.penny/logs/webhook.log"
 
 # Restart a service
-ssh macmini "launchctl stop com.penny.SVCNAME && launchctl start com.penny.SVCNAME"
+ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
 ```
 
 ### Automated health monitoring
@@ -149,8 +157,7 @@ rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
   /path/to/penny/ macmini:/Users/macmini/penny/
 
 ssh macmini "for svc in watcher webhook tasks; do
-  launchctl unload ~/Library/LaunchAgents/com.penny.\${svc}.plist
-  launchctl load ~/Library/LaunchAgents/com.penny.\${svc}.plist
+  launchctl kickstart -k gui/\$(id -u)/com.penny.\${svc}
 done"
 ```
 
