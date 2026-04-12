@@ -142,7 +142,10 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 
 **Symptoms**: No PID in launchctl list
 
-**Recovery**: KeepAlive should restart automatically
+**Recovery**: Three layers kick in automatically:
+1. `KeepAlive` in the launchd plist restarts the service immediately on crash
+2. The daily CI health check detects any service without a PID and runs `launchctl kickstart -k` before alerting
+3. Only if the restart also fails does a GitHub email go out
 
 **Manual restart**:
 ```bash
@@ -177,6 +180,6 @@ ssh macmini "sqlite3 ~/.penny/transcripts.db \"SELECT id, error_message FROM tra
 5. **Transcript persistence** — Written to SQLite before routing (no data loss)
 6. **Deduplication** — content hash UNIQUE + PK tracking + age cutoff
 7. **Automatic retries** — Failed routing retried every cycle
-8. **Health monitoring** — 5-min health file + daily CI health check
+8. **Health monitoring** — 5-min health file + daily CI health check with self-healing restarts
 9. **Periodic backup** — JSON export to homelab every 6 hours
 10. **Explicit PATH** — ffmpeg always found

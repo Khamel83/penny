@@ -150,11 +150,17 @@ ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
 
 A GitHub Actions workflow (`.github/workflows/health-check.yml`) runs daily at 9am UTC on a
 self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
-- All 3 persistent services (watcher, tasks, webhook) have a running PID
+- All services registered (count derived automatically from `launchd/*.plist.template` — no hardcoded number)
+- Persistent services (watcher, tasks, webhook) have a running PID
 - Watcher log updated in the last 15 minutes
 - Tasks poller connected to Google Tasks
+- VoiceMemos running (required for CloudKit sync)
 
-If any check fails, GitHub sends an email. No emails = everything is healthy.
+Each check is **self-healing**: before failing, the workflow attempts to fix the problem
+(restart the service via `launchctl kickstart`, relaunch VoiceMemos) and re-verifies.
+Only if recovery fails does it exit non-zero and trigger a GitHub email.
+
+No emails = everything is healthy.
 
 The runner is installed as a systemd service on oci-dev:
 ```bash
@@ -174,7 +180,7 @@ ssh macmini "for svc in watcher webhook tasks; do
 done"
 ```
 
-`scripts/trust_check.py` is the pre-deploy sanity gate (compile, config invariants, launchd template checks, unit tests).
+`scripts/trust_check.py` is the pre-deploy sanity gate — 7 checks: compile, duplicate entrypoints, sqlite3 leak detection, config invariants, launchd template keys, health-check.yml sync (verifies no hardcoded service count), and unit tests.
 
 ---
 
@@ -187,8 +193,7 @@ done"
 - Always-on (Mac Mini recommended)
 
 ```bash
-pip install mlx-whisper requests flask \
-  google-api-python-client google-auth-httplib2 google-auth-oauthlib tomli
+pip install -r requirements.txt
 ```
 
 ---
