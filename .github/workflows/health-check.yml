@@ -8,6 +8,8 @@ on:
 jobs:
   health-check:
     runs-on: [self-hosted, oci-dev]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repo (to read launchd templates)
