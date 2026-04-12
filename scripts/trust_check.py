@@ -44,7 +44,7 @@ def iter_python_files(root: Path) -> Iterable[Path]:
 
 
 def compile_all(py_files: List[Path]) -> None:
-    print("[1/6] Compiling Python files...", flush=True)
+    print("[1/7] Compiling Python files...", flush=True)
     for path in py_files:
         py_compile.compile(str(path), doraise=True)
     print(f"  OK: compiled {len(py_files)} file(s)", flush=True)
@@ -68,7 +68,7 @@ def _is_main_guard(node: ast.If) -> bool:
 
 
 def check_duplicate_entrypoints(py_files: List[Path]) -> None:
-    print("[2/6] Checking for duplicate __main__ entrypoints...", flush=True)
+    print("[2/7] Checking for duplicate __main__ entrypoints...", flush=True)
     offenders: List[Tuple[Path, int]] = []
     for path in py_files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -87,7 +87,7 @@ def check_sqlite_context_manager_antipattern(py_files: List[Path]) -> None:
     The sqlite3 context manager manages TRANSACTIONS, not connections.
     Using 'with sqlite3.connect()' leaves connections open.
     """
-    print("[3/6] Checking for sqlite3 connection leaks...", flush=True)
+    print("[3/7] Checking for sqlite3 connection leaks...", flush=True)
     offenders: List[Tuple[Path, int]] = []
     for path in py_files:
         # Skip test files and this script itself
@@ -122,7 +122,7 @@ def check_sqlite_context_manager_antipattern(py_files: List[Path]) -> None:
 
 
 def check_config_invariants() -> None:
-    print("[4/6] Validating config invariants...", flush=True)
+    print("[4/7] Validating config invariants...", flush=True)
 
     # Keep runtime state/log writes in /tmp during validation.
     os.environ.setdefault("HOME", "/tmp/penny_trust_check_home")
@@ -155,7 +155,7 @@ def check_config_invariants() -> None:
 
 
 def check_launchd_templates() -> None:
-    print("[5/6] Validating launchd templates...", flush=True)
+    print("[5/7] Validating launchd templates...", flush=True)
     template_paths = sorted((ROOT / "launchd").glob("*.plist.template"))
     if not template_paths:
         raise SystemExit("FAIL: No launchd templates found in launchd/")
@@ -168,8 +168,32 @@ def check_launchd_templates() -> None:
     print(f"  OK: validated {len(template_paths)} launchd template(s)", flush=True)
 
 
+def check_health_check_sync() -> None:
+    """health-check.yml must derive its expected service count from plist templates,
+    not hard-code a number. A hard-coded count drifts silently when services are added
+    or removed — this check catches that regression at push time, not 24h later.
+    """
+    print("[6/7] Checking health-check.yml uses dynamic service count...", flush=True)
+    hc_path = ROOT / ".github" / "workflows" / "health-check.yml"
+    if not hc_path.exists():
+        raise SystemExit("FAIL: .github/workflows/health-check.yml not found")
+
+    hc_text = hc_path.read_text(encoding="utf-8")
+
+    # The dynamic pattern reads count from plist templates at runtime.
+    # If this string is absent, the workflow has reverted to a hardcoded count.
+    if "plist.template" not in hc_text:
+        raise SystemExit(
+            "FAIL: health-check.yml does not derive service count from plist templates.\n"
+            "  Hard-coded counts drift when services are added/removed.\n"
+            "  Use: EXPECTED=$(ls launchd/com.penny.*.plist.template | wc -l | tr -d ' ')\n"
+            "  See launchd/ for the authoritative list of services."
+        )
+    print("  OK: health-check.yml derives service count dynamically", flush=True)
+
+
 def run_unit_tests() -> None:
-    print("[6/6] Running unit tests...", flush=True)
+    print("[7/7] Running unit tests...", flush=True)
     cmd = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     subprocess.run(cmd, cwd=ROOT, check=True)
     print("  OK: unit tests passed", flush=True)
@@ -185,6 +209,7 @@ def main() -> None:
     check_sqlite_context_manager_antipattern(py_files)
     check_config_invariants()
     check_launchd_templates()
+    check_health_check_sync()
     run_unit_tests()
     print("\nPASS: Penny trust check passed", flush=True)
 

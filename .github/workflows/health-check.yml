@@ -10,25 +10,39 @@ jobs:
     runs-on: [self-hosted, oci-dev]
 
     steps:
-      - name: Check launchd services (expect 4 registered)
+      - name: Checkout repo (to read launchd templates)
+        uses: actions/checkout@v4
+
+      - name: Check launchd services (count derived from plist templates)
         run: |
-          # 4 services: watcher, webhook, tasks (persistent) + export (StartInterval-based)
+          # Expected count comes from the repo itself — adding a plist template
+          # automatically updates this check without any manual edits.
+          EXPECTED=$(ls launchd/com.penny.*.plist.template | wc -l | tr -d ' ')
           ssh macmini "launchctl list | grep com.penny" | tee /tmp/penny_status.txt
-          COUNT=$(grep -c "com.penny" /tmp/penny_status.txt)
-          echo "Registered penny services: $COUNT"
+          COUNT=$(grep -c "com.penny" /tmp/penny_status.txt || true)
+          echo "Expected: $EXPECTED | Registered on macmini: $COUNT"
           cat /tmp/penny_status.txt
-          if [ "$COUNT" -ne 4 ]; then
-            echo "ERROR: Expected 4 penny services registered, found $COUNT"
-            echo "Check that all 4 plists are loaded: watcher, webhook, tasks, export"
+          if [ "$COUNT" -ne "$EXPECTED" ]; then
+            echo "ERROR: Expected $EXPECTED penny services (one per plist template), found $COUNT"
+            echo "Deploy missing templates or remove stale ones from macmini."
             exit 1
           fi
-          echo "All 4 services registered. OK."
+          echo "All $EXPECTED services registered. OK."
 
       - name: Ensure persistent services are running (self-healing)
         run: |
-          # com.penny.export is StartInterval-based — it runs on a timer, not continuously.
-          # Only watcher, webhook, and tasks must maintain a live PID at all times.
-          PERSISTENT_LABELS="com.penny.watcher com.penny.webhook com.penny.tasks"
+          # Persistent services: plist templates WITHOUT StartInterval (run continuously).
+          # Interval-based services (like export) have no persistent PID — skip them.
+          PERSISTENT_LABELS=""
+          for f in launchd/com.penny.*.plist.template; do
+            if ! grep -q "StartInterval" "$f"; then
+              LABEL=$(basename "$f" .plist.template)
+              PERSISTENT_LABELS="$PERSISTENT_LABELS $LABEL"
+            fi
+          done
+          PERSISTENT_LABELS="${PERSISTENT_LABELS# }"
+          echo "Persistent services: $PERSISTENT_LABELS"
+
           UID_ON_MAC=$(ssh macmini "id -u")
           RESTARTED=""
 
@@ -37,7 +51,7 @@ jobs:
             if [ "$PID" = "-" ] || [ -z "$PID" ]; then
               echo "WARNING: $LABEL not running — attempting restart..."
               ssh macmini "launchctl kickstart -k gui/${UID_ON_MAC}/${LABEL}" \
-                && echo "$LABEL restarted via kickstart." \
+                && echo "$LABEL restarted." \
                 || echo "kickstart returned non-zero (may already be starting)"
               RESTARTED="$RESTARTED $LABEL"
             else
@@ -58,7 +72,7 @@ jobs:
               fi
             done
             if [ -n "$STILL_DOWN" ]; then
-              echo "ERROR: These services failed to restart:$STILL_DOWN"
+              echo "ERROR: Services failed to restart:$STILL_DOWN"
               ssh macmini "launchctl list | grep com.penny"
               exit 1
             fi
@@ -123,7 +137,7 @@ jobs:
           if [ "$PENDING" -gt 5 ]; then
             echo "WARNING: $PENDING transcript(s) stuck — may need manual review"
           fi
-          # Warnings only — stuck transcripts don't need to fail the health check
+          # Warnings only — stuck transcripts don't fail the health check
 
       - name: Ensure VoiceMemos is running (self-healing)
         run: |
