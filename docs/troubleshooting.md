@@ -101,3 +101,45 @@ The primary Penny flow is still Apple Watch Voice Memos through iCloud. If you e
 This sends recordings directly to mac mini when you close the Voice Memos app, bypassing iCloud delays.
 
 See: `docs/ios-shortcut-setup.md`
+
+---
+
+## Symptom: GitHub health check failing — SSH timeout / wrong IP
+
+### Diagnosis
+
+In the GitHub Actions run log, you see:
+```
+ssh: connect to host 192.168.7.165 port 22: Connection timed out
+```
+
+The runner is resolving `macmini` to its LAN IP instead of the Tailscale IP (`100.113.216.27`).
+
+### Root cause
+
+The self-hosted runner's job environment doesn't always inherit `~/.ssh/config`, so SSH falls back to mDNS and finds the macmini's LAN address. OCI can't reach `192.168.7.x`, so every connection silently hangs for ~2 minutes before failing.
+
+### Quick checks
+
+```bash
+# 1. Is macmini reachable from oci-dev right now?
+ssh -F /home/ubuntu/.ssh/config -o ConnectTimeout=10 macmini "echo OK"
+
+# 2. Is Tailscale running on macmini?
+ssh macmini "tailscale status | head -5"
+
+# 3. Trigger a fresh health check run to get new logs
+gh workflow run health-check.yml --ref main
+```
+
+### Fix if Tailscale is down on macmini
+
+```bash
+# Via LAN (if on same network or via homelab as jump host)
+ssh -i ~/.ssh/id_ed25519 macmini@192.168.7.165 "sudo tailscale up"
+# Or physically: System Preferences → Tailscale → Connect
+```
+
+### Fix if SSH config resolution breaks again
+
+The workflow uses `-F /home/ubuntu/.ssh/config` explicitly on every SSH call. If the runner user or config path changes, update `SSH_MACMINI` in `.github/workflows/health-check.yml`.

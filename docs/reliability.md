@@ -152,6 +152,23 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.SVCNAME"
 ```
 
+### Mode 8: CI Health Check Fails — SSH Connects to Wrong IP
+
+**Symptoms**: Health check fails in ~2 min with "Connection timed out" to a `192.168.x.x` address instead of the Tailscale IP.
+
+**Root cause**: The GitHub Actions runner job environment doesn't always pick up `~/.ssh/config`, causing SSH to fall back to mDNS/local DNS and resolve `macmini` to its LAN IP (`192.168.7.165`) rather than the Tailscale IP (`100.113.216.27`). OCI cannot reach the LAN IP, so the connection hangs until TCP times out.
+
+**Prevention**: The health check workflow uses explicit `-F /home/ubuntu/.ssh/config -o ConnectTimeout=15` on every SSH call, and runs an upfront connectivity check that fails in ≤15 s with a diagnostic message if macmini is unreachable.
+
+**Manual diagnosis**:
+```bash
+# From oci-dev — should connect in <1s via Tailscale
+ssh -F /home/ubuntu/.ssh/config macmini "echo OK"
+
+# If it hangs or connects to wrong IP, Tailscale may be down on macmini:
+ssh macmini "tailscale status"
+```
+
 ### Mode 6: Routing Fails (AppleScript errors)
 
 **Symptoms**: Transcripts logged with `status=failed` in database
