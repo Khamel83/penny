@@ -87,12 +87,12 @@ def upload():
         log.warning("Upload rejected — no audio. Files: %s, Content-Type: %s", list(request.files.keys()), request.content_type)
         return jsonify({"error": "No audio file — expected multipart field or raw audio body"}), 400
 
-    suffix = ".m4a"
+    suffix = ".tmp"
     if audio_file:
         fname = audio_file.filename or ""
         if "." in fname:
             suffix = "." + fname.rsplit(".", 1)[-1]
-        log.info("Upload received: %s (field=%s)", fname, next((k for k, v in request.files.items() if v == audio_file), "?"))
+        log.info("Upload received: %s (field=%s, content-type=%s)", fname, next((k for k, v in request.files.items() if v == audio_file), "?"), request.content_type)
     else:
         log.info("Upload received: raw body %d bytes, content-type=%s", len(raw_body), request.content_type)
 
@@ -106,6 +106,9 @@ def upload():
 
     try:
         file_size = temp_path.stat().st_size
+        with open(temp_path, "rb") as _f:
+            magic = _f.read(12).hex()
+        log.info("File saved: %d bytes, magic=%s, path=%s", file_size, magic, temp_path)
         if file_size > MAX_FILE_SIZE:
             size_mb = file_size / (1024 * 1024)
             max_mb = cfg.voice_memos.max_file_size_mb
