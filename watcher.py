@@ -55,8 +55,6 @@ FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
 # Only process files created within this window. Prevents re-processing old files
 # when VoiceMemos touches their mtimes during sync or restart.
 MAX_FILE_AGE = timedelta(hours=24)
-MAX_RECORDING_AGE = timedelta(days=7)  # DB poll ignores recordings older than this
-COREDATA_EPOCH_OFFSET = 978307200  # CoreData dates are seconds since 2001-01-01
 
 
 # ===== Dependencies =====
@@ -209,15 +207,14 @@ def get_new_recordings() -> List[Dict[str, Any]]:
         conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cutoff_coredata = time.time() - COREDATA_EPOCH_OFFSET - MAX_RECORDING_AGE.total_seconds()
         cursor.execute(
             """
             SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
             FROM ZCLOUDRECORDING
-            WHERE Z_PK > ? AND ZDATE > ?
+            WHERE Z_PK > ?
             ORDER BY Z_PK ASC
             """,
-            (last_pk, cutoff_coredata),
+            (last_pk,),
         )
         return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
