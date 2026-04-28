@@ -59,15 +59,30 @@ def health():
 @app.route("/upload", methods=["POST"])
 def upload():
     """Receive audio file from iOS Shortcut, transcribe, classify, add to Reminders."""
-    if "audio" not in request.files:
-        return jsonify({"error": "No audio file — expected form field 'audio'"}), 400
+    # iOS Shortcuts sends multipart files under varying field names; accept any file field
+    # or fall back to raw request body (when Shortcuts sends audio as binary body).
+    audio_file = request.files.get("audio") or (request.files and next(iter(request.files.values()), None))
+    raw_body = request.data if not audio_file else None
 
-    audio_file = request.files["audio"]
-    log.info("Upload received: %s", audio_file.filename)
+    if not audio_file and not raw_body:
+        log.warning("Upload rejected — no audio. Files: %s, Content-Type: %s", list(request.files.keys()), request.content_type)
+        return jsonify({"error": "No audio file — expected multipart field or raw audio body"}), 400
+
+    suffix = ".m4a"
+    if audio_file:
+        fname = audio_file.filename or ""
+        if "." in fname:
+            suffix = "." + fname.rsplit(".", 1)[-1]
+        log.info("Upload received: %s (field=%s)", fname, next((k for k, v in request.files.items() if v == audio_file), "?"))
+    else:
+        log.info("Upload received: raw body %d bytes, content-type=%s", len(raw_body), request.content_type)
 
     temp_path = None
-    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
-        audio_file.save(f.name)
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        if audio_file:
+            audio_file.save(f.name)
+        else:
+            f.write(raw_body)
         temp_path = Path(f.name)
 
     try:
