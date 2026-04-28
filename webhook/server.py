@@ -36,12 +36,31 @@ MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
 def transcribe(path):
     import mlx_whisper
-    log.info("Transcribing: %s", path)
-    result = mlx_whisper.transcribe(
-        str(path),
-        path_or_hf_repo=cfg.voice_memos.whisper_model,
-    )
-    return result["text"].strip()
+    import subprocess as _sp
+
+    # Normalize to 16kHz mono WAV before Whisper to handle CAF, AMR, and other
+    # iOS formats that ffmpeg may misidentify when given an .m4a extension.
+    wav_path = path.with_suffix(".wav")
+    try:
+        _sp.run(
+            ["ffmpeg", "-y", "-i", str(path), "-ar", "16000", "-ac", "1", str(wav_path)],
+            check=True, capture_output=True,
+        )
+        transcribe_path = wav_path
+    except _sp.CalledProcessError as e:
+        log.warning("ffmpeg conversion failed, passing original to Whisper: %s", e.stderr.decode()[-200:])
+        transcribe_path = path
+
+    log.info("Transcribing: %s", transcribe_path)
+    try:
+        result = mlx_whisper.transcribe(
+            str(transcribe_path),
+            path_or_hf_repo=cfg.voice_memos.whisper_model,
+        )
+        return result["text"].strip()
+    finally:
+        if wav_path.exists():
+            wav_path.unlink(missing_ok=True)
 
 
 # ===== Flask routes =====
