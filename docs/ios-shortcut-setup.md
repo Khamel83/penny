@@ -44,7 +44,8 @@ If you prefer the native Voice Memos app:
 
 ## Webhook URL
 
-- **Via Tailscale**: `http://macmini:5678/upload` (use this — works on any network)
+- **Public (no Tailscale needed)**: `https://omars-mac-mini.deer-panga.ts.net/upload` (use this — works from anywhere, no VPN)
+- **Via Tailscale**: `http://macmini:5678/upload` (when Tailscale is active on phone)
 - **Local network**: `http://100.113.216.27:5678/upload` (hardcoded Tailscale IP)
 
 ## Testing
