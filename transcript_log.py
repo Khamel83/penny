@@ -213,6 +213,27 @@ def is_already_logged(content_hash: str) -> bool:
             conn.close()
 
 
+def get_transcript_by_hash(content_hash: str) -> dict[str, Any] | None:
+    """Fetch a transcript row by content hash."""
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """SELECT id, content_hash, source, transcript, audio_path, status,
+                      duration_seconds, routing_result, routed_at, routed_to
+               FROM transcripts
+               WHERE content_hash = ?""",
+            (content_hash,),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        log.error("Failed to fetch transcript by hash: %s", e)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
 def get_pending(limit: int = 20) -> list[dict]:
     """Fetch transcripts with status='pending' or 'failed', oldest first."""
     conn = None
@@ -561,6 +582,7 @@ def get_voice_memo_recordings_waiting_for_file(limit: int = 20) -> list[dict[str
         rows = conn.execute(
             """SELECT * FROM voice_memo_ingest
                WHERE status IN ('discovered', 'awaiting_file')
+                  OR (status = 'file_ready' AND transcript_row_id IS NULL)
                ORDER BY discovered_at ASC
                LIMIT ?""",
             (limit,),

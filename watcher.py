@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from transcript_log import (
+    get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
     init_db,
@@ -225,6 +226,34 @@ def get_new_recordings() -> List[Dict[str, Any]]:
             conn.close()
 
 
+def get_recordings_by_pk(recording_pks: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Fetch current Voice Memos DB rows for already-discovered recordings."""
+    if not recording_pks or not CLOUDRECORDINGS_DB.exists():
+        return {}
+
+    unique_pks = sorted({int(pk) for pk in recording_pks})
+    placeholders = ",".join("?" for _ in unique_pks)
+    conn = None
+    try:
+        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            f"""
+            SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
+            FROM ZCLOUDRECORDING
+            WHERE Z_PK IN ({placeholders})
+            """,
+            unique_pks,
+        )
+        return {int(row["Z_PK"]): dict(row) for row in cursor.fetchall()}
+    except Exception as e:
+        log.error("Database refresh query failed: %s", e)
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
 def _safe_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -319,8 +348,18 @@ def _process_audio_file(
             mark_voice_memo_failed(recording_pk, "file too large")
         return True
 
-    if is_already_logged(file_hash):
+    existing = get_transcript_by_hash(file_hash)
+    if existing is not None:
         log.info("Already logged: %s", audio_path.name)
+        if recording_pk is not None:
+            mark_voice_memo_file_seen(recording_pk, str(audio_path))
+            link_voice_memo_transcript(
+                recording_pk,
+                transcript_row_id=int(existing["id"]),
+                content_hash=file_hash,
+                audio_path=str(audio_path),
+                routed=existing.get("status") == "routed",
+            )
         return True
 
     file_seen_at = datetime.now().isoformat()
@@ -480,14 +519,30 @@ def _retry_waiting_for_files(limit: int) -> None:
     if not waiting:
         return
     log.info("Retrying %s recording(s) awaiting file download", len(waiting))
+    refreshed = get_recordings_by_pk([int(row["recording_pk"]) for row in waiting])
     for row in waiting:
-        process_recording(
-            {
-                "Z_PK": row["recording_pk"],
+        pk = int(row["recording_pk"])
+        recording = refreshed.get(pk)
+        if recording is not None:
+            upsert_voice_memo_recording(
+                pk,
+                label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
+                raw_path=str(recording.get("ZPATH") or ""),
+                duration_seconds=(
+                    float(recording.get("ZDURATION"))
+                    if recording.get("ZDURATION") is not None
+                    else None
+                ),
+            )
+        else:
+            recording = {
+                "Z_PK": pk,
                 "ZCUSTOMLABEL": row.get("label"),
                 "ZPATH": row.get("raw_path"),
                 "ZDURATION": row.get("duration_seconds"),
             }
+        process_recording(
+            recording
         )
 
 

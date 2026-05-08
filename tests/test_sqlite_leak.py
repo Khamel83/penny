@@ -67,6 +67,106 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             finally:
                 watcher.CLOUDRECORDINGS_DB = original_db
 
+    def test_get_recordings_by_pk_refreshes_existing_metadata(self):
+        """Already-seen recordings can be refreshed after ZPATH appears later."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "CloudRecordings.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE ZCLOUDRECORDING (
+                    Z_PK INTEGER PRIMARY KEY,
+                    ZCUSTOMLABEL TEXT,
+                    ZDATE REAL,
+                    ZDURATION REAL,
+                    ZPATH TEXT
+                )
+            """)
+            conn.execute(
+                "INSERT INTO ZCLOUDRECORDING VALUES (7, 'Late path', 0, 12.5, 'late.m4a')"
+            )
+            conn.commit()
+            conn.close()
+
+            import watcher
+            original_db = watcher.CLOUDRECORDINGS_DB
+            watcher.CLOUDRECORDINGS_DB = db_path
+
+            try:
+                result = watcher.get_recordings_by_pk([7])
+                self.assertEqual(result[7]["ZPATH"], "late.m4a")
+                self.assertEqual(result[7]["ZDURATION"], 12.5)
+            finally:
+                watcher.CLOUDRECORDINGS_DB = original_db
+
+    def test_retry_waiting_for_files_uses_refreshed_cloudrecordings_row(self):
+        """Retry should not keep using stale empty raw_path from local ingest state."""
+        import watcher
+
+        stale = {
+            "recording_pk": 7,
+            "label": "Late path",
+            "raw_path": "",
+            "duration_seconds": None,
+        }
+        fresh = {
+            "Z_PK": 7,
+            "ZCUSTOMLABEL": "Late path",
+            "ZDATE": 0,
+            "ZDURATION": 12.5,
+            "ZPATH": "late.m4a",
+        }
+
+        with patch.object(
+            watcher, "get_voice_memo_recordings_waiting_for_file", return_value=[stale]
+        ), patch.object(
+            watcher, "get_recordings_by_pk", return_value={7: fresh}
+        ), patch.object(
+            watcher, "upsert_voice_memo_recording"
+        ) as upsert_mock, patch.object(
+            watcher, "process_recording"
+        ) as process_mock:
+            watcher._retry_waiting_for_files(limit=5)
+
+        upsert_mock.assert_called_once_with(
+            7,
+            label="Late path",
+            raw_path="late.m4a",
+            duration_seconds=12.5,
+        )
+        process_mock.assert_called_once_with(fresh)
+
+    def test_process_audio_file_links_already_logged_voice_memo(self):
+        """A refreshed waiting row should leave ingest state linked when hash exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = Path(tmpdir) / "late.m4a"
+            audio_path.write_bytes(b"audio")
+
+            import watcher
+
+            with patch.object(watcher, "get_file_hash", return_value="hash7"), patch.object(
+                watcher,
+                "get_transcript_by_hash",
+                return_value={"id": 9, "status": "routed"},
+            ), patch.object(
+                watcher, "mark_voice_memo_file_seen"
+            ) as file_seen_mock, patch.object(
+                watcher, "link_voice_memo_transcript"
+            ) as link_mock, patch.object(
+                watcher, "transcribe"
+            ) as transcribe_mock:
+                result = watcher._process_audio_file(audio_path, recording_pk=7)
+
+            self.assertTrue(result)
+            transcribe_mock.assert_not_called()
+            file_seen_mock.assert_called_once_with(7, str(audio_path))
+            link_mock.assert_called_once_with(
+                7,
+                transcript_row_id=9,
+                content_hash="hash7",
+                audio_path=str(audio_path),
+                routed=True,
+            )
+
     def test_db_recordings_count_closes_connection(self):
         """_db_recordings_count should close its connection."""
         with tempfile.TemporaryDirectory() as tmpdir:

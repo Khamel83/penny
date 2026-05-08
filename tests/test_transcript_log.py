@@ -62,6 +62,15 @@ class TranscriptLogTests(unittest.TestCase):
     def test_is_already_logged_false_for_unknown(self) -> None:
         self.assertFalse(transcript_log.is_already_logged("nonexistent"))
 
+    def test_get_transcript_by_hash(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="lookup1", source="iCloud", transcript="test"
+        )
+        row = transcript_log.get_transcript_by_hash("lookup1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], row_id)
+        self.assertEqual(row["content_hash"], "lookup1")
+
     def test_mark_routed(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="route1", source="iCloud", transcript="test"
@@ -102,6 +111,10 @@ class TranscriptLogTests(unittest.TestCase):
 
         transcript_log.mark_voice_memo_waiting_for_file(101, "not yet")
         transcript_log.mark_voice_memo_file_seen(101, "/tmp/memo.m4a")
+        waiting_after_file_seen = transcript_log.get_voice_memo_recordings_waiting_for_file()
+        self.assertEqual(len(waiting_after_file_seen), 1)
+        self.assertEqual(waiting_after_file_seen[0]["status"], "file_ready")
+
         row_id = transcript_log.insert_transcript("hash101", "iCloud", "memo text")
         transcript_log.link_voice_memo_transcript(
             101,
