@@ -170,7 +170,7 @@ sudo systemctl status actions.runner.Khamel83-penny.oci-dev.service
 ## Deploy from repo
 
 ```bash
-python3 scripts/trust_check.py
+python3.12 scripts/trust_check.py
 
 rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
   /path/to/penny/ macmini:/Users/macmini/penny/
@@ -209,8 +209,14 @@ pip install -r requirements.txt
 | `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
 | `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials JSON |
 | `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
+| `HERMES_WEBHOOK_URL` | Optional Hermes webhook endpoint; defaults to `http://100.126.13.70:7778/webhooks/penny` |
+| `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
 
 Plist templates with placeholders: `launchd/*.plist.template`
+
+Hermes notifications are best-effort. Penny signs each payload with
+`X-Webhook-Signature` and a 3-second timeout. Penny continues routing normally
+if Hermes is down, unreachable, or rejects the webhook.
 
 ### One-time macOS permissions
 

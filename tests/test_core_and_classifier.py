@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import hmac
+import hashlib
 import json
 import logging
 import os
@@ -44,6 +46,55 @@ class CorePipelineTests(unittest.TestCase):
             self.assertFalse(core.send_telegram("hello"))
             post_mock.assert_not_called()
 
+    def test_notify_hermes_sends_signed_payload(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_WEBHOOK_URL": "http://hermes.local/webhooks/penny",
+                    "PENNY_WEBHOOK_SECRET": "test-secret",
+                },
+                clear=False,
+            ),
+            patch.object(core.requests, "post") as post_mock,
+        ):
+            post_mock.return_value.raise_for_status = lambda: None
+            ok = core._notify_hermes(
+                "buy milk",
+                [{"item": "buy milk", "category": "groceries"}],
+                source="iCloud",
+            )
+
+        self.assertTrue(ok)
+        post_mock.assert_called_once()
+        args, kwargs = post_mock.call_args
+        self.assertEqual(args[0], "http://hermes.local/webhooks/penny")
+        body = kwargs["data"]
+        expected_signature = hmac.new(
+            b"test-secret", body.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        self.assertEqual(
+            kwargs["headers"]["X-Webhook-Signature"], expected_signature
+        )
+        self.assertEqual(kwargs["headers"]["Content-Type"], "application/json")
+        self.assertEqual(json.loads(body)["transcript"], "buy milk")
+        self.assertEqual(kwargs["timeout"], 3)
+
+    def test_notify_hermes_skips_when_secret_missing(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_WEBHOOK_URL": "http://hermes.local/webhooks/penny",
+                    "PENNY_WEBHOOK_SECRET": "",
+                },
+                clear=False,
+            ),
+            patch.object(core.requests, "post") as post_mock,
+        ):
+            self.assertFalse(core._notify_hermes("buy milk", [], source="iCloud"))
+            post_mock.assert_not_called()
+
     def test_action_items_routes_to_reminders(self) -> None:
         """action_items content type uses the existing classifier and adds reminders."""
         classify_result = {"items": [{"item": "buy milk", "category": "groceries"}]}
@@ -55,6 +106,19 @@ class CorePipelineTests(unittest.TestCase):
             result = core.classify_and_route("buy milk", source="iCloud")
         self.assertFalse(result.get("skip"))
         self.assertEqual(len(result["items"]), 1)
+
+    def test_action_items_notifies_hermes_after_successful_route(self) -> None:
+        classify_result = {"items": [{"item": "buy milk", "category": "groceries"}]}
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value=classify_result),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "_notify_hermes", return_value=True) as notify_mock,
+        ):
+            core.classify_and_route("buy milk", source="iCloud")
+        notify_mock.assert_called_once_with(
+            "buy milk", classify_result["items"], source="iCloud"
+        )
 
     def test_action_items_raises_when_reminder_write_fails(self) -> None:
         result = {"items": [{"item": "buy milk", "category": "groceries"}]}

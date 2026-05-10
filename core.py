@@ -7,12 +7,13 @@ Shared pipeline, notifications, and deduplication for all Penny services.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import logging.handlers
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -128,6 +129,68 @@ def send_telegram(message: str, *, force: bool = False) -> bool:
     except Exception as e:
         logging.getLogger("penny.core").error("Telegram send failed: %s", e)
         return False
+
+
+def _notify_hermes(
+    transcript_text: str,
+    routed_items: List[Dict[str, Any]],
+    source: str = "voice_memo",
+) -> bool:
+    """Best-effort Hermes webhook notification. Never blocks Penny for long."""
+    hermes_url = os.getenv(
+        "HERMES_WEBHOOK_URL", "http://100.126.13.70:7778/webhooks/penny"
+    )
+    secret = os.getenv("PENNY_WEBHOOK_SECRET", "")
+    if not hermes_url or not secret:
+        return False
+
+    payload = {
+        "source": source,
+        "transcript": transcript_text,
+        "routed_items": routed_items,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    signature = hmac.new(
+        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    request_id = hashlib.sha256(
+        f"{source}\0{transcript_text}\0{body}".encode("utf-8")
+    ).hexdigest()[:32]
+
+    try:
+        resp = requests.post(
+            hermes_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Webhook-Signature": signature,
+                "X-Request-ID": request_id,
+            },
+            timeout=3,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logging.getLogger("penny.core").warning("Hermes notify failed: %s", e)
+        return False
+
+
+def _hermes_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items = result.get("items")
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    if result.get("skip"):
+        return [{"type": "skip", "reason": str(result.get("reason", ""))}]
+    return []
+
+
+def _finish_route(transcript: str, result: Dict[str, Any], source: str) -> Dict[str, Any]:
+    try:
+        _notify_hermes(transcript, _hermes_items(result), source=source)
+    except Exception as e:
+        logging.getLogger("penny.core").warning("Hermes notify failed: %s", e)
+    return result
 
 
 def build_result_message(transcript: str, result: Dict[str, Any], source: str) -> str:
@@ -271,7 +334,9 @@ def classify_and_route(
                     )
             if row_id is not None:
                 mark_routed(row_id, {"type": "long_note"}, "note in Penny")
-            return {"skip": True, "reason": "long_note"}
+            return _finish_route(
+                transcript, {"skip": True, "reason": "long_note"}, source
+            )
 
         if content_type == "unclear":
             log.info("Unclear content — saving to Notes with reference reminder")
@@ -318,10 +383,11 @@ def classify_and_route(
                     {"type": "unclear", "ref_reminder": ref_text},
                     "note + ref reminder",
                 )
-            return {
+            result = {
                 "skip": True,
                 "reason": "unclear content, saved to Notes with reference",
             }
+            return _finish_route(transcript, result, source)
 
         # action_items — use the existing item extractor
         result = classify(
@@ -343,7 +409,7 @@ def classify_and_route(
                     )
             if row_id is not None:
                 mark_routed(row_id, result, "note in Penny")
-            return result
+            return _finish_route(transcript, result, source)
 
         items = result.get("items", [])
         if not isinstance(items, list) or not items:
@@ -381,7 +447,7 @@ def classify_and_route(
         if row_id is not None:
             mark_routed(row_id, result, f"{routed_count} reminder(s)")
 
-        return result
+        return _finish_route(transcript, result, source)
 
     except RoutingError as e:
         if row_id is not None:

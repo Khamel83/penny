@@ -20,6 +20,11 @@ from typing import Iterable, List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 
+if sys.version_info < (3, 11):
+    raise SystemExit(
+        "FAIL: Penny requires Python 3.11+. Run: python3.12 scripts/trust_check.py"
+    )
+
 EXCLUDE_DIR_NAMES = {".git", "__pycache__", "venv", ".venv"}
 # Note: com.penny.export.plist.template intentionally sets RunAtLoad and
 # KeepAlive to <false/> (StartInterval-based, not persistent). The check
