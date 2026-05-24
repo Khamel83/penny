@@ -9,6 +9,7 @@ Voice front-end            →  Penny (middleware)  →  Apple back-end
 ────────────────────────────────────────────────────────────────────
 Apple Watch Voice Memo     →  transcribe + classify  →  Reminders / Notes
 Google Home                →  classify               →  Reminders / Notes
+Clio routed item           →  classify               →  Reminders / Notes
 ```
 
 ---
@@ -52,6 +53,8 @@ Canonical documentation:
 ---
 
 ## Routing
+
+Clio should use Penny for Apple-side delivery instead of writing directly to Apple Notes or Reminders from OCI. Clio remains the ledger/router; Penny remains the Mac-side Apple bridge.
 
 | What you say | Where it goes |
 |---|---|
