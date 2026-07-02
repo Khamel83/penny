@@ -199,7 +199,9 @@ def check_health_check_sync() -> None:
 
 def run_unit_tests() -> None:
     print("[7/7] Running unit tests...", flush=True)
-    cmd = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
+    # Run tests in the project environment so optional runtime deps are available
+    # even when this script is launched with the system interpreter.
+    cmd = ["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     subprocess.run(cmd, cwd=ROOT, check=True)
     print("  OK: unit tests passed", flush=True)
 

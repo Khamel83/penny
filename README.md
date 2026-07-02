@@ -15,6 +15,7 @@ Clio routed item           →  classify               →  Reminders / Notes
 ---
 
 Canonical documentation:
+- `HANDOFF.md`
 - `docs/README.md`
 - `docs/reliability.md`
 - `docs/macmini-deployment.md`

@@ -4,6 +4,7 @@ Canonical docs for Penny live here.
 
 ## Start Here
 
+- `../HANDOFF.md` — assistant-facing operational handoff and validation checklist
 - `../README.md` — product overview, architecture, setup, deploy basics
 - `reliability.md` — operational model, failure modes, health signals
 - `macmini-deployment.md` — Mac mini layout, launchd deployment, runtime locations
