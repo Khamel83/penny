@@ -38,6 +38,11 @@ class CorePipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(core)
 
+    def tearDown(self) -> None:
+        super().tearDown()
+        core.cfg.maya.transcript_url = ""
+        core.cfg.maya.ingest_token = ""
+
     def test_send_telegram_respects_toggle(self) -> None:
         with (
             patch.object(core.cfg.notifications, "telegram_enabled", False),
@@ -278,6 +283,63 @@ class CorePipelineTests(unittest.TestCase):
         result = core.classify_and_route("SE<|hr|><|hr|><|hr|>", source="iCloud")
         self.assertTrue(result.get("skip"))
         self.assertEqual(result.get("reason"), "empty transcript")
+
+
+
+    @patch("core.requests.post")
+    def test_routes_to_maya_when_configured(self, mock_post):
+        """When Maya is configured and returns 200, route via Maya, skip local."""
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True, "routed_to": "clio", "routing_detail": "classified as actionable"
+        }
+
+        # Set Maya config
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        result = core.classify_and_route("write a python script to parse CSV", source="test")
+
+        self.assertEqual(result.get("reason"), "routed_to_maya")
+        mock_post.assert_called_once()
+        call_kwargs = mock_post.call_args[1]
+        self.assertEqual(call_kwargs["json"]["transcript"], "write a python script to parse CSV")
+        self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer test-token")
+        self.assertIn("/ingest/transcript", mock_post.call_args[0][0])
+
+    @patch("core.requests.post")
+    def test_falls_back_when_maya_unavailable(self, mock_post):
+        """When Maya returns non-2xx, fall back to local routing."""
+        mock_post.return_value.status_code = 503
+        mock_post.return_value.text = "Service Unavailable"
+
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+        ):
+            result = core.classify_and_route("buy milk", source="test")
+
+        mock_post.assert_called_once()
+        # Local routing should still happen
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_does_not_call_maya_when_not_configured(self):
+        """When Maya URL is empty, skip Maya entirely."""
+        core.cfg.maya.transcript_url = ""
+        core.cfg.maya.ingest_token = ""
+
+        with (
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+        ):
+            result = core.classify_and_route("hello", source="test")
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
 
 
 class ClassifierFallbackTests(unittest.TestCase):
