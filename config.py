@@ -68,6 +68,12 @@ class NotificationsConfig:
 
 
 @dataclass
+class MayaConfig:
+    transcript_url: str = ""
+    ingest_token: str = ""
+
+
+@dataclass
 class Config:
     llm: LLMConfig
     google_tasks: GoogleTasksConfig
@@ -76,6 +82,7 @@ class Config:
     webhook: WebhookConfig
     logging: LoggingConfig
     notifications: NotificationsConfig
+    maya: MayaConfig
     # Secrets — from environment variables
     openrouter_api_key: str
     telegram_bot_token: str
@@ -102,6 +109,12 @@ def get_config() -> Config:
         if not val and warn_if_missing:
             print(f"WARNING: {key} not set in environment", file=sys.stderr)
         return val
+
+    maya_section = raw.get("maya", {})
+    maya = MayaConfig(
+        transcript_url=maya_section.get("transcript_url", ""),
+        ingest_token=maya_section.get("ingest_token", ""),
+    )
 
     _config = Config(
         llm=LLMConfig(
@@ -131,6 +144,7 @@ def get_config() -> Config:
         notifications=NotificationsConfig(
             telegram_enabled=notifications_enabled,
         ),
+        maya=maya,
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
         telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),

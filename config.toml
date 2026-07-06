@@ -27,3 +27,12 @@ level = "INFO"
 [notifications]
 # Set to false to silence Telegram without removing the integration
 telegram_enabled = false
+
+[maya]
+# URL for Maya's POST /ingest/transcript endpoint (e.g. http://localhost:8200/ingest/transcript)
+# When set, Penny will route transcripts through Maya for classification.
+# Leave empty to skip Maya routing and use Penny's local routing.
+transcript_url = ""
+
+# Bearer token for Maya ingest endpoint authentication (MAYA_INGEST_TOKEN).
+ingest_token = ""

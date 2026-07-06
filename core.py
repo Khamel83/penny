@@ -274,6 +274,59 @@ def _reference_reminder_text(transcript: str) -> str:
     return f"Review Penny note ({timestamp}): {excerpt}"
 
 
+def _route_to_maya(
+    transcript: str,
+    source: str,
+    row_id: int | None = None,
+    duration_seconds: float | None = None,
+) -> bool:
+    """Route transcript to Maya POST /ingest/transcript.
+
+    Returns True if Maya handled it (caller should skip local routing).
+    Returns False if Maya is not configured or unavailable (caller should fall back).
+    """
+    log = logging.getLogger("penny.core")
+    maya_url = cfg.maya.transcript_url.strip()
+    maya_token = cfg.maya.ingest_token.strip()
+
+    if not maya_url or not maya_token:
+        return False
+
+    payload = {
+        "transcript": transcript,
+        "source": source or "penny_voice",
+    }
+    if duration_seconds is not None:
+        payload["duration_seconds"] = duration_seconds
+
+    try:
+        resp = requests.post(
+            maya_url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {maya_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if row_id is not None:
+                mark_routed(row_id, data, "maya")
+            log.info(
+                "Routed to Maya: routed_to=%s detail=%s",
+                data.get("routed_to"),
+                data.get("routing_detail"),
+            )
+            return True
+        else:
+            log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        log.warning("Maya routing failed: %s — falling back to local routing", exc)
+
+    return False
+
+
 def classify_and_route(
     transcript: str,
     source: str,
@@ -309,6 +362,10 @@ def classify_and_route(
             duration_seconds=duration_seconds,
             routing_started_at=datetime.now().isoformat(),
         )
+
+    # Route through Maya if configured, falling back to local routing on failure
+    if _route_to_maya(transcript, source, row_id, duration_seconds):
+        return {"skip": True, "reason": "routed_to_maya"}
 
     content_type = detect_content_type(
         transcript,
