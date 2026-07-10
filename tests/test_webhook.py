@@ -200,5 +200,24 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
     assert resp2.get_json()["status"] == "duplicate"
 
 
+def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
+    """Two concurrent /deliver requests can both pass is_already_logged before either
+    inserts. The loser's INSERT OR IGNORE returns None from insert_transcript — that
+    must surface as {"status": "duplicate"}, not route with row_id=None."""
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+
+    import webhook.server as server
+    monkeypatch.setattr(server, "is_already_logged", lambda content_hash: False)
+    monkeypatch.setattr(server, "insert_transcript", lambda **kwargs: None)
+
+    route_called = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route_called)
+
+    resp = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "duplicate"}
+    route_called.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
