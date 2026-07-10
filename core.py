@@ -332,6 +332,7 @@ def classify_and_route(
     source: str,
     row_id: int | None = None,
     duration_seconds: float | None = None,
+    allow_maya: bool = True,
 ) -> Dict[str, Any]:
     """
     Core pipeline: Content type detection -> Classifier -> Reminders/Notes -> Telegram.
@@ -363,8 +364,10 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
-    # Route through Maya if configured, falling back to local routing on failure
-    if _route_to_maya(transcript, source, row_id, duration_seconds):
+    # Route through Maya if configured, falling back to local routing on failure.
+    # allow_maya=False is set by the /deliver endpoint, which receives transcripts
+    # FROM Maya — re-sending them would loop forever.
+    if allow_maya and _route_to_maya(transcript, source, row_id, duration_seconds):
         return {"skip": True, "reason": "routed_to_maya"}
 
     content_type = detect_content_type(
