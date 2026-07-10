@@ -110,10 +110,15 @@ def get_config() -> Config:
             print(f"WARNING: {key} not set in environment", file=sys.stderr)
         return val
 
+    # Env vars win so the ingest token stays out of the repo-managed toml.
     maya_section = raw.get("maya", {})
     maya = MayaConfig(
-        transcript_url=maya_section.get("transcript_url", ""),
-        ingest_token=maya_section.get("ingest_token", ""),
+        transcript_url=os.environ.get(
+            "MAYA_TRANSCRIPT_URL", maya_section.get("transcript_url", "")
+        ),
+        ingest_token=os.environ.get(
+            "MAYA_INGEST_TOKEN", maya_section.get("ingest_token", "")
+        ),
     )
 
     _config = Config(

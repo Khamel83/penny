@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -340,6 +342,26 @@ class CorePipelineTests(unittest.TestCase):
             result = core.classify_and_route("hello", source="test")
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_classify_and_route_skips_maya_when_disallowed(self):
+        """allow_maya=False must never call _route_to_maya (prevents Maya->Penny->Maya loops)."""
+        calls = {"maya": 0}
+
+        def fake_route_to_maya(*args, **kwargs):
+            calls["maya"] += 1
+            return True
+
+        with (
+            patch.object(core, "_route_to_maya", fake_route_to_maya),
+            patch.object(
+                core, "detect_content_type",
+                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop-here")),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="stop-here"):
+                core.classify_and_route("buy milk", "test", allow_maya=False)
+
+        assert calls["maya"] == 0
 
 
 class ClassifierFallbackTests(unittest.TestCase):

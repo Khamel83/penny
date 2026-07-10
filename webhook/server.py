@@ -7,6 +7,8 @@ Endpoints:
   POST /ingest  — pre-transcribed text → classify → Reminders
   GET  /health  — health check
 """
+import hashlib
+import os
 import sys
 import tempfile
 import logging
@@ -191,6 +193,54 @@ def ingest():
         "items_added": len(result.get("items", [])),
         "skipped": result.get("skip", False),
     })
+
+
+@app.route("/deliver", methods=["POST"])
+def deliver():
+    """Receive a transcript back from Maya for local Apple-side delivery.
+
+    Maya classifies voice transcripts and sends reminder-type ones here.
+    Routing runs with allow_maya=False — re-sending to Maya would loop.
+    """
+    secret = os.environ.get("PENNY_WEBHOOK_SECRET", "")
+    provided = request.headers.get("Authorization", "")
+    if not secret or provided != f"Bearer {secret}":
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    text = (body.get("transcript") or "").strip()
+    if not text:
+        return jsonify({"error": "transcript is required and must be non-empty"}), 422
+
+    source = (body.get("source") or "maya").strip()
+    duration = body.get("duration_seconds")
+
+    content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if is_already_logged(content_hash):
+        log.info("/deliver: duplicate transcript (hash=%s)", content_hash[:12])
+        return jsonify({"status": "duplicate"})
+
+    row_id = insert_transcript(
+        content_hash=content_hash,
+        source=f"maya:{source}",
+        transcript=text,
+        duration_seconds=duration,
+    )
+    log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",
+             len(text), source, row_id)
+
+    try:
+        classify_and_route(
+            text, f"maya:{source}",
+            row_id=row_id,
+            duration_seconds=duration,
+            allow_maya=False,
+        )
+    except Exception as e:
+        log.error("/deliver: routing failed: %s", e)
+        return jsonify({"error": f"routing failed: {e}"}), 500
+
+    return jsonify({"status": "delivered", "id": row_id})
 
 
 # ===== Main =====

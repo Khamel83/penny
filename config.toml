@@ -29,10 +29,10 @@ level = "INFO"
 telegram_enabled = false
 
 [maya]
-# URL for Maya's POST /ingest/transcript endpoint (e.g. http://localhost:8200/ingest/transcript)
-# When set, Penny will route transcripts through Maya for classification.
-# Leave empty to skip Maya routing and use Penny's local routing.
+# URL for Maya's POST /ingest/transcript endpoint.
+# Overridden by env var MAYA_TRANSCRIPT_URL (set in the launchd plists).
 transcript_url = ""
 
-# Bearer token for Maya ingest endpoint authentication (MAYA_INGEST_TOKEN).
+# Bearer token for Maya ingest auth. NEVER set here — use env var
+# MAYA_INGEST_TOKEN (must equal Maya's MAYA_INGEST_TOKEN).
 ingest_token = ""
