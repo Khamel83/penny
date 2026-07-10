@@ -89,6 +89,17 @@ class ConfigTests(unittest.TestCase):
         os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
         os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
+    def test_maya_config_env_overrides(self):
+        os.environ["MAYA_TRANSCRIPT_URL"] = "http://localhost:8200/ingest/transcript"
+        os.environ["MAYA_INGEST_TOKEN"] = "sekrit"
+        config._config = None
+        cfg = config.get_config()
+        self.assertEqual(cfg.maya.transcript_url, "http://localhost:8200/ingest/transcript")
+        self.assertEqual(cfg.maya.ingest_token, "sekrit")
+        # Clean up
+        os.environ.pop("MAYA_TRANSCRIPT_URL", None)
+        os.environ.pop("MAYA_INGEST_TOKEN", None)
+
 
 if __name__ == "__main__":
     unittest.main()
