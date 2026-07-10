@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Tests for Penny webhook server (webhook/server.py)."""
+import hashlib
 import io
 import os
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -30,6 +33,17 @@ import webhook.server as server_module  # noqa: E402
 
 app = server_module.app
 app.config["TESTING"] = True
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    import transcript_log
+    monkeypatch.setattr(transcript_log, "TRANSCRIPT_DB_PATH", tmp_path / "transcripts.db")
+    import webhook.server as server
+    transcript_log.init_db()
+    server.app.config["TESTING"] = True
+    with server.app.test_client() as c:
+        yield c
 
 
 class HealthTests(unittest.TestCase):
@@ -134,6 +148,56 @@ class IngestTests(unittest.TestCase):
         with app.test_client() as client:
             resp = client.post("/ingest", json={"text": "buy milk"})
             self.assertEqual(resp.status_code, 500)
+
+
+DELIVER_PAYLOAD = {
+    "transcript": "remind me to call the dentist tomorrow",
+    "source": "voice_memo",
+    "duration_seconds": 4.2,
+    "recorded_at": "2026-07-09T18:00:00Z",
+    "metadata": {"via": "maya"},
+}
+
+
+def _auth(secret="test-secret"):
+    return {"Authorization": f"Bearer {secret}"}
+
+
+def test_deliver_requires_bearer_token(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    resp = client.post("/deliver", json=DELIVER_PAYLOAD)
+    assert resp.status_code == 401
+
+
+def test_deliver_rejects_empty_transcript(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    resp = client.post("/deliver", json={**DELIVER_PAYLOAD, "transcript": "  "},
+                       headers=_auth())
+    assert resp.status_code == 422
+
+
+def test_deliver_routes_locally_without_maya(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    seen = {}
+
+    def fake_classify_and_route(transcript, source, row_id=None,
+                                duration_seconds=None, allow_maya=True):
+        seen.update(transcript=transcript, source=source, allow_maya=allow_maya)
+        return {"content_type": "action_items"}
+
+    import webhook.server as server
+    monkeypatch.setattr(server, "classify_and_route", fake_classify_and_route)
+
+    resp = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "delivered"
+    assert seen["allow_maya"] is False
+    assert seen["transcript"] == DELIVER_PAYLOAD["transcript"]
+
+    # Same payload again → dedup via md5 content hash
+    resp2 = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+    assert resp2.status_code == 200
+    assert resp2.get_json()["status"] == "duplicate"
 
 
 if __name__ == "__main__":
