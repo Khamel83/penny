@@ -4,12 +4,20 @@ This file is the assistant-facing entry point for Penny.
 
 ## What Penny Is
 
-Penny is voice capture middleware for Apple's native apps. The primary flow is:
+Penny is voice capture middleware for Apple's native apps. The live flow (as of
+2026-07-10) is:
 
-`Apple Voice Memos -> Penny local SQLite ledger -> Whisper transcription -> Maya -> downstream routing`
+`Apple Voice Memos -> Penny local SQLite ledger -> Whisper transcription -> Maya
+/ingest/transcript -> {Penny /deliver -> Apple Reminders/Notes | Maya
+drops->rules->Clio /api/intake}`
 
-Penny can fall back to its local Apple Reminders / Apple Notes routing when Maya is
-not configured.
+Maya classifies each transcript. Reminder/note-shaped transcripts round-trip back
+to Penny's `POST /deliver` (authenticated, `allow_maya=False` to prevent loops) for
+local Apple-side delivery. Repo-shaped/actionable transcripts enter Maya's drops
+pipeline and dispatch to Clio as a work packet.
+
+Penny falls back to its own local Apple Reminders/Notes routing whenever Maya is
+unreachable or unconfigured (`MAYA_TRANSCRIPT_URL`/`MAYA_INGEST_TOKEN` unset).
 
 ## Canonical Docs
 
@@ -19,9 +27,11 @@ not configured.
 - [docs/macmini-deployment.md](docs/macmini-deployment.md)
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 
-## Active Production Incident: Voice Memos Stalled Before Transcription
+## Resolved Incident: Voice Memos Stalled Before Transcription
 
-Diagnosed on 2026-07-09 at approximately 18:20 PDT.
+Diagnosed 2026-07-09 ~18:20 PDT, resolved 2026-07-09 ~18:45 PDT (watcher/backlog)
+and 2026-07-10 ~06:00 UTC (Maya routing enabled end-to-end). Kept below for
+historical/diagnostic reference — the pipeline it describes is now live.
 
 ### Exact live paths
 
@@ -71,7 +81,45 @@ There are two independent breaks:
 2. Even after that is repaired, Penny will not send transcripts to Maya because
    the Maya transcript endpoint is blank in the live config.
 
-### Recovery sequence
+### Resolution (2026-07-09 / 2026-07-10)
+
+1. **Watcher/backlog (2026-07-09 ~18:45 PDT):** rebuilt `/Users/macmini/penny/venv`
+   on a uv-managed CPython 3.14 (`uv python install 3.14`), independent of Homebrew
+   so future `brew upgrade` runs cannot silently revoke Full Disk Access again.
+   Re-granted FDA to the resolved interpreter path. Old venv kept at
+   `venv.brew-python.bak/` for one week as rollback, then deleted. Backlog (PKs
+   376-382) drained automatically via the existing watermark-based discovery — no
+   date filter, no manual intervention needed beyond the FDA grant. Junk retry-loop
+   row `id=401` (`transcript='.'`) manually set to `status='skipped'`.
+2. **Maya pipeline (2026-07-10 ~06:00 UTC):** landed
+   [Khamel83/penny#11](https://github.com/Khamel83/penny/pull/11) (Penny `/deliver`
+   endpoint + `allow_maya` loop guard + env-based Maya config) and
+   [Khamel83/maya#19](https://github.com/Khamel83/maya/pull/19) (Maya transcripts
+   through the drops pipeline to Clio + authenticated Penny round-trip + idempotent
+   rule seeder). Seeded the new priority-15 `Penny transcripts -> Clio` routing
+   rule into Maya's live DB. Set `MAYA_TRANSCRIPT_URL`/`MAYA_INGEST_TOKEN` in both
+   `com.penny.watcher.plist` and `com.penny.webhook.plist`, and
+   `PENNY_BASE_URL`/`PENNY_WEBHOOK_SECRET` in Maya's `.env`. Restarted all three
+   Penny agents and Maya.
+3. **Verified end-to-end:**
+   - Reminder-shaped transcript ("remind me to water the plants tomorrow morning")
+     -> Maya classified as actionable-reminder -> round-tripped through
+     `POST /deliver` -> landed in Apple Reminders (Home list) -> Penny ledger shows
+     `maya:pipeline_test | routed`.
+   - Repo-shaped transcript ("idea for a project: ...") -> Maya classified as
+     `repo_issue` -> drops pipeline -> Clio work packet created with the correct
+     bare-transcript prompt (no duration prefix, no filename) -> **dispatch to
+     Clio's `/api/intake` currently fails with `422 Unprocessable Entity`** (Clio
+     is reachable; the request payload doesn't match Clio's expected schema). Work
+     packets land in `dispatch_status='draft'` and are not lost, but do not
+     currently reach Clio. Tracked as a follow-up (task_b1617d1e) — this is a
+     Maya<->Clio contract mismatch, pre-existing and outside the scope of the
+     Penny<->Maya work above.
+   - Full physical voice-memo test (Watch/phone recording through to Reminders)
+     not yet performed as of this writing — do this before considering the
+     pipeline fully closed out.
+
+### Recovery sequence (historical — see Resolution above; kept for reference)
 
 Do these steps on the Mac mini. Do not delete or reset either SQLite database.
 
