@@ -25,7 +25,7 @@ if sys.version_info < (3, 11):
         "FAIL: Penny requires Python 3.11+. Run: python3.12 scripts/trust_check.py"
     )
 
-EXCLUDE_DIR_NAMES = {".git", "__pycache__", "venv", ".venv"}
+EXCLUDE_DIR_NAMES = {".git", "__pycache__", "venv", ".venv", "venv.brew-python.bak"}
 # Note: com.penny.export.plist.template intentionally sets RunAtLoad and
 # KeepAlive to <false/> (StartInterval-based, not persistent). The check
 # verifies the keys exist (reliability documentation), not their values.
@@ -200,8 +200,13 @@ def check_health_check_sync() -> None:
 def run_unit_tests() -> None:
     print("[7/7] Running unit tests...", flush=True)
     # Run tests in the project environment so optional runtime deps are available
-    # even when this script is launched with the system interpreter.
-    cmd = ["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
+    # even when this script is launched with the system interpreter. `uv run`
+    # only auto-discovers a `.venv`; this project's venv is named `venv/`, so
+    # point at its interpreter directly rather than letting uv fall back to an
+    # unsynced ephemeral environment.
+    venv_python = ROOT / "venv" / "bin" / "python"
+    python = str(venv_python) if venv_python.exists() else sys.executable
+    cmd = [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     subprocess.run(cmd, cwd=ROOT, check=True)
     print("  OK: unit tests passed", flush=True)
 
