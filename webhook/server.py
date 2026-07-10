@@ -229,6 +229,10 @@ def deliver():
     log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",
              len(text), source, row_id)
 
+    if row_id is None:
+        log.info("/deliver: duplicate transcript lost insert race (hash=%s)", content_hash[:12])
+        return jsonify({"status": "duplicate"})
+
     try:
         classify_and_route(
             text, f"maya:{source}",
