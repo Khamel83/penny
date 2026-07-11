@@ -298,6 +298,10 @@ def _route_to_maya(
     }
     if duration_seconds is not None:
         payload["duration_seconds"] = duration_seconds
+    if row_id is not None:
+        # Maya dedupes on client_ref, so a re-sent transcript (retry, watcher
+        # replay) can never become a second drop or a duplicate Clio task.
+        payload["client_ref"] = f"penny:{row_id}"
 
     try:
         resp = requests.post(
