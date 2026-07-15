@@ -1,0 +1,38 @@
+schema: homelab.project/v1
+project:
+  id: penny
+  name: Penny
+  repository: https://github.com/Khamel83/penny
+  kind: service
+  lifecycle: development
+  owner: homelab
+monitoring:
+  state: observing
+runtime:
+  production:
+    host: macmini
+    managed_by: unknown
+    unit: penny
+    sync_mode: runtime-local-backup-to-homelab
+health:
+  source: macOS launchd on Mac mini
+  checks:
+  - id: penny.launchd
+    type: catalog
+    name: penny.launchd
+    severity: medium
+    repair_id: null
+observability:
+  event_sink: homelab-api:/observations
+  evidence_policy: sanitized
+dependencies:
+  required: []
+  optional: []
+secrets:
+  broker_consumer: penny
+  references: []
+operations:
+  repair_ids: []
+docs:
+  index: README.md
+  operations: docs/OPERATIONS.md
