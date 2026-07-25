@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
+DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
 
 _MIGRATION_SOURCES = [
     (Path("~/.penny/processed.txt").expanduser(), "iCloud"),
@@ -93,6 +95,27 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_voice_memo_ingest_status ON voice_memo_ingest(status)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS slack_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transcript_row_id INTEGER NOT NULL,
+                channel_id TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                sent_at TEXT,
+                UNIQUE(transcript_row_id),
+                FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_status ON slack_deliveries(status)"
+        )
         conn.commit()
 
         migrated = _migrate_processed_files(conn)
@@ -141,6 +164,32 @@ def _json_loads_or_default(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _slack_channel_id() -> str:
+    return (
+        os.environ.get("PENNY_SLACK_CHANNEL_ID")
+        or os.environ.get("SLACK_CHANNEL_ID")
+        or DEFAULT_SLACK_CHANNEL_ID
+    )
+
+
+def _queue_slack_delivery(
+    conn: sqlite3.Connection,
+    *,
+    transcript_row_id: int,
+    source: str,
+    transcript: str,
+) -> None:
+    if source != "iCloud":
+        return
+    conn.execute(
+        """INSERT OR IGNORE INTO slack_deliveries (
+               transcript_row_id, channel_id, message_text
+           )
+           VALUES (?, ?, ?)""",
+        (transcript_row_id, _slack_channel_id(), transcript),
+    )
+
+
 def insert_transcript(
     content_hash: str,
     source: str,
@@ -177,8 +226,14 @@ def insert_transcript(
                 transcription_completed_at,
             ),
         )
-        conn.commit()
         if cursor.lastrowid and cursor.rowcount > 0:
+            _queue_slack_delivery(
+                conn,
+                transcript_row_id=int(cursor.lastrowid),
+                source=source,
+                transcript=transcript,
+            )
+            conn.commit()
             log.debug(
                 "Logged transcript id=%s hash=%s source=%s (%d chars)",
                 cursor.lastrowid,
@@ -187,10 +242,74 @@ def insert_transcript(
                 len(transcript),
             )
             return cursor.lastrowid
+        conn.commit()
         return None
     except Exception as e:
         log.error("Failed to insert transcript: %s", e)
         return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_slack_deliveries(limit: int = 20) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT *
+               FROM slack_deliveries
+               WHERE status IN ('pending', 'failed')
+               ORDER BY created_at ASC, id ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        log.error("Failed to fetch pending Slack deliveries: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_slack_delivery_sent(delivery_id: int) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE slack_deliveries
+               SET status = 'sent',
+                   last_error = NULL,
+                   sent_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (delivery_id,),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark Slack delivery sent id=%s: %s", delivery_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE slack_deliveries
+               SET status = 'failed',
+                   attempt_count = attempt_count + 1,
+                   last_error = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (error_message, delivery_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark Slack delivery failed id=%s: %s", delivery_id, e)
     finally:
         if conn:
             conn.close()

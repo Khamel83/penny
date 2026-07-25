@@ -25,6 +25,10 @@
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>
         <string>/Users/macmini/.penny/google_token.json</string>
+        <key>PENNY_SLACK_BOT_TOKEN</key>
+        <string>YOUR_SLACK_BOT_TOKEN_HERE</string>
+        <key>PENNY_SLACK_CHANNEL_ID</key>
+        <string>C0BKS0QT7FU</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
