@@ -21,6 +21,11 @@
         <string>YOUR_BOT_TOKEN_HERE</string>
         <key>TELEGRAM_CHAT_ID</key>
         <string>YOUR_CHAT_ID_HERE</string>
+        <!-- Slack transcript delivery; use the channel ID for #penny. -->
+        <key>SLACK_BOT_TOKEN</key>
+        <string>YOUR_SLACK_BOT_TOKEN_HERE</string>
+        <key>PENNY_SLACK_CHANNEL</key>
+        <string>YOUR_PENNY_CHANNEL_ID_HERE</string>
         <key>GOOGLE_CREDENTIALS_FILE</key>
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>

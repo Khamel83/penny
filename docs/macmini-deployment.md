@@ -74,7 +74,7 @@ ssh macmini "launchctl list | grep penny"
 
 # Check health
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X
 
 # Check transcript database
 ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT status, COUNT(*) FROM transcripts GROUP BY status;'"
@@ -134,6 +134,7 @@ done"
 - `~/.penny/` — all runtime state (transcripts.db, logs, health files, Google tokens)
 - `~/Library/LaunchAgents/com.penny.*.plist` — contain secrets (OPENROUTER_API_KEY, etc.)
 - Templates at `launchd/*.plist.template` have placeholder values
+- `SLACK_BOT_TOKEN` and `PENNY_SLACK_CHANNEL` must be set in the watcher/webhook/tasks plists; Penny will not silently fall back to another Slack channel
 
 ## Power Settings
 

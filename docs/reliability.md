@@ -19,17 +19,23 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X
 ```
 
 Fields:
 - `db_records` — total recordings in CloudRecordings.db
 - `watcher_ok` — watcher service healthy (1/0)
-- `voicememos` — VoiceMemos app running (1/0)
+- `voicememos` — VoiceMemos app has a process (1/0)
+- `voicememos_responsive` — VoiceMemos answered an Apple Event (1/0); this catches an alive-but-stuck app
+- `voice_db_ok` — CloudRecordings.db passed SQLite integrity and read checks (1/0)
+- `voice_db_wal_age_seconds` — age of the SQLite WAL carrying recent sync writes; `-1` means no WAL is present
+- `cloud_latest_recording_pk` — latest raw Voice Memos row visible locally
 - `pending` — transcripts awaiting routing
 - `latest_recording_pk` — latest Voice Memo PK durably registered in local ingest state
 - `awaiting_file` — DB entries seen but audio file not yet present on disk
 - `voice_memo_failed` — ingest entries that hit a terminal error and need investigation
+- `slack_pending` — transcripts waiting for their first Slack delivery attempt
+- `slack_failed` — Slack deliveries waiting for a retry
 
 ### 3. Dependency Checks on Startup
 
@@ -95,13 +101,15 @@ All transcriptions are persisted to `~/.penny/transcripts.db` (SQLite) before ro
 
 **Prevention**:
 - VoiceMemos is a login item (starts hidden on boot)
-- Watcher calls `open -g -a VoiceMemos` before every poll cycle
+- Watcher calls `open -g -a VoiceMemos` before every poll cycle, even if the process already exists; a live process alone does not prove CloudKit is syncing
+- Watcher probes Apple Event responsiveness, not just `pgrep`
+- After three consecutive failed responsiveness probes, watcher terminates and relaunches VoiceMemos automatically
 
-**Detection**: Disk scan finds unprocessed files
+**Detection**: The health file records process liveness, Apple Event responsiveness, database integrity, WAL age, and the latest raw recording PK. Disk scanning also finds unprocessed files that arrive before their database row.
 
-**Recovery**: Automatic (watcher opens VoiceMemos every 60s)
+**Recovery**: Automatic (watcher refreshes VoiceMemos every 60s and recycles an unresponsive process after three probes)
 
-**Manual fix**:
+**Operator fallback only**:
 ```bash
 ssh macmini "open -g -a VoiceMemos"
 ```
@@ -200,3 +208,4 @@ ssh macmini "sqlite3 ~/.penny/transcripts.db \"SELECT id, error_message FROM tra
 8. **Health monitoring** — 5-min health file + daily CI health check with self-healing restarts
 9. **Periodic backup** — JSON export to homelab every 6 hours
 10. **Explicit PATH** — ffmpeg always found
+11. **Slack outbox** — every persisted transcript is retried until Slack acknowledges it

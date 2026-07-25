@@ -63,7 +63,7 @@ Look for issues with "iCloud Drive" or "CloudKit".
 
 ### Mac Mini Side Checks
 
-**Key fact**: CloudKit (Voice Memos sync) requires the VoiceMemos app to be running. It does NOT sync in the background like iCloud Drive. The watcher now opens VoiceMemos every 60s automatically, and it's a login item so it starts on boot.
+**Key fact**: CloudKit (Voice Memos sync) requires the VoiceMemos app to be running. It does NOT sync in the background like iCloud Drive. The watcher now refreshes VoiceMemos every 60s, probes Apple Event responsiveness, and recycles an unresponsive process after three failed probes. It is also a login item so it starts on boot.
 
 The watcher polls the database every 60 seconds. Verify it's running:
 

@@ -112,6 +112,9 @@ Non-secret settings live in `config.toml`. The key ones:
 telegram_enabled = false   # true to turn Telegram back on, false to silence it
                            # The code and credentials stay either way
 
+# Slack delivery is configured with launchd secrets, not config.toml.
+# Every persisted Penny transcript is queued and retried to #penny.
+
 [google_tasks]
 list_name = "My Tasks"     # Do not change — see Google Home constraint above
 
@@ -158,7 +161,7 @@ self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
 - Persistent services (watcher, tasks, webhook) have a running PID
 - Watcher log updated in the last 15 minutes
 - Tasks poller connected to Google Tasks
-- VoiceMemos running (required for CloudKit sync)
+- VoiceMemos running and Apple Event responsive (required for CloudKit sync)
 
 Each check is **self-healing**: before failing, the workflow attempts to fix the problem
 (restart the service via `launchctl kickstart`, relaunch VoiceMemos) and re-verifies.
@@ -211,6 +214,8 @@ pip install -r requirements.txt
 | `OPENROUTER_API_KEY` | LLM classification via OpenRouter |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (kept even when notifications off) |
 | `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
+| `SLACK_BOT_TOKEN` | Slack bot token with permission to post in `#penny` |
+| `PENNY_SLACK_CHANNEL` | Slack channel ID for `#penny` (for example `C0123456789`) |
 | `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials JSON |
 | `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
 | `HERMES_WEBHOOK_URL` | Optional Hermes webhook endpoint; defaults to `http://100.126.13.70:7778/webhooks/penny` |
@@ -258,3 +263,8 @@ To re-authorize (should never be needed again): run `scripts/google_auth.py` on 
 | `~/.penny/google_credentials.json` | Google OAuth app credentials |
 
 Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`) are still present but superseded by `transcripts.db`.
+
+Slack transcript delivery is durable: each new transcript creates one row in the
+`slack_deliveries` outbox. The watcher posts the full transcript to `#penny`
+and retries failed posts with backoff. A post failure does not discard the
+transcript or block Apple-side routing.

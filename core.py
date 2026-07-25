@@ -23,9 +23,12 @@ from classifier import classify, detect_content_type
 from config import get_config
 from reminders import add_note, add_reminder
 from transcript_log import (
+    get_pending_slack_deliveries,
     get_transcript,
     mark_failed,
     mark_routed,
+    mark_slack_delivery_failed,
+    mark_slack_delivery_sent,
     update_transcript_progress,
     update_transcript_stages,
 )
@@ -53,6 +56,9 @@ CATEGORY_EMOJI = {
 }
 
 WHISPER_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
+_SLACK_CHANNEL_CACHE: dict[str, str] = {}
+_SLACK_CHANNEL_ID_RE = re.compile(r"^[CGDU][A-Z0-9]{8,}$")
+SLACK_MESSAGE_LIMIT = 38000
 
 
 class RoutingError(RuntimeError):
@@ -129,6 +135,141 @@ def send_telegram(message: str, *, force: bool = False) -> bool:
     except Exception as e:
         logging.getLogger("penny.core").error("Telegram send failed: %s", e)
         return False
+
+
+# ===== Slack =====
+
+
+def _slack_configured() -> bool:
+    return bool(
+        os.environ.get("SLACK_BOT_TOKEN", "").strip()
+        and os.environ.get("PENNY_SLACK_CHANNEL", "").strip()
+    )
+
+
+def _resolve_slack_channel(token: str, target: str) -> str:
+    """Resolve a configured channel name once, while accepting channel IDs."""
+    normalized = target.strip().lstrip("#")
+    if _SLACK_CHANNEL_ID_RE.fullmatch(normalized):
+        return normalized
+    if normalized in _SLACK_CHANNEL_CACHE:
+        return _SLACK_CHANNEL_CACHE[normalized]
+
+    response = requests.get(
+        "https://slack.com/api/conversations.list",
+        params={
+            "limit": 1000,
+            "types": "public_channel,private_channel",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", "channel lookup failed"))
+    for channel in data.get("channels", []):
+        name = str(channel.get("name") or "").strip()
+        channel_id = str(channel.get("id") or "").strip()
+        if name.lower() == normalized.lower() and channel_id:
+            _SLACK_CHANNEL_CACHE[normalized] = channel_id
+            return channel_id
+    raise RuntimeError(f"Slack channel #{normalized} is not visible to the bot")
+
+
+def _post_slack_chunk(token: str, target: str, message: str) -> str:
+    resp = requests.post(
+        "https://slack.com/api/chat.postMessage",
+        json={"channel": target, "text": message},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", "unknown error"))
+    return str(data.get("ts") or "")
+
+
+def send_slack(message: str, *, channel: str | None = None) -> str | None:
+    """Post one message to the configured Penny Slack channel.
+
+    Returns Slack's message timestamp on success, otherwise None. Failures are
+    deliberately returned to the durable delivery worker instead of raising
+    into the Apple/Maya routing pipeline.
+    """
+    token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    target = (channel or os.environ.get("PENNY_SLACK_CHANNEL", "")).strip()
+    if not token or not target:
+        logging.getLogger("penny.core").warning(
+            "Slack delivery is not configured (SLACK_BOT_TOKEN/PENNY_SLACK_CHANNEL)"
+        )
+        return None
+
+    try:
+        resolved_target = _resolve_slack_channel(token, target)
+        chunks = [
+            message[index : index + SLACK_MESSAGE_LIMIT]
+            for index in range(0, len(message), SLACK_MESSAGE_LIMIT)
+        ] or [""]
+        provider_ts = ""
+        for index, chunk in enumerate(chunks, start=1):
+            if len(chunks) > 1:
+                chunk = f"(part {index}/{len(chunks)})\n{chunk}"
+            provider_ts = _post_slack_chunk(token, resolved_target, chunk)
+        return provider_ts
+    except Exception as e:
+        logging.getLogger("penny.core").error("Slack send failed: %s", e)
+        return None
+
+
+def build_slack_message(
+    transcript: str, source: str, transcript_id: int | None = None
+) -> str:
+    """Build the full, lossless Slack representation of a Penny transcript."""
+    identifier = f" id={transcript_id}" if transcript_id is not None else ""
+    body = transcript or "(empty transcript)"
+    return f"🎙️ Penny received ({source}{identifier})\n\n{body}"
+
+
+def process_pending_slack(
+    limit: int = 20, transcript_id: int | None = None
+) -> int:
+    """Deliver due transcript notifications and persist failures for retry."""
+    if not _slack_configured():
+        return 0
+
+    delivered = 0
+    for delivery in get_pending_slack_deliveries(
+        limit=limit, transcript_id=transcript_id
+    ):
+        message = build_slack_message(
+            delivery["transcript"],
+            delivery["source"],
+            int(delivery["transcript_id"]),
+        )
+        provider_ts = send_slack(message)
+        if provider_ts is None:
+            attempts = int(delivery.get("attempt_count") or 0)
+            retry_after = min(3600, 2 ** min(attempts, 10))
+            mark_slack_delivery_failed(
+                int(delivery["delivery_id"]),
+                "Slack post failed or was not acknowledged",
+                retry_after,
+            )
+            continue
+
+        mark_slack_delivery_sent(int(delivery["delivery_id"]), provider_ts)
+        delivered += 1
+        logging.getLogger("penny.core").info(
+            "Posted transcript id=%s to Slack channel=%s",
+            delivery["transcript_id"],
+            os.environ.get("PENNY_SLACK_CHANNEL", ""),
+        )
+    return delivered
 
 
 def _notify_hermes(
@@ -353,6 +494,13 @@ def classify_and_route(
     """
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
+
+    # The transcript is already durable by the time callers provide row_id.
+    # Attempt Slack delivery before any downstream route can fail; a failed
+    # post stays in the SQLite outbox and is retried by the watcher.
+    if row_id is not None:
+        process_pending_slack(transcript_id=row_id)
+
     progress = _load_routing_progress(row_id)
 
     if not transcript:

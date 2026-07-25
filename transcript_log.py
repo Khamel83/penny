@@ -93,6 +93,26 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_voice_memo_ingest_status ON voice_memo_ingest(status)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS slack_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transcript_id INTEGER NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                provider_ts TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(transcript_id) REFERENCES transcripts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_due "
+            "ON slack_deliveries(status, next_attempt_at)"
+        )
         conn.commit()
 
         migrated = _migrate_processed_files(conn)
@@ -179,14 +199,20 @@ def insert_transcript(
         )
         conn.commit()
         if cursor.lastrowid and cursor.rowcount > 0:
+            row_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT OR IGNORE INTO slack_deliveries (transcript_id) VALUES (?)",
+                (row_id,),
+            )
+            conn.commit()
             log.debug(
                 "Logged transcript id=%s hash=%s source=%s (%d chars)",
-                cursor.lastrowid,
+                row_id,
                 content_hash[:12],
                 source,
                 len(transcript),
             )
-            return cursor.lastrowid
+            return row_id
         return None
     except Exception as e:
         log.error("Failed to insert transcript: %s", e)
@@ -254,6 +280,130 @@ def get_pending(limit: int = 20) -> list[dict]:
     except Exception as e:
         log.error("Failed to fetch pending transcripts: %s", e)
         return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def queue_slack_delivery(transcript_id: int) -> None:
+    """Ensure a transcript has one durable Slack delivery record."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO slack_deliveries (transcript_id) VALUES (?)",
+            (transcript_id,),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to queue Slack delivery transcript=%s: %s", transcript_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_slack_deliveries(
+    limit: int = 20, transcript_id: int | None = None
+) -> list[dict[str, Any]]:
+    """Return due, unsent Slack deliveries with their transcript payload."""
+    conn = None
+    try:
+        conn = _get_conn()
+        where = [
+            "d.status IN ('pending', 'failed')",
+            "(d.next_attempt_at IS NULL OR d.next_attempt_at <= datetime('now'))",
+        ]
+        params: list[Any] = []
+        if transcript_id is not None:
+            where.append("d.transcript_id = ?")
+            params.append(transcript_id)
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT d.id AS delivery_id, d.transcript_id, d.status,
+                      d.attempt_count, d.last_error, d.provider_ts,
+                      t.source, t.transcript
+               FROM slack_deliveries d
+               JOIN transcripts t ON t.id = d.transcript_id
+               WHERE {' AND '.join(where)}
+               ORDER BY d.created_at ASC
+               LIMIT ?""",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        log.error("Failed to fetch pending Slack deliveries: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_slack_delivery_sent(delivery_id: int, provider_ts: str | None = None) -> None:
+    """Mark a Slack delivery as sent after Slack acknowledges it."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE slack_deliveries
+               SET status = 'sent', provider_ts = ?, last_error = NULL,
+                   next_attempt_at = NULL, updated_at = datetime('now')
+               WHERE id = ?""",
+            (provider_ts, delivery_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to mark Slack delivery sent id=%s: %s", delivery_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_slack_delivery_failed(
+    delivery_id: int, error_message: str, retry_after_seconds: int
+) -> None:
+    """Record a Slack failure and schedule the next retry."""
+    conn = None
+    try:
+        delay = max(1, int(retry_after_seconds))
+        conn = _get_conn()
+        conn.execute(
+            """UPDATE slack_deliveries
+               SET status = 'failed', attempt_count = attempt_count + 1,
+                   last_error = ?,
+                   next_attempt_at = datetime('now', ? || ' seconds'),
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (error_message[:500], f"+{delay}", delivery_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to record Slack delivery failure id=%s: %s", delivery_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_slack_delivery_health() -> dict[str, int]:
+    """Return counts used by the watcher health file."""
+    conn = None
+    health = {"pending_count": 0, "failed_count": 0}
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT status, COUNT(*) AS count
+               FROM slack_deliveries
+               WHERE status IN ('pending', 'failed')
+               GROUP BY status"""
+        ).fetchall()
+        for row in rows:
+            if row["status"] == "pending":
+                health["pending_count"] = int(row["count"])
+            elif row["status"] == "failed":
+                health["failed_count"] = int(row["count"])
+        return health
+    except Exception as e:
+        log.error("Failed to fetch Slack delivery health: %s", e)
+        return health
     finally:
         if conn:
             conn.close()

@@ -73,6 +73,10 @@ def health():
         "status": "ok",
         "service": "penny-webhook",
         "telegram_configured": bool(cfg.telegram_bot_token and cfg.telegram_chat_id),
+        "slack_configured": bool(
+            os.environ.get("SLACK_BOT_TOKEN", "").strip()
+            and os.environ.get("PENNY_SLACK_CHANNEL", "").strip()
+        ),
         "llm_model": cfg.llm.model,
     })
 

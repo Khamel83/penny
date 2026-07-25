@@ -53,6 +53,61 @@ class CorePipelineTests(unittest.TestCase):
             self.assertFalse(core.send_telegram("hello"))
             post_mock.assert_not_called()
 
+    def test_send_slack_posts_to_configured_channel(self) -> None:
+        response = type("Response", (), {})()
+        response.status_code = 200
+        response.raise_for_status = lambda: None
+        response.json = lambda: {"ok": True, "ts": "123.456"}
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SLACK_BOT_TOKEN": "xoxb-test",
+                    "PENNY_SLACK_CHANNEL": "C0123456789",
+                },
+                clear=False,
+            ),
+            patch.object(core.requests, "post", return_value=response) as post_mock,
+        ):
+            provider_ts = core.send_slack("Penny received this")
+
+        self.assertEqual(provider_ts, "123.456")
+        post_mock.assert_called_once_with(
+            "https://slack.com/api/chat.postMessage",
+            json={"channel": "C0123456789", "text": "Penny received this"},
+            headers={
+                "Authorization": "Bearer xoxb-test",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+
+    def test_send_slack_splits_long_transcripts_without_truncating(self) -> None:
+        response = type("Response", (), {})()
+        response.status_code = 200
+        response.raise_for_status = lambda: None
+        response.json = lambda: {"ok": True, "ts": "123.456"}
+        message = "x" * (core.SLACK_MESSAGE_LIMIT + 10)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SLACK_BOT_TOKEN": "xoxb-test",
+                    "PENNY_SLACK_CHANNEL": "C0123456789",
+                },
+                clear=False,
+            ),
+            patch.object(
+                core.requests, "post", side_effect=[response, response]
+            ) as post_mock,
+        ):
+            core.send_slack(message)
+
+        self.assertEqual(post_mock.call_count, 2)
+        chunks = [call.kwargs["json"]["text"] for call in post_mock.call_args_list]
+        self.assertIn(message[:100], chunks[0])
+        self.assertIn(message[-10:], chunks[1])
+
     def test_notify_hermes_sends_signed_payload(self) -> None:
         with (
             patch.dict(

@@ -49,6 +49,33 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(row["duration_seconds"], 12.5)
         self.assertEqual(row["ingest_state"], "transcribed")
 
+    def test_insert_queues_one_slack_delivery(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-queue-1",
+            source="iCloud",
+            transcript="remember this memo",
+        )
+
+        pending = transcript_log.get_pending_slack_deliveries()
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transcript_id"], row_id)
+        self.assertEqual(pending[0]["source"], "iCloud")
+        self.assertEqual(pending[0]["transcript"], "remember this memo")
+        self.assertEqual(pending[0]["status"], "pending")
+
+    def test_slack_delivery_is_idempotently_queued(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-queue-2",
+            source="iCloud",
+            transcript="one delivery",
+        )
+
+        transcript_log.queue_slack_delivery(row_id)
+
+        pending = transcript_log.get_pending_slack_deliveries()
+        self.assertEqual(len(pending), 1)
+
     def test_dedup_rejects_duplicate(self) -> None:
         rid1 = transcript_log.insert_transcript(
             content_hash="dup1", source="iCloud", transcript="first"
