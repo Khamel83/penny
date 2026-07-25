@@ -170,7 +170,7 @@ self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
 - Persistent services (watcher, tasks, webhook) have a running PID
 - Watcher log updated in the last 15 minutes
 - Tasks poller connected to Google Tasks
-- VoiceMemos running (required for CloudKit sync)
+- VoiceMemos running and Apple Event responsive (required for CloudKit sync)
 
 Each check is **self-healing**: before failing, the workflow attempts to fix the problem
 (restart the service via `launchctl kickstart`, relaunch VoiceMemos) and re-verifies.

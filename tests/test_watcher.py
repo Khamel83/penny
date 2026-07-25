@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,13 +204,87 @@ class WatcherTests(unittest.TestCase):
 
         process_mock.assert_called_once_with(limit=1)
 
+    def test_voicememos_sync_is_refreshed_even_when_process_is_running(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[0] == "osascript":
+                return SimpleNamespace(returncode=0, stdout="Voice Memos", stderr="")
+            return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
+
+        with patch.object(watcher.subprocess, "run", side_effect=fake_run):
+            watcher._voicememos_unresponsive_streak = 0
+            watcher._ensure_voicememos_running()
+
+        self.assertEqual(
+            calls,
+            [
+                ["pgrep", "-x", "VoiceMemos"],
+                ["osascript", "-e", watcher.VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
+                ["open", "-g", "-a", "VoiceMemos"],
+            ],
+        )
+
+    def test_voicememos_unresponsive_is_relaunched_after_three_probes(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[0] == "osascript":
+                return SimpleNamespace(returncode=1, stdout="", stderr="timed out")
+            return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
+
+        with patch.object(watcher.subprocess, "run", side_effect=fake_run):
+            watcher._voicememos_unresponsive_streak = 0
+            watcher._ensure_voicememos_running()
+            watcher._ensure_voicememos_running()
+            watcher._ensure_voicememos_running()
+
+        self.assertIn(["pkill", "-TERM", "-x", "VoiceMemos"], calls)
+        self.assertEqual(calls[-1], ["open", "-g", "-a", "VoiceMemos"])
+
+    def test_cloud_recording_snapshot_reports_database_and_wal(self) -> None:
+        db_path = Path(self.db_dir) / "CloudRecordings.db"
+        connection = sqlite3.connect(db_path)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "CREATE TABLE ZCLOUDRECORDING (Z_PK INTEGER, ZDATE REAL)"
+        )
+        connection.execute(
+            "INSERT INTO ZCLOUDRECORDING VALUES (123, 800000000)"
+        )
+        connection.commit()
+
+        with patch.object(watcher, "CLOUDRECORDINGS_DB", db_path):
+            snapshot = watcher._cloud_recording_snapshot()
+
+        connection.close()
+
+        self.assertTrue(snapshot["db_ok"])
+        self.assertEqual(snapshot["record_count"], 1)
+        self.assertEqual(snapshot["latest_pk"], 123)
+        self.assertTrue(snapshot["wal_exists"])
+
     def test_health_check_is_non_healthy_when_slack_health_query_fails(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
         with (
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
-            patch.object(watcher, "_db_recordings_count", return_value=12),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True,
+                    "record_count": 12,
+                    "latest_pk": 123,
+                    "latest_date": None,
+                    "wal_exists": True,
+                    "wal_age_seconds": 3,
+                },
+            ),
             patch.object(
                 watcher,
                 "get_voice_memo_health",

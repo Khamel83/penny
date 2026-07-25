@@ -19,13 +19,17 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0
 ```
 
 Fields:
 - `db_records` — total recordings in CloudRecordings.db
 - `watcher_ok` — watcher service healthy (1/0)
-- `voicememos` — VoiceMemos app running (1/0)
+- `voicememos` — VoiceMemos app has a process (1/0)
+- `voicememos_responsive` — VoiceMemos answered an Apple Event (1/0); this catches an alive-but-stuck app
+- `voice_db_ok` — CloudRecordings.db passed SQLite integrity and read checks (1/0)
+- `voice_db_wal_age_seconds` — age of the SQLite WAL carrying recent sync writes; `-1` means no WAL is present
+- `cloud_latest_recording_pk` — latest raw Voice Memos row visible locally
 - `pending` — transcripts awaiting routing
 - `latest_recording_pk` — latest Voice Memo PK durably registered in local ingest state
 - `awaiting_file` — DB entries seen but audio file not yet present on disk
@@ -117,7 +121,9 @@ Maya routing is a separate evidence stream from both transcript receipt and Slac
 
 **Prevention**:
 - VoiceMemos is a login item (starts hidden on boot)
-- Watcher calls `open -g -a VoiceMemos` before every poll cycle
+- Watcher refreshes VoiceMemos before every poll cycle, even when its process exists
+- Watcher probes Apple Event responsiveness, not just `pgrep`
+- After three consecutive failed responsiveness probes, watcher terminates and relaunches VoiceMemos automatically
 
 **Detection**: Disk scan finds unprocessed files
 

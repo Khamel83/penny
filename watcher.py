@@ -58,6 +58,14 @@ FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
 # when VoiceMemos touches their mtimes during sync or restart.
 MAX_FILE_AGE = timedelta(hours=24)
 
+VOICE_MEMOS_RESPONSIVENESS_SCRIPT = (
+    "with timeout of 5 seconds\n"
+    '  tell application "Voice Memos" to get name\n'
+    "end timeout"
+)
+VOICE_MEMO_UNRESPONSIVE_LIMIT = 3
+_voicememos_unresponsive_streak = 0
+
 
 # ===== Dependencies =====
 
@@ -142,6 +150,69 @@ def _voicememos_running() -> bool:
         return False
 
 
+def _voicememos_responsive() -> bool:
+    """Check that Voice Memos answers an Apple Event, not just has a PID."""
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip().replace("\n", " ")[:200]
+            log.warning("VoiceMemos responsiveness probe failed: %s", detail)
+            return False
+        return True
+    except Exception as e:
+        log.warning("VoiceMemos responsiveness probe errored: %s", e)
+        return False
+
+
+def _cloud_recording_snapshot() -> dict[str, Any]:
+    """Return non-secret evidence about the local Voice Memos sync database."""
+    snapshot: dict[str, Any] = {
+        "db_ok": False,
+        "record_count": 0,
+        "latest_pk": 0,
+        "latest_date": None,
+        "wal_exists": False,
+        "wal_age_seconds": -1,
+    }
+    if not CLOUDRECORDINGS_DB.exists():
+        return snapshot
+
+    connection = None
+    try:
+        connection = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        snapshot["db_ok"] = bool(integrity and integrity[0] == "ok")
+        row = connection.execute(
+            "SELECT COUNT(*), COALESCE(MAX(Z_PK), 0), MAX(ZDATE) "
+            "FROM ZCLOUDRECORDING"
+        ).fetchone()
+        if row:
+            snapshot["record_count"] = int(row[0] or 0)
+            snapshot["latest_pk"] = int(row[1] or 0)
+            snapshot["latest_date"] = row[2]
+    except Exception as e:
+        log.warning("VoiceMemos sync database probe failed: %s", e)
+    finally:
+        if connection:
+            connection.close()
+
+    wal_path = Path(f"{CLOUDRECORDINGS_DB}-wal")
+    try:
+        wal_stat = wal_path.stat()
+        snapshot["wal_exists"] = True
+        snapshot["wal_age_seconds"] = max(0, int(time.time() - wal_stat.st_mtime))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("VoiceMemos WAL probe failed: %s", e)
+    return snapshot
+
+
 def _transcripts_pending() -> int:
     pending = get_pending(limit=1)
     return len(pending)
@@ -151,14 +222,21 @@ def update_health_check() -> None:
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now().isoformat()
     vm = 1 if _voicememos_running() else 0
+    vm_responsive = 1 if vm and _voicememos_responsive() else 0
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
     slack_health = get_slack_delivery_health()
+    cloud_health = _cloud_recording_snapshot()
     slack_health_error = int(slack_health.get("health_error", 0))
     watcher_ok = 0 if slack_health_error else 1
     HEALTH_FILE.write_text(
         (
-            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:{watcher_ok}|voicememos:{vm}|"
+            f"{now}|db_records:{cloud_health['record_count']}|"
+            f"watcher_ok:{watcher_ok}|voicememos:{vm}|"
+            f"voicememos_responsive:{vm_responsive}|"
+            f"voice_db_ok:{int(cloud_health['db_ok'])}|"
+            f"voice_db_wal_age_seconds:{cloud_health['wal_age_seconds']}|"
+            f"cloud_latest_recording_pk:{cloud_health['latest_pk']}|"
             f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
             f"awaiting_file:{vm_health['awaiting_file_count']}|"
             f"voice_memo_failed:{vm_health['failed_count']}|"
@@ -463,22 +541,43 @@ def process_file(audio_path: Path, *, file_hash: str | None = None) -> bool:
 
 
 def _ensure_voicememos_running() -> None:
-    """Check if VoiceMemos is running; launch it if not (required for CloudKit sync)."""
+    """Refresh Voice Memos and recycle it after repeated failed probes."""
+    global _voicememos_unresponsive_streak
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", "VoiceMemos"],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return
-        log.warning("VoiceMemos not running — launching for CloudKit sync")
-        subprocess.run(
+        running = _voicememos_running()
+        responsive = running and _voicememos_responsive()
+        if not running:
+            _voicememos_unresponsive_streak = 0
+            log.warning("VoiceMemos not running — launching for CloudKit sync")
+        elif not responsive:
+            _voicememos_unresponsive_streak += 1
+            log.warning(
+                "VoiceMemos is not responsive (probe %s/%s)",
+                _voicememos_unresponsive_streak,
+                VOICE_MEMO_UNRESPONSIVE_LIMIT,
+            )
+            if _voicememos_unresponsive_streak >= VOICE_MEMO_UNRESPONSIVE_LIMIT:
+                log.error(
+                    "VoiceMemos stayed unresponsive; recycling it to recover sync"
+                )
+                subprocess.run(
+                    ["pkill", "-TERM", "-x", "VoiceMemos"],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
+                _voicememos_unresponsive_streak = 0
+        else:
+            _voicememos_unresponsive_streak = 0
+
+        refresh = subprocess.run(
             ["open", "-g", "-a", "VoiceMemos"],
             check=False,
             capture_output=True,
             timeout=10,
         )
+        if refresh.returncode != 0:
+            log.warning("VoiceMemos sync refresh failed (exit=%s)", refresh.returncode)
     except Exception as e:
         log.warning("Could not check/launch VoiceMemos: %s", e)
 
