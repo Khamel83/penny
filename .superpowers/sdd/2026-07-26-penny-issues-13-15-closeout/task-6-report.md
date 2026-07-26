@@ -150,3 +150,37 @@ Result:
 ### Concerns after fix round 1
 
 - The live Slack canary and Slack-side read verification remain controller-owned steps by design.
+
+---
+
+## Fix round 2 — 2026-07-26
+
+### Finding 2 correction
+
+Updated `docs/reliability.md` to include the exact already-verified live canary string verbatim:
+
+`Penny health canary 20260726T205704Z: receipt test only; no action required.`
+
+The docs now tell the operator to:
+
+- run the exact read-only command `curl -fsS http://127.0.0.1:5678/health` on the Mac mini and confirm `status=ok`
+- run the existing read-only watcher-runtime wiring check and confirm `slack_configured=True` and `slack_channel_id=C0BKS0QT7FU`
+- read `#penny` / `C0BKS0QT7FU` and match the exact canary text verbatim
+
+The note now explicitly says this proves transcript delivery is not suppressed by `telegram_enabled = false`, but does not prove or change external Slack mention, badge, or push-notification preferences.
+
+### Report correction
+
+Clarification: `README.md` changed in the original Task 6 commit (`a1089c3602f8306d7086627292c91acda2cf0203`). This fix round changes `docs/reliability.md` and the appended report only.
+
+### Focused verification run after fix round 2
+
+Command:
+
+```bash
+python3 -m pytest tests/test_config.py tests/test_core_and_classifier.py tests/test_transcript_log.py tests/test_slack_delivery.py
+```
+
+Result:
+
+- `83 passed in 0.24s`

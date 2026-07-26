@@ -211,7 +211,19 @@ Expected result:
 - `slack_configured=True`
 - `slack_channel_id=C0BKS0QT7FU`
 
-4. After the controller runs the live canary, verify the exact canary text appears in `#penny` (`C0BKS0QT7FU`) and matches the controller's expected text exactly.
+4. After the controller runs the live canary, read `#penny` channel ID `C0BKS0QT7FU` and verify this exact text appears verbatim:
+
+```text
+Penny health canary 20260726T205704Z: receipt test only; no action required.
+```
+
+Concrete verification procedure:
+
+- run the read-only health command above and confirm the response still shows `status=ok`
+- run the read-only watcher-runtime check above and confirm `slack_configured=True` and `slack_channel_id=C0BKS0QT7FU`
+- then read the `#penny` channel and match the canary text exactly, character for character
+
+That combination proves Penny transcript delivery was not suppressed by `telegram_enabled = false`. It does not prove, inspect, or change external Slack mention, badge, or push-notification preferences.
 
 Slack mention, badge, and push-notification preferences are external Slack settings. Penny cannot inspect, change, or prove those preferences from repository state, so do not claim they were modified here.
 
