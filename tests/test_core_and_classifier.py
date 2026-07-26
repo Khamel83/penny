@@ -354,6 +354,38 @@ class CorePipelineTests(unittest.TestCase):
         self.assertEqual(payload["client_ref"], "penny:468")
         self.assertEqual(payload["duration_seconds"], 12.5)
 
+    @patch("core.requests.post")
+    def test_maya_payload_uses_persisted_transcript_body_verbatim(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+        persisted_transcript = (
+            "Penny contract   canary line one.\tTabbed tail  \n"
+            "    Indented line two keeps punctuation, numbers 12345, and spacing exactly.\n"
+            "Line three has  repeated  spaces and a trailing pad.  "
+        )
+        normalized_transcript = core.normalize_transcript_text(persisted_transcript)
+        self.assertNotEqual(normalized_transcript, persisted_transcript)
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core, "get_transcript", return_value={"transcript": persisted_transcript}),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route(
+                persisted_transcript,
+                source="iCloud",
+                row_id=468,
+            )
+
+        payload = mock_post.call_args_list[0].kwargs["json"]
+        self.assertEqual(payload["transcript"], persisted_transcript)
+
     def test_maya_success_marks_routed_only_after_response_is_accepted(self):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"

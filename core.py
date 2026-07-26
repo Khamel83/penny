@@ -250,6 +250,16 @@ def _target_reminders_list(category: str) -> str:
     return target_list
 
 
+def _persisted_transcript_body(row_id: int | None, fallback: str) -> str:
+    if row_id is None:
+        return fallback
+    row = get_transcript(row_id)
+    stored = row.get("transcript") if row else None
+    if stored is None:
+        return fallback
+    return str(stored)
+
+
 def _load_routing_progress(row_id: int | None) -> dict[str, Any]:
     if row_id is None:
         return {}
@@ -369,8 +379,9 @@ def _route_to_maya(
         return False
 
     client_ref = f"penny:{row_id}" if row_id is not None else None
+    delivery_transcript = _persisted_transcript_body(row_id, transcript)
     payload = {
-        "transcript": transcript,
+        "transcript": delivery_transcript,
         "source": source or "penny_voice",
     }
     if duration_seconds is not None:

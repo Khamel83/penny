@@ -82,9 +82,9 @@ class TranscriptContractTests(unittest.TestCase):
         self,
     ) -> None:
         transcript = (
-            "Penny contract canary line one.\n"
-            "Line two keeps punctuation, numbers 12345, and spacing exactly.\n"
-            "Line three proves this is the full durable body."
+            "Penny contract   canary line one.\tTabbed tail  \n"
+            "    Indented line two keeps punctuation, numbers 12345, and spacing exactly.\n"
+            "Line three has  repeated  spaces and a trailing pad.  "
         )
 
         row_id = transcript_log.insert_transcript(
@@ -195,4 +195,3 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(final_delivery["message_text"], transcript)
         self.assertEqual(final_delivery["channel_id"], "C0BKS0QT7FU")
         self.assertEqual(transcript_log.get_pending_slack_deliveries(transcript_id=row_id), [])
-

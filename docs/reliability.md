@@ -90,7 +90,7 @@ Eligible iCloud transcripts also create one durable `slack_deliveries` outbox ro
 - Slack mentions, push notifications, badges, and channel notification preferences are external Slack settings, not Penny repository settings
 
 Maya routing is a separate evidence stream from both transcript receipt and Slack delivery:
-- Penny sends the full normalized transcript, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
+- Penny sends the full persisted transcript body, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
 - Penny reads the Maya bearer token only from `MAYA_INGEST_TOKEN` at runtime and does not persist or print it
 - `routing_progress.maya_route` records whether Maya was `attempting`, `accepted`, `rejected`, or `failed`
 - only a validated Maya acceptance response marks the transcript as routed to `maya`; non-200, malformed 200, timeout, and transport failures fall back to local routing with the rejection/failure details preserved in local state
