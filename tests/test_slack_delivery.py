@@ -34,6 +34,14 @@ class SlackDeliveryTests(unittest.TestCase):
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
 
+    @staticmethod
+    def _render_log_calls(mock_log) -> str:
+        rendered = []
+        for log_call in mock_log.call_args_list:
+            message, *args = log_call.args
+            rendered.append(str(message) % tuple(args))
+        return "\n".join(rendered)
+
     def test_process_pending_slack_deliveries_posts_verbatim_text(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
@@ -98,6 +106,29 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(pending[0]["attempt_count"], 1)
         self.assertEqual(pending[0]["last_error"], "ratelimited")
 
+    def test_unrecognized_slack_error_field_is_replaced_with_safe_category(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="deliver-unrecognized-error",
+            source="iCloud",
+            transcript="sanitize provider-controlled error code",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value.json.return_value = {
+                "ok": False,
+                "error": "unexpectedsecretvalue",
+            }
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        pending = transcript_log.get_pending_slack_deliveries()
+        if pending[0]["last_error"] != "slack_api_error":
+            self.fail("unrecognized Slack error was not replaced")
+        self.assertEqual(delivered, 0)
+
     def test_uncertain_sent_ack_is_not_counted_and_retries_same_client_msg_id(
         self,
     ) -> None:
@@ -132,6 +163,107 @@ class SlackDeliveryTests(unittest.TestCase):
         ]
         self.assertEqual(first_client_msg_id, second_client_msg_id)
         self.assertEqual(str(uuid.UUID(first_client_msg_id)), first_client_msg_id)
+
+    def test_provider_exception_is_sanitized_in_database_and_logs(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="deliver4",
+            source="iCloud",
+            transcript="sanitize provider failure",
+        )
+        import slack_delivery
+
+        secret = "xoxb-" + "private-test-value"
+        provider_error = OSError("transport included bearer " + secret)
+        with (
+            patch.object(
+                slack_delivery.requests,
+                "post",
+                side_effect=provider_error,
+            ),
+            patch.object(slack_delivery.log, "warning") as warning_mock,
+            patch.object(slack_delivery.log, "error") as error_mock,
+        ):
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        pending = transcript_log.get_pending_slack_deliveries()
+        if pending[0]["last_error"] != "provider_error:OSError":
+            self.fail("provider failure was not stored as a safe category")
+        rendered_logs = self._render_log_calls(warning_mock)
+        rendered_logs += self._render_log_calls(error_mock)
+        if secret in rendered_logs:
+            self.fail("provider failure logs contained sensitive material")
+        self.assertEqual(delivered, 0)
+
+    def test_acknowledgement_exceptions_are_sanitized_in_database_and_logs(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="deliver5",
+            source="iCloud",
+            transcript="sanitize acknowledgement failure",
+        )
+        import slack_delivery
+
+        secret = "xoxb-" + "private-test-value"
+        acknowledgement_error = OSError("database included bearer " + secret)
+        with (
+            patch.object(slack_delivery.requests, "post") as post_mock,
+            patch.object(
+                slack_delivery,
+                "mark_slack_delivery_sent",
+                side_effect=acknowledgement_error,
+            ),
+            patch.object(slack_delivery.log, "warning") as warning_mock,
+            patch.object(slack_delivery.log, "error") as error_mock,
+        ):
+            post_mock.return_value.json.return_value = {"ok": True, "ts": "123.456"}
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        pending = transcript_log.get_pending_slack_deliveries()
+        if pending[0]["last_error"] != "acknowledgement_error:OSError":
+            self.fail("acknowledgement failure was not stored as a safe category")
+        rendered_logs = self._render_log_calls(warning_mock)
+        rendered_logs += self._render_log_calls(error_mock)
+        if secret in rendered_logs:
+            self.fail("acknowledgement logs contained sensitive material")
+        self.assertEqual(delivered, 0)
+
+    def test_failed_acknowledgement_logging_never_renders_exception_text(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="deliver6",
+            source="iCloud",
+            transcript="sanitize failed acknowledgement logging",
+        )
+        import slack_delivery
+
+        secret = "xoxb-" + "private-test-value"
+        acknowledgement_error = OSError("database included bearer " + secret)
+        with (
+            patch.object(slack_delivery.requests, "post") as post_mock,
+            patch.object(
+                slack_delivery,
+                "mark_slack_delivery_failed",
+                side_effect=acknowledgement_error,
+            ),
+            patch.object(slack_delivery.log, "warning") as warning_mock,
+            patch.object(slack_delivery.log, "error") as error_mock,
+        ):
+            post_mock.return_value.json.return_value = {
+                "ok": False,
+                "error": "ratelimited",
+            }
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        rendered_logs = self._render_log_calls(warning_mock)
+        rendered_logs += self._render_log_calls(error_mock)
+        if secret in rendered_logs:
+            self.fail("failed acknowledgement logs contained sensitive material")
+        self.assertEqual(delivered, 0)
 
 
 if __name__ == "__main__":
