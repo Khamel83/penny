@@ -55,13 +55,35 @@ class TranscriptLogTests(unittest.TestCase):
             source="iCloud",
             transcript="First line\nSecond line exactly.",
         )
+        replay_id = transcript_log.insert_transcript(
+            content_hash="slack1",
+            source="iCloud",
+            transcript="First line\nSecond line exactly.",
+        )
 
         pending = transcript_log.get_pending_slack_deliveries()
 
+        self.assertIsNotNone(row_id)
+        self.assertIsNone(replay_id)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["transcript_row_id"], row_id)
         self.assertEqual(pending[0]["message_text"], "First line\nSecond line exactly.")
         self.assertEqual(pending[0]["status"], "pending")
+
+    def test_oversized_file_placeholder_does_not_queue_slack_delivery(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="oversized1",
+            source="iCloud",
+            transcript="(skipped: file too large)",
+            ingest_state="skipped_too_large",
+        )
+
+        self.assertIsNotNone(row_id)
+        self.assertEqual(
+            transcript_log.get_transcript(row_id)["transcript"],
+            "(skipped: file too large)",
+        )
+        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
 
     def test_non_voice_sources_do_not_queue_slack_delivery(self) -> None:
         transcript_log.insert_transcript(

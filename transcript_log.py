@@ -178,8 +178,9 @@ def _queue_slack_delivery(
     transcript_row_id: int,
     source: str,
     transcript: str,
+    ingest_state: str | None,
 ) -> None:
-    if source != "iCloud":
+    if source != "iCloud" or ingest_state == "skipped_too_large":
         return
     conn.execute(
         """INSERT OR IGNORE INTO slack_deliveries (
@@ -232,6 +233,7 @@ def insert_transcript(
                 transcript_row_id=int(cursor.lastrowid),
                 source=source,
                 transcript=transcript,
+                ingest_state=ingest_state,
             )
             conn.commit()
             log.debug(
