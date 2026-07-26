@@ -143,21 +143,27 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
             result = core.classify_and_route("hmm whatever", source="iCloud")
         self.assertTrue(result.get("skip"))
+        note_mock.assert_called_once_with(
+            "hmm whatever", folder_name="Penny", source="iCloud"
+        )
 
     def test_long_note_goes_to_notes(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
             result = core.classify_and_route(
                 "long rambling journal entry...", source="iCloud"
             )
         self.assertTrue(result.get("skip"))
         self.assertEqual(result.get("reason"), "long_note")
+        note_mock.assert_called_once_with(
+            "long rambling journal entry...", folder_name="Penny", source="iCloud"
+        )
 
     def test_long_note_raises_when_note_write_fails(self) -> None:
         with (
@@ -170,12 +176,16 @@ class CorePipelineTests(unittest.TestCase):
     def test_unclear_creates_note_and_ref_reminder(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
+            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
         ):
             result = core.classify_and_route("maybe a todo?", source="iCloud")
         self.assertTrue(result.get("skip"))
         self.assertIn("unclear", result.get("reason", ""))
+        note_mock.assert_called_once_with(
+            "maybe a todo?", folder_name="Penny", source="iCloud"
+        )
+        reminder_mock.assert_called_once()
 
     def test_unclear_reference_reminder_uses_timestamp_and_excerpt(self) -> None:
         with (
@@ -403,7 +413,9 @@ class CorePipelineTests(unittest.TestCase):
         )
         states = [call.kwargs["state"] for call in state_mock.call_args_list]
         self.assertEqual(states, ["attempting", "accepted", "failed"])
-        note_mock.assert_called_once()
+        note_mock.assert_called_once_with(
+            "buy milk", folder_name="Penny", source="test"
+        )
         reminder_mock.assert_called_once()
 
     @patch("core.requests.post")
