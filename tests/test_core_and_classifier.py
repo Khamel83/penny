@@ -321,14 +321,18 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
 
-        core.classify_and_route(
-            transcript,
-            source="iCloud",
-            row_id=468,
-            duration_seconds=12.5,
-        )
+        with (
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route(
+                transcript,
+                source="iCloud",
+                row_id=468,
+                duration_seconds=12.5,
+            )
 
-        payload = mock_post.call_args.kwargs["json"]
+        payload = mock_post.call_args_list[0].kwargs["json"]
         self.assertEqual(payload["transcript"], transcript)
         self.assertEqual(payload["source"], "iCloud")
         self.assertEqual(payload["client_ref"], "penny:468")
@@ -346,16 +350,61 @@ class CorePipelineTests(unittest.TestCase):
             events.append("json")
             return {"ok": True, "routed_to": "clio", "routing_detail": "accepted"}
 
+        def record_mark_routed(*args, **kwargs):
+            events.append("mark_routed")
+            return True
+
         response.json.side_effect = response_json
 
         with (
             patch.object(core.requests, "post", return_value=response),
-            patch.object(core, "mark_routed", side_effect=lambda *args, **kwargs: events.append("mark_routed")),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", side_effect=record_mark_routed),
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
 
         self.assertEqual(result.get("reason"), "routed_to_maya")
         self.assertEqual(events, ["json", "mark_routed"])
+
+    def test_falls_back_when_maya_acceptance_cannot_be_persisted_locally(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(core, "_record_maya_route_state", return_value=True) as state_mock,
+            patch.object(core, "mark_routed", return_value=False) as mark_routed_mock,
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True) as note_mock,
+            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertEqual(
+            mark_routed_mock.call_args_list[0],
+            unittest.mock.call(
+            468,
+            {
+                "ok": True,
+                "routed_to": "clio",
+                "routing_detail": "accepted",
+            },
+            "maya",
+            ),
+        )
+        states = [call.kwargs["state"] for call in state_mock.call_args_list]
+        self.assertEqual(states, ["attempting", "accepted", "failed"])
+        note_mock.assert_called_once()
+        reminder_mock.assert_called_once()
 
     @patch("core.requests.post")
     def test_falls_back_when_maya_unavailable(self, mock_post):
@@ -460,8 +509,12 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
 
-        core.classify_and_route("same transcript", source="iCloud", row_id=470)
-        core.classify_and_route("same transcript", source="iCloud", row_id=470)
+        with (
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route("same transcript", source="iCloud", row_id=470)
+            core.classify_and_route("same transcript", source="iCloud", row_id=470)
 
         client_refs = [call.kwargs["json"]["client_ref"] for call in mock_post.call_args_list]
         self.assertEqual(client_refs, ["penny:470", "penny:470"])

@@ -575,12 +575,12 @@ def get_pending(limit: int = 20) -> list[dict]:
             conn.close()
 
 
-def mark_routed(row_id: int, routing_result: dict, routed_to: str) -> None:
+def mark_routed(row_id: int, routing_result: dict, routed_to: str) -> bool:
     """Mark a transcript as successfully routed."""
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE transcripts
                SET status = 'routed',
                    ingest_state = 'routed',
@@ -593,8 +593,10 @@ def mark_routed(row_id: int, routing_result: dict, routed_to: str) -> None:
             (json.dumps(routing_result, default=str), routed_to, row_id),
         )
         conn.commit()
+        return cursor.rowcount > 0
     except Exception as e:
         log.error("Failed to mark routed id=%s: %s", row_id, e)
+        return False
     finally:
         if conn:
             conn.close()
@@ -640,7 +642,7 @@ def get_transcript(row_id: int) -> dict[str, Any] | None:
             conn.close()
 
 
-def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> None:
+def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> bool:
     conn = None
     try:
         conn = _get_conn()
@@ -650,15 +652,17 @@ def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> None:
         ).fetchone()
         progress = _json_loads_or_default(row[0] if row else None, {})
         progress.update(patch)
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE transcripts
                SET routing_progress = ?, updated_at = datetime('now')
                WHERE id = ?""",
             (json.dumps(progress, default=str), row_id),
         )
         conn.commit()
+        return cursor.rowcount > 0
     except Exception as e:
         log.error("Failed to update routing progress id=%s: %s", row_id, e)
+        return False
     finally:
         if conn:
             conn.close()

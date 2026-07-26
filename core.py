@@ -274,10 +274,10 @@ def _reference_reminder_text(transcript: str) -> str:
     return f"Review Penny note ({timestamp}): {excerpt}"
 
 
-def _record_maya_route_state(row_id: int | None, **details: Any) -> None:
+def _record_maya_route_state(row_id: int | None, **details: Any) -> bool:
     if row_id is None:
-        return
-    update_transcript_progress(row_id, {"maya_route": details})
+        return True
+    return update_transcript_progress(row_id, {"maya_route": details})
 
 
 def _is_valid_maya_acceptance(data: Any) -> bool:
@@ -287,6 +287,65 @@ def _is_valid_maya_acceptance(data: Any) -> bool:
         and isinstance(data.get("routed_to"), str)
         and bool(str(data.get("routed_to")).strip())
     )
+
+
+def _confirm_maya_acceptance(
+    row_id: int | None,
+    *,
+    attempted_at: str,
+    client_ref: str | None,
+    source: str,
+    status_code: int,
+    data: dict[str, Any],
+) -> bool:
+    log = logging.getLogger("penny.core")
+    accepted_at = datetime.now(timezone.utc).isoformat()
+    accepted_recorded = _record_maya_route_state(
+        row_id,
+        state="accepted",
+        attempted_at=attempted_at,
+        accepted_at=accepted_at,
+        client_ref=client_ref,
+        source=source,
+        status_code=status_code,
+        routed_to=data.get("routed_to"),
+        routing_detail=data.get("routing_detail"),
+    )
+    if not accepted_recorded:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=source,
+            status_code=status_code,
+            routed_to=data.get("routed_to"),
+            routing_detail=data.get("routing_detail"),
+            error_message="Maya accepted transcript but Penny could not record the acceptance locally",
+        )
+        log.error("Maya acceptance could not be recorded locally for row_id=%s", row_id)
+        return False
+
+    routed_recorded = True
+    if row_id is not None:
+        routed_recorded = mark_routed(row_id, data, "maya")
+    if not routed_recorded:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            accepted_at=accepted_at,
+            client_ref=client_ref,
+            source=source,
+            status_code=status_code,
+            routed_to=data.get("routed_to"),
+            routing_detail=data.get("routing_detail"),
+            error_message="Maya accepted transcript but Penny could not mark it routed locally",
+        )
+        log.error("Maya routed status could not be recorded locally for row_id=%s", row_id)
+        return False
+
+    return True
 
 
 def _route_to_maya(
@@ -395,19 +454,15 @@ def _route_to_maya(
         log.warning("Maya 200 response did not confirm acceptance")
         return False
 
-    _record_maya_route_state(
+    if not _confirm_maya_acceptance(
         row_id,
-        state="accepted",
         attempted_at=attempted_at,
-        accepted_at=datetime.now(timezone.utc).isoformat(),
         client_ref=client_ref,
         source=payload["source"],
         status_code=resp.status_code,
-        routed_to=data.get("routed_to"),
-        routing_detail=data.get("routing_detail"),
-    )
-    if row_id is not None:
-        mark_routed(row_id, data, "maya")
+        data=data,
+    ):
+        return False
     log.info(
         "Routed to Maya: routed_to=%s detail=%s",
         data.get("routed_to"),
