@@ -215,6 +215,8 @@ pip install -r requirements.txt
 | `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
 | `HERMES_WEBHOOK_URL` | Optional Hermes webhook endpoint; defaults to `http://100.126.13.70:7778/webhooks/penny` |
 | `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
+| `PENNY_SLACK_BOT_TOKEN` | Slack bot token used by the watcher to post every voice memo transcript |
+| `PENNY_SLACK_CHANNEL_ID` | Slack channel for verbatim Penny voice memo transcripts; defaults to `C0BKS0QT7FU` |
 
 Plist templates with placeholders: `launchd/*.plist.template`
 

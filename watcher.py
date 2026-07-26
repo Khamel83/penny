@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
+from slack_delivery import process_pending_slack_deliveries
 from transcript_log import (
     get_transcript_by_hash,
     get_voice_memo_health,
@@ -386,6 +387,7 @@ def _process_audio_file(
                 content_hash=file_hash,
                 audio_path=str(audio_path),
             )
+        _process_slack_outbox()
         classify_and_route(
             transcript,
             source="iCloud",
@@ -514,6 +516,15 @@ def _process_disk_backlog(limit: int) -> None:
         process_file(audio_file, file_hash=file_hash)
 
 
+def _process_slack_outbox() -> None:
+    try:
+        delivered = process_pending_slack_deliveries(limit=20)
+        if delivered:
+            log.info("Delivered %s transcript(s) to Slack", delivered)
+    except Exception as e:
+        log.error("Slack outbox processing failed: %s", e, exc_info=True)
+
+
 def _retry_waiting_for_files(limit: int) -> None:
     waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
     if not waiting:
@@ -582,6 +593,7 @@ def main() -> None:
     _process_db_batch(get_new_recordings())
     _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
+    _process_slack_outbox()
     update_health_check()
 
     log.info("Starting main polling loop...")
@@ -604,6 +616,7 @@ def main() -> None:
             _process_db_batch(get_new_recordings())
             _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
             _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
+            _process_slack_outbox()
 
             # Retry any transcripts that failed routing
             pending = get_pending(limit=5)
@@ -625,6 +638,7 @@ def main() -> None:
                         mark_voice_memo_routed_for_transcript(row["id"])
                 except Exception as e:
                     log.error("Retry failed for id=%s: %s", row["id"], e)
+            _process_slack_outbox()
 
         except KeyboardInterrupt:
             log.info("Shutting down...")
