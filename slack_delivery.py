@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import urllib.request
+import uuid
 
 try:
     import requests
@@ -51,6 +52,7 @@ from transcript_log import (
 log = logging.getLogger(__name__)
 
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
 
 
 def _slack_bot_token() -> str:
@@ -59,7 +61,20 @@ def _slack_bot_token() -> str:
     )
 
 
-def _post_to_slack(channel_id: str, message_text: str) -> None:
+def _delivery_client_msg_id(delivery_id: int) -> str:
+    return str(
+        uuid.uuid5(
+            SLACK_DELIVERY_NAMESPACE,
+            f"penny:slack-delivery:{delivery_id}",
+        )
+    )
+
+
+def _post_to_slack(
+    channel_id: str,
+    message_text: str,
+    client_msg_id: str,
+) -> None:
     token = _slack_bot_token()
     if not token:
         raise RuntimeError("PENNY_SLACK_BOT_TOKEN/SLACK_BOT_TOKEN is not configured")
@@ -68,6 +83,7 @@ def _post_to_slack(channel_id: str, message_text: str) -> None:
         SLACK_POST_MESSAGE_URL,
         json={
             "channel": channel_id,
+            "client_msg_id": client_msg_id,
             "text": message_text,
             "unfurl_links": False,
             "unfurl_media": False,
@@ -88,10 +104,21 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
     for row in get_pending_slack_deliveries(limit=limit):
         delivery_id = int(row["id"])
         try:
-            _post_to_slack(str(row["channel_id"]), str(row["message_text"]))
+            _post_to_slack(
+                str(row["channel_id"]),
+                str(row["message_text"]),
+                _delivery_client_msg_id(delivery_id),
+            )
             mark_slack_delivery_sent(delivery_id)
             delivered += 1
         except Exception as exc:
-            mark_slack_delivery_failed(delivery_id, str(exc))
+            try:
+                mark_slack_delivery_failed(delivery_id, str(exc))
+            except Exception as ack_exc:
+                log.error(
+                    "Failed to record Slack delivery failure id=%s: %s",
+                    delivery_id,
+                    ack_exc,
+                )
             log.warning("Slack delivery failed id=%s: %s", delivery_id, exc)
     return delivered

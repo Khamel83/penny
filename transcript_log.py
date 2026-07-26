@@ -291,6 +291,7 @@ def mark_slack_delivery_sent(delivery_id: int) -> None:
         conn.commit()
     except Exception as e:
         log.error("Failed to mark Slack delivery sent id=%s: %s", delivery_id, e)
+        raise
     finally:
         if conn:
             conn.close()
@@ -312,6 +313,7 @@ def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
         conn.commit()
     except Exception as e:
         log.error("Failed to mark Slack delivery failed id=%s: %s", delivery_id, e)
+        raise
     finally:
         if conn:
             conn.close()

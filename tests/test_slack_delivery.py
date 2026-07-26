@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -54,10 +55,20 @@ class SlackDeliveryTests(unittest.TestCase):
             kwargs["json"],
             {
                 "channel": "C123",
+                "client_msg_id": str(
+                    uuid.uuid5(
+                        uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f"),
+                        "penny:slack-delivery:1",
+                    )
+                ),
                 "text": "Line one\nLine two, unchanged.",
                 "unfurl_links": False,
                 "unfurl_media": False,
             },
+        )
+        self.assertEqual(
+            str(uuid.UUID(kwargs["json"]["client_msg_id"])),
+            kwargs["json"]["client_msg_id"],
         )
         self.assertEqual(
             kwargs["headers"]["Authorization"],
@@ -86,6 +97,41 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(pending[0]["status"], "failed")
         self.assertEqual(pending[0]["attempt_count"], 1)
         self.assertEqual(pending[0]["last_error"], "ratelimited")
+
+    def test_uncertain_sent_ack_is_not_counted_and_retries_same_client_msg_id(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
+        transcript_log.insert_transcript(
+            content_hash="deliver3",
+            source="iCloud",
+            transcript="post once despite uncertain ack",
+        )
+        import slack_delivery
+
+        with (
+            patch.object(slack_delivery.requests, "post") as post_mock,
+            patch.object(
+                slack_delivery,
+                "mark_slack_delivery_sent",
+                side_effect=[OSError("database is locked"), None],
+            ),
+        ):
+            post_mock.return_value.json.return_value = {"ok": True, "ts": "123.456"}
+
+            first_delivered = slack_delivery.process_pending_slack_deliveries()
+            second_delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(first_delivered, 0)
+        self.assertEqual(second_delivered, 1)
+        self.assertEqual(post_mock.call_count, 2)
+        first_client_msg_id = post_mock.call_args_list[0].kwargs["json"]["client_msg_id"]
+        second_client_msg_id = post_mock.call_args_list[1].kwargs["json"][
+            "client_msg_id"
+        ]
+        self.assertEqual(first_client_msg_id, second_client_msg_id)
+        self.assertEqual(str(uuid.UUID(first_client_msg_id)), first_client_msg_id)
 
 
 if __name__ == "__main__":

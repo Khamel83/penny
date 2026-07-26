@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -93,6 +93,26 @@ class TranscriptLogTests(unittest.TestCase):
         )
 
         self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+
+    def test_mark_slack_delivery_sent_raises_write_failure(self) -> None:
+        conn = Mock()
+        conn.execute.side_effect = OSError("database is locked")
+
+        with patch.object(transcript_log, "_get_conn", return_value=conn):
+            with self.assertRaisesRegex(OSError, "database is locked"):
+                transcript_log.mark_slack_delivery_sent(1)
+
+        conn.close.assert_called_once()
+
+    def test_mark_slack_delivery_failed_raises_write_failure(self) -> None:
+        conn = Mock()
+        conn.execute.side_effect = OSError("database is locked")
+
+        with patch.object(transcript_log, "_get_conn", return_value=conn):
+            with self.assertRaisesRegex(OSError, "database is locked"):
+                transcript_log.mark_slack_delivery_failed(1, "ratelimited")
+
+        conn.close.assert_called_once()
 
     def test_dedup_rejects_duplicate(self) -> None:
         rid1 = transcript_log.insert_transcript(
