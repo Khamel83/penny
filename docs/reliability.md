@@ -86,6 +86,8 @@ Eligible iCloud transcripts also create one durable `slack_deliveries` outbox ro
 - `next_attempt_at` gates retries so failed sends do not spin every poll cycle
 - `provider_ts` stores the Slack message timestamp after acknowledgement
 - terminal `failed` rows stay visible in health output instead of retrying forever
+- Slack transcript delivery is independent from `config.toml`'s Telegram toggle; the watcher uses `PENNY_SLACK_BOT_TOKEN` plus `PENNY_SLACK_CHANNEL_ID` (default `C0BKS0QT7FU`) to mirror successful iCloud Voice Memo transcripts
+- Slack mentions, push notifications, badges, and channel notification preferences are external Slack settings, not Penny repository settings
 
 Maya routing is a separate evidence stream from both transcript receipt and Slack delivery:
 - Penny sends the full normalized transcript, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
@@ -153,6 +155,14 @@ When validating one transcript end-to-end, collect evidence in this order:
 3. Slack acceptance or rejection: `slack_deliveries` shows whether the verbatim Slack copy was acknowledged, retried, or terminally failed.
 
 These categories are intentionally independent. A Maya rejection is not a missing Penny receipt, and a Slack failure is not proof that Maya or local routing failed.
+
+### Notification control inventory
+
+When someone asks "are notifications enabled?", answer with the exact layer:
+
+1. Telegram: `config.toml` `[notifications].telegram_enabled`. `false` disables Telegram sends without removing the code path or credentials.
+2. Slack transcript mirroring: watcher runtime env `PENNY_SLACK_BOT_TOKEN` and optional `PENNY_SLACK_CHANNEL_ID`. This controls whether Penny can post verbatim iCloud transcript copies to Slack.
+3. Slack user/channel notification behavior: external Slack preference. Penny does not store or infer this setting, and Telegram state must never be used as a proxy for it.
 
 ### Mode 4: ffmpeg Path Issues
 

@@ -99,6 +99,23 @@ class TranscriptLogTests(unittest.TestCase):
 
         self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
 
+    def test_icloud_transcript_uses_default_slack_channel_without_telegram_dependency(
+        self,
+    ) -> None:
+        os.environ.pop("PENNY_SLACK_CHANNEL_ID", None)
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-default-channel",
+            source="iCloud",
+            transcript="voice memo transcript",
+        )
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(
+            pending[0]["channel_id"],
+            transcript_log.DEFAULT_SLACK_CHANNEL_ID,
+        )
+
     def test_queue_slack_delivery_is_idempotent_for_existing_transcript(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="slack-requeue",

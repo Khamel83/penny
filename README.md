@@ -110,7 +110,7 @@ Non-secret settings live in `config.toml`. The key ones:
 ```toml
 [notifications]
 telegram_enabled = false   # true to turn Telegram back on, false to silence it
-                           # The code and credentials stay either way
+                           # This only controls Telegram; it does not disable Slack transcript mirroring
 
 [google_tasks]
 list_name = "My Tasks"     # Do not change — see Google Home constraint above
@@ -132,6 +132,18 @@ After changing `config.toml`, rsync it to the Mac and restart the affected servi
 rsync -av config.toml macmini:/Users/macmini/penny/
 ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
 ```
+
+### Notification policy
+
+Penny has three separate notification controls. They are intentionally independent:
+
+| Concern | Controlled by | In repo? | Default / current intent |
+|---|---|---|---|
+| Telegram alerts from Penny | `config.toml` → `[notifications].telegram_enabled` | Yes | Disabled (`false`) unless explicitly re-enabled |
+| Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN` and `PENNY_SLACK_CHANNEL_ID` in the watcher runtime environment | Yes, as env wiring and code path | Enabled when the Slack token is present; default channel is `C0BKS0QT7FU` |
+| Whether Slack sends a mention, badge, push, or other notification to people in that channel | Slack workspace/channel/user settings | No | External preference; verify in Slack, never infer from Penny's Telegram setting |
+
+Do not add a Penny config setting for Slack mention behavior. Penny only decides whether to mirror the transcript into Slack; Slack decides how that post notifies people.
 
 ---
 
@@ -221,6 +233,12 @@ pip install -r requirements.txt
 | `MAYA_INGEST_TOKEN` | Bearer token for Maya transcript ingest; read from runtime env and never persisted in repo config |
 
 Plist templates with placeholders: `launchd/*.plist.template`
+
+Important separation:
+
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` matter only when `telegram_enabled = true`.
+- `PENNY_SLACK_BOT_TOKEN` and `PENNY_SLACK_CHANNEL_ID` control Slack transcript mirroring regardless of the Telegram toggle.
+- Slack-side mention or notification behavior is configured in Slack itself, not in this repository.
 
 Hermes notifications are best-effort. Penny signs each payload with
 `X-Webhook-Signature` and a 3-second timeout. Penny continues routing normally
