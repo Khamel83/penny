@@ -53,6 +53,12 @@ class CorePipelineTests(unittest.TestCase):
             self.assertFalse(core.send_telegram("hello"))
             post_mock.assert_not_called()
 
+    def test_send_telegram_is_suppressed_by_repo_default_config(self) -> None:
+        self.assertFalse(core.cfg.notifications.telegram_enabled)
+        with patch.object(core.requests, "post") as post_mock:
+            self.assertFalse(core.send_telegram("hello"))
+            post_mock.assert_not_called()
+
     def test_notify_hermes_sends_signed_payload(self) -> None:
         with (
             patch.dict(

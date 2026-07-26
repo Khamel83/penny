@@ -164,6 +164,57 @@ When someone asks "are notifications enabled?", answer with the exact layer:
 2. Slack transcript mirroring: watcher runtime env `PENNY_SLACK_BOT_TOKEN` and optional `PENNY_SLACK_CHANNEL_ID`. This controls whether Penny can post verbatim iCloud transcript copies to Slack.
 3. Slack user/channel notification behavior: external Slack preference. Penny does not store or infer this setting, and Telegram state must never be used as a proxy for it.
 
+### Live Slack verification sequence for operators
+
+Use this when closing a notification-policy issue or verifying the Slack canary after a deployment. The controller runs the live canary; this repo only documents how to inspect the result.
+
+1. Check Penny's real health endpoint:
+
+```bash
+ssh macmini "curl -fsS http://127.0.0.1:5678/health"
+```
+
+Expected result:
+
+- JSON includes `"status":"ok"` and `"service":"penny-webhook"`.
+- With the current repo policy, `"telegram_configured"` may be `false`; that does not disable Slack transcript mirroring.
+
+2. Check watcher health and Slack outbox counters:
+
+```bash
+ssh macmini "cat ~/.penny/health.txt"
+```
+
+Expected result:
+
+- `watcher_ok:1`
+- `slack_pending:` and `slack_failed:` fields are present
+- no unexpected growth in `slack_failed`
+
+3. Check Slack runtime wiring without printing the token:
+
+```bash
+ssh macmini 'launchctl print gui/$(id -u)/com.penny.watcher | python3 - <<'"'"'\"'"'"'PY'"'"'\"'"'"'
+import re
+import sys
+
+data = sys.stdin.read()
+channel = re.search(r"PENNY_SLACK_CHANNEL_ID => ([^\\n]+)", data)
+token = re.search(r"PENNY_SLACK_BOT_TOKEN => ([^\\n]+)", data)
+print(f"slack_configured={bool(token and token.group(1).strip())}")
+print(f"slack_channel_id={channel.group(1).strip() if channel else ''}")
+PY'
+```
+
+Expected result:
+
+- `slack_configured=True`
+- `slack_channel_id=C0BKS0QT7FU`
+
+4. After the controller runs the live canary, verify the exact canary text appears in `#penny` (`C0BKS0QT7FU`) and matches the controller's expected text exactly.
+
+Slack mention, badge, and push-notification preferences are external Slack settings. Penny cannot inspect, change, or prove those preferences from repository state, so do not claim they were modified here.
+
 ### Mode 4: ffmpeg Path Issues
 
 **Symptoms**: "ffmpeg not found" errors

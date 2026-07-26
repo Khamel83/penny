@@ -89,11 +89,9 @@ class ConfigTests(unittest.TestCase):
         os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
         os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
-    def test_telegram_toggle_is_false_without_requiring_slack_env_here(self):
+    def test_config_loads_telegram_disabled_from_config_toml(self):
         cfg = config.get_config()
         self.assertFalse(cfg.notifications.telegram_enabled)
-        self.assertIsNone(os.environ.get("PENNY_SLACK_BOT_TOKEN"))
-        self.assertIsNone(os.environ.get("PENNY_SLACK_CHANNEL_ID"))
 
     def test_maya_config_env_overrides(self):
         os.environ["MAYA_TRANSCRIPT_URL"] = "http://localhost:8200/ingest/transcript"
