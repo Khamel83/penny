@@ -87,6 +87,12 @@ Eligible iCloud transcripts also create one durable `slack_deliveries` outbox ro
 - `provider_ts` stores the Slack message timestamp after acknowledgement
 - terminal `failed` rows stay visible in health output instead of retrying forever
 
+Maya routing is a separate evidence stream from both transcript receipt and Slack delivery:
+- Penny sends the full normalized transcript, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
+- Penny reads the Maya bearer token only from `MAYA_INGEST_TOKEN` at runtime and does not persist or print it
+- `routing_progress.maya_route` records whether Maya was `attempting`, `accepted`, `rejected`, or `failed`
+- only a validated Maya acceptance response marks the transcript as routed to `maya`; non-200, malformed 200, timeout, and transport failures fall back to local routing with the rejection/failure details preserved in local state
+
 ### 6. Periodic Backup
 
 `com.penny.export` runs every 6 hours:
@@ -137,6 +143,16 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 # Old processed.txt files will be re-migrated (hashes only, no transcripts)
 # Homelab backup can restore transcript text: homelab:~/backups/penny/transcript_history.json
 ```
+
+### Evidence checklist for one transcript
+
+When validating one transcript end-to-end, collect evidence in this order:
+
+1. Penny receipt: transcript row in `transcripts.db` proves Penny received and persisted it locally.
+2. Maya acceptance or rejection: `routing_progress.maya_route` shows the latest Maya attempt, using `client_ref = penny:<transcript_id>`.
+3. Slack acceptance or rejection: `slack_deliveries` shows whether the verbatim Slack copy was acknowledged, retried, or terminally failed.
+
+These categories are intentionally independent. A Maya rejection is not a missing Penny receipt, and a Slack failure is not proof that Maya or local routing failed.
 
 ### Mode 4: ffmpeg Path Issues
 

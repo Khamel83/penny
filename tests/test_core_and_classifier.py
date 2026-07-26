@@ -310,6 +310,54 @@ class CorePipelineTests(unittest.TestCase):
         self.assertIn("/ingest/transcript", mock_post.call_args[0][0])
 
     @patch("core.requests.post")
+    def test_maya_payload_includes_full_transcript_source_and_client_ref(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+        transcript = ("full transcript " * 30).strip()
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        core.classify_and_route(
+            transcript,
+            source="iCloud",
+            row_id=468,
+            duration_seconds=12.5,
+        )
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["transcript"], transcript)
+        self.assertEqual(payload["source"], "iCloud")
+        self.assertEqual(payload["client_ref"], "penny:468")
+        self.assertEqual(payload["duration_seconds"], 12.5)
+
+    def test_maya_success_marks_routed_only_after_response_is_accepted(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+        events: list[str] = []
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+
+        def response_json():
+            events.append("json")
+            return {"ok": True, "routed_to": "clio", "routing_detail": "accepted"}
+
+        response.json.side_effect = response_json
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(core, "mark_routed", side_effect=lambda *args, **kwargs: events.append("mark_routed")),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertEqual(result.get("reason"), "routed_to_maya")
+        self.assertEqual(events, ["json", "mark_routed"])
+
+    @patch("core.requests.post")
     def test_falls_back_when_maya_unavailable(self, mock_post):
         """When Maya returns non-2xx, fall back to local routing."""
         mock_post.return_value.status_code = 503
@@ -328,6 +376,95 @@ class CorePipelineTests(unittest.TestCase):
         mock_post.assert_called_once()
         # Local routing should still happen
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_times_out(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core.requests, "post", side_effect=core.requests.Timeout("timeout")),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_transport_fails(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core.requests, "post", side_effect=core.requests.ConnectionError("boom")),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_returns_malformed_200_json(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("bad json")
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed") as mark_routed_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertFalse(
+            any(call.args[2] == "maya" for call in mark_routed_mock.call_args_list)
+        )
+
+    def test_falls_back_when_maya_200_body_is_not_acceptance(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"ok": False, "error": "duplicate"}
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed") as mark_routed_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertFalse(
+            any(call.args[2] == "maya" for call in mark_routed_mock.call_args_list)
+        )
+
+    @patch("core.requests.post")
+    def test_duplicate_client_ref_reuses_same_transcript_row_id(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "duplicate accepted",
+        }
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        core.classify_and_route("same transcript", source="iCloud", row_id=470)
+        core.classify_and_route("same transcript", source="iCloud", row_id=470)
+
+        client_refs = [call.kwargs["json"]["client_ref"] for call in mock_post.call_args_list]
+        self.assertEqual(client_refs, ["penny:470", "penny:470"])
 
     def test_does_not_call_maya_when_not_configured(self):
         """When Maya URL is empty, skip Maya entirely."""

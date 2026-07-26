@@ -274,6 +274,21 @@ def _reference_reminder_text(transcript: str) -> str:
     return f"Review Penny note ({timestamp}): {excerpt}"
 
 
+def _record_maya_route_state(row_id: int | None, **details: Any) -> None:
+    if row_id is None:
+        return
+    update_transcript_progress(row_id, {"maya_route": details})
+
+
+def _is_valid_maya_acceptance(data: Any) -> bool:
+    return (
+        isinstance(data, dict)
+        and bool(data.get("ok"))
+        and isinstance(data.get("routed_to"), str)
+        and bool(str(data.get("routed_to")).strip())
+    )
+
+
 def _route_to_maya(
     transcript: str,
     source: str,
@@ -292,16 +307,26 @@ def _route_to_maya(
     if not maya_url or not maya_token:
         return False
 
+    client_ref = f"penny:{row_id}" if row_id is not None else None
     payload = {
         "transcript": transcript,
         "source": source or "penny_voice",
     }
     if duration_seconds is not None:
         payload["duration_seconds"] = duration_seconds
-    if row_id is not None:
+    if client_ref is not None:
         # Maya dedupes on client_ref, so a re-sent transcript (retry, watcher
         # replay) can never become a second drop or a duplicate Clio task.
-        payload["client_ref"] = f"penny:{row_id}"
+        payload["client_ref"] = client_ref
+
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    _record_maya_route_state(
+        row_id,
+        state="attempting",
+        attempted_at=attempted_at,
+        client_ref=client_ref,
+        source=payload["source"],
+    )
 
     try:
         resp = requests.post(
@@ -313,22 +338,83 @@ def _route_to_maya(
             },
             timeout=10,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            if row_id is not None:
-                mark_routed(row_id, data, "maya")
-            log.info(
-                "Routed to Maya: routed_to=%s detail=%s",
-                data.get("routed_to"),
-                data.get("routing_detail"),
-            )
-            return True
-        else:
-            log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
     except Exception as exc:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         log.warning("Maya routing failed: %s — falling back to local routing", exc)
+        return False
 
-    return False
+    if resp.status_code != 200:
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_message=f"HTTP {resp.status_code}",
+            response_excerpt=resp.text[:200],
+        )
+        log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
+        return False
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_type=type(exc).__name__,
+            error_message="Malformed Maya 200 response",
+        )
+        log.warning("Maya returned malformed 200 response: %s", exc)
+        return False
+
+    if not _is_valid_maya_acceptance(data):
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_message="Maya 200 response did not confirm acceptance",
+            response_excerpt=json.dumps(data, default=str)[:200],
+        )
+        log.warning("Maya 200 response did not confirm acceptance")
+        return False
+
+    _record_maya_route_state(
+        row_id,
+        state="accepted",
+        attempted_at=attempted_at,
+        accepted_at=datetime.now(timezone.utc).isoformat(),
+        client_ref=client_ref,
+        source=payload["source"],
+        status_code=resp.status_code,
+        routed_to=data.get("routed_to"),
+        routing_detail=data.get("routing_detail"),
+    )
+    if row_id is not None:
+        mark_routed(row_id, data, "maya")
+    log.info(
+        "Routed to Maya: routed_to=%s detail=%s",
+        data.get("routed_to"),
+        data.get("routing_detail"),
+    )
+    return True
+
 
 
 def classify_and_route(

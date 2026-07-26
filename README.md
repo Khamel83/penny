@@ -217,6 +217,8 @@ pip install -r requirements.txt
 | `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
 | `PENNY_SLACK_BOT_TOKEN` | Slack bot token used by the watcher to post every voice memo transcript |
 | `PENNY_SLACK_CHANNEL_ID` | Slack channel for verbatim Penny voice memo transcripts; defaults to `C0BKS0QT7FU` |
+| `MAYA_TRANSCRIPT_URL` | Maya `/ingest/transcript` endpoint used for Penny transcript routing when enabled |
+| `MAYA_INGEST_TOKEN` | Bearer token for Maya transcript ingest; read from runtime env and never persisted in repo config |
 
 Plist templates with placeholders: `launchd/*.plist.template`
 
@@ -258,6 +260,16 @@ To re-authorize (should never be needed again): run `scripts/google_auth.py` on 
 | `~/.penny/health_tasks.txt` | Tasks poller health status |
 | `~/.penny/google_token.json` | Google OAuth token (auto-refreshes) |
 | `~/.penny/google_credentials.json` | Google OAuth app credentials |
+
+## Routing evidence categories
+
+Keep these three evidence streams separate when debugging or reporting Penny:
+
+- Penny receipt/persistence: transcript row exists in `~/.penny/transcripts.db`, with ingest timestamps and local status showing the memo was received and stored.
+- Maya acceptance/rejection: `routing_progress.maya_route` records the latest Maya attempt state (`attempting`, `accepted`, `rejected`, or `failed`), client ref `penny:<transcript_id>`, and any HTTP/transport error details. A Maya failure does not erase the local transcript row.
+- Slack acceptance/rejection: `slack_deliveries` tracks the outbox state, attempts, provider timestamp, and terminal failures for the verbatim Slack copy.
+
+Do not treat one category as proof of another. A transcript can be persisted locally even when Maya rejects it, and Slack can fail independently after Maya or local routing succeeds.
 
 Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`) are still present but superseded by `transcripts.db`.
 
