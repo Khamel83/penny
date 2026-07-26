@@ -44,6 +44,7 @@ except ImportError:
     requests = _RequestsCompat()
 
 from transcript_log import (
+    SLACK_API_ERROR_CODES,
     get_pending_slack_deliveries,
     mark_slack_delivery_failed,
     mark_slack_delivery_sent,
@@ -53,6 +54,14 @@ log = logging.getLogger(__name__)
 
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
+
+
+class SlackAPIError(RuntimeError):
+    """A controlled error code returned by Slack."""
+
+
+class SlackConfigurationError(RuntimeError):
+    """A local Slack delivery configuration error."""
 
 
 def _slack_bot_token() -> str:
@@ -70,6 +79,28 @@ def _delivery_client_msg_id(delivery_id: int) -> str:
     )
 
 
+def _safe_exception_class(exc: Exception) -> str:
+    class_name = type(exc).__name__
+    if (
+        class_name
+        and len(class_name) <= 48
+        and class_name[0].isalpha()
+        and all(character.isalnum() or character == "_" for character in class_name)
+    ):
+        return class_name
+    return "Exception"
+
+
+def _classified_error(category: str, exc: Exception) -> str:
+    return f"{category}:{_safe_exception_class(exc)}"
+
+
+def _safe_slack_error_code(value: object) -> str:
+    if isinstance(value, str) and value in SLACK_API_ERROR_CODES:
+        return value
+    return "slack_api_error"
+
+
 def _post_to_slack(
     channel_id: str,
     message_text: str,
@@ -77,7 +108,7 @@ def _post_to_slack(
 ) -> None:
     token = _slack_bot_token()
     if not token:
-        raise RuntimeError("PENNY_SLACK_BOT_TOKEN/SLACK_BOT_TOKEN is not configured")
+        raise SlackConfigurationError
 
     resp = requests.post(
         SLACK_POST_MESSAGE_URL,
@@ -96,7 +127,19 @@ def _post_to_slack(
     )
     data = resp.json()
     if not data.get("ok"):
-        raise RuntimeError(str(data.get("error") or f"HTTP {resp.status_code}"))
+        raise SlackAPIError(_safe_slack_error_code(data.get("error")))
+
+
+def _record_delivery_failure(delivery_id: int, safe_error: str) -> None:
+    try:
+        mark_slack_delivery_failed(delivery_id, safe_error)
+    except Exception as ack_exc:
+        log.error(
+            "Failed to record Slack delivery failure id=%s: %s",
+            delivery_id,
+            _classified_error("acknowledgement_error", ack_exc),
+        )
+    log.warning("Slack delivery failed id=%s: %s", delivery_id, safe_error)
 
 
 def process_pending_slack_deliveries(limit: int = 20) -> int:
@@ -109,16 +152,27 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
                 str(row["message_text"]),
                 _delivery_client_msg_id(delivery_id),
             )
-            mark_slack_delivery_sent(delivery_id)
-            delivered += 1
+        except SlackAPIError as exc:
+            _record_delivery_failure(delivery_id, str(exc))
+            continue
+        except SlackConfigurationError:
+            _record_delivery_failure(delivery_id, "configuration_error")
+            continue
         except Exception as exc:
-            try:
-                mark_slack_delivery_failed(delivery_id, str(exc))
-            except Exception as ack_exc:
-                log.error(
-                    "Failed to record Slack delivery failure id=%s: %s",
-                    delivery_id,
-                    ack_exc,
-                )
-            log.warning("Slack delivery failed id=%s: %s", delivery_id, exc)
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("provider_error", exc),
+            )
+            continue
+
+        try:
+            mark_slack_delivery_sent(delivery_id)
+        except Exception as exc:
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("acknowledgement_error", exc),
+            )
+            continue
+
+        delivered += 1
     return delivered

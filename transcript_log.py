@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,33 @@ log = logging.getLogger(__name__)
 
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
+SLACK_API_ERROR_CODES = frozenset(
+    {
+        "channel_not_found",
+        "fatal_error",
+        "internal_error",
+        "invalid_auth",
+        "missing_scope",
+        "not_authed",
+        "not_in_channel",
+        "rate_limited",
+        "ratelimited",
+        "request_timeout",
+        "restricted_action",
+        "service_unavailable",
+        "token_expired",
+        "token_revoked",
+    }
+)
+_SAFE_DELIVERY_ERROR_VALUES = SLACK_API_ERROR_CODES | {
+    "configuration_error",
+    "delivery_error",
+    "slack_api_error",
+}
+_SAFE_CLASSIFIED_ERROR_RE = re.compile(
+    r"(?:provider|acknowledgement)_error:[A-Za-z][A-Za-z0-9_]{0,47}"
+)
+_SAFE_EXCEPTION_CLASS_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}")
 
 _MIGRATION_SOURCES = [
     (Path("~/.penny/processed.txt").expanduser(), "iCloud"),
@@ -164,6 +192,22 @@ def _json_loads_or_default(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _safe_exception_class(exc: Exception) -> str:
+    class_name = type(exc).__name__
+    if _SAFE_EXCEPTION_CLASS_RE.fullmatch(class_name):
+        return class_name
+    return "Exception"
+
+
+def _safe_delivery_error(error_message: str) -> str:
+    if (
+        error_message in _SAFE_DELIVERY_ERROR_VALUES
+        or _SAFE_CLASSIFIED_ERROR_RE.fullmatch(error_message)
+    ):
+        return error_message
+    return "delivery_error"
+
+
 def _slack_channel_id() -> str:
     return (
         os.environ.get("PENNY_SLACK_CHANNEL_ID")
@@ -290,7 +334,11 @@ def mark_slack_delivery_sent(delivery_id: int) -> None:
         )
         conn.commit()
     except Exception as e:
-        log.error("Failed to mark Slack delivery sent id=%s: %s", delivery_id, e)
+        log.error(
+            "Failed to mark Slack delivery sent id=%s: %s",
+            delivery_id,
+            _safe_exception_class(e),
+        )
         raise
     finally:
         if conn:
@@ -301,6 +349,7 @@ def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
     conn = None
     try:
         conn = _get_conn()
+        safe_error = _safe_delivery_error(error_message)
         conn.execute(
             """UPDATE slack_deliveries
                SET status = 'failed',
@@ -308,11 +357,15 @@ def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
                    last_error = ?,
                    updated_at = datetime('now')
                WHERE id = ?""",
-            (error_message, delivery_id),
+            (safe_error, delivery_id),
         )
         conn.commit()
     except Exception as e:
-        log.error("Failed to mark Slack delivery failed id=%s: %s", delivery_id, e)
+        log.error(
+            "Failed to mark Slack delivery failed id=%s: %s",
+            delivery_id,
+            _safe_exception_class(e),
+        )
         raise
     finally:
         if conn:

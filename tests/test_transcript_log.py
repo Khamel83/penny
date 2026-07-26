@@ -114,6 +114,38 @@ class TranscriptLogTests(unittest.TestCase):
 
         conn.close.assert_called_once()
 
+    def test_slack_acknowledgement_helpers_do_not_log_exception_text(self) -> None:
+        conn = Mock()
+        secret = "xoxb-" + "private-test-value"
+        conn.execute.side_effect = OSError("database included bearer " + secret)
+
+        with (
+            patch.object(transcript_log, "_get_conn", return_value=conn),
+            patch.object(transcript_log.log, "error") as error_mock,
+        ):
+            with self.assertRaises(OSError):
+                transcript_log.mark_slack_delivery_sent(1)
+
+        message, *args = error_mock.call_args.args
+        rendered_log = str(message) % tuple(args)
+        if secret in rendered_log:
+            self.fail("acknowledgement helper log contained sensitive material")
+
+    def test_mark_slack_delivery_failed_rejects_untrusted_error_text(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="slack-error-boundary",
+            source="iCloud",
+            transcript="sanitize persistence boundary",
+        )
+        transcript_log.mark_slack_delivery_failed(
+            1,
+            "unexpectedsecretvalue",
+        )
+
+        pending = transcript_log.get_pending_slack_deliveries()
+        if pending[0]["last_error"] != "delivery_error":
+            self.fail("delivery error persistence accepted untrusted text")
+
     def test_dedup_rejects_duplicate(self) -> None:
         rid1 = transcript_log.insert_transcript(
             content_hash="dup1", source="iCloud", transcript="first"
