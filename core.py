@@ -228,10 +228,12 @@ def build_result_message(transcript: str, result: Dict[str, Any], source: str) -
 
 
 def normalize_transcript_text(transcript: str) -> str:
-    """Strip common Whisper control-token artifacts and normalize whitespace."""
+    """Strip common Whisper control-token artifacts while preserving line breaks."""
     raw = str(transcript or "")
     cleaned = WHISPER_TOKEN_RE.sub(" ", raw)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+    cleaned = "\n".join(line.strip() for line in cleaned.split("\n")).strip()
 
     # Heuristic: near-empty remnants from token-heavy output (e.g. "SE<|hr|><|hr|>").
     if "<|" in raw and len(cleaned) <= 3:
