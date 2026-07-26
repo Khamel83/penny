@@ -26,6 +26,22 @@ logging.disable(logging.CRITICAL)
 import transcript_log  # noqa: E402
 
 
+class _SlackResponse:
+    def __init__(
+        self,
+        payload: dict[str, object],
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
 class SlackDeliveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
@@ -84,11 +100,20 @@ class SlackDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
         self.assertEqual(transcript_log.get_transcript(row_id)["status"], "pending")
+        conn = transcript_log._get_conn()
+        try:
+            delivery = conn.execute(
+                "SELECT provider_ts FROM slack_deliveries WHERE transcript_row_id = ?",
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(dict(delivery)["provider_ts"], "123.456")
 
-    def test_process_pending_slack_deliveries_keeps_failed_rows_retryable(self) -> None:
+    def test_process_pending_slack_deliveries_schedules_retryable_failure(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
-        transcript_log.insert_transcript(
+        row_id = transcript_log.insert_transcript(
             content_hash="deliver2",
             source="iCloud",
             transcript="retry me",
@@ -96,15 +121,34 @@ class SlackDeliveryTests(unittest.TestCase):
         import slack_delivery
 
         with patch.object(slack_delivery.requests, "post") as post_mock:
-            post_mock.return_value.json.return_value = {"ok": False, "error": "ratelimited"}
+            post_mock.return_value = _SlackResponse(
+                {"ok": False, "error": "ratelimited"},
+                headers={"Retry-After": "17"},
+            )
             delivered = slack_delivery.process_pending_slack_deliveries()
 
         self.assertEqual(delivered, 0)
-        pending = transcript_log.get_pending_slack_deliveries()
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["status"], "failed")
-        self.assertEqual(pending[0]["attempt_count"], 1)
-        self.assertEqual(pending[0]["last_error"], "ratelimited")
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(transcript_id=row_id),
+            [],
+        )
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["pending_count"], 1)
+        self.assertEqual(health["failed_count"], 0)
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, attempt_count, last_error, next_attempt_at "
+                "FROM slack_deliveries WHERE transcript_row_id = ?",
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        self.assertEqual(stored["status"], "pending")
+        self.assertEqual(stored["attempt_count"], 1)
+        self.assertEqual(stored["last_error"], "ratelimited")
+        self.assertIsNotNone(stored["next_attempt_at"])
 
     def test_unrecognized_slack_error_field_is_replaced_with_safe_category(
         self,
@@ -118,14 +162,22 @@ class SlackDeliveryTests(unittest.TestCase):
         import slack_delivery
 
         with patch.object(slack_delivery.requests, "post") as post_mock:
-            post_mock.return_value.json.return_value = {
-                "ok": False,
-                "error": "unexpectedsecretvalue",
-            }
+            post_mock.return_value = _SlackResponse(
+                {
+                    "ok": False,
+                    "error": "unexpectedsecretvalue",
+                }
+            )
             delivered = slack_delivery.process_pending_slack_deliveries()
 
-        pending = transcript_log.get_pending_slack_deliveries()
-        if pending[0]["last_error"] != "slack_api_error":
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if dict(row)["last_error"] != "slack_api_error":
             self.fail("unrecognized Slack error was not replaced")
         self.assertEqual(delivered, 0)
 
@@ -149,9 +201,19 @@ class SlackDeliveryTests(unittest.TestCase):
                 side_effect=[OSError("database is locked"), None],
             ),
         ):
-            post_mock.return_value.json.return_value = {"ok": True, "ts": "123.456"}
+            post_mock.return_value = _SlackResponse({"ok": True, "ts": "123.456"})
 
             first_delivered = slack_delivery.process_pending_slack_deliveries()
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE slack_deliveries "
+                    "SET next_attempt_at = datetime('now', '-1 second') "
+                    "WHERE id = 1"
+                )
+                conn.commit()
+            finally:
+                conn.close()
             second_delivered = slack_delivery.process_pending_slack_deliveries()
 
         self.assertEqual(first_delivered, 0)
@@ -186,14 +248,87 @@ class SlackDeliveryTests(unittest.TestCase):
         ):
             delivered = slack_delivery.process_pending_slack_deliveries()
 
-        pending = transcript_log.get_pending_slack_deliveries()
-        if pending[0]["last_error"] != "provider_error:OSError":
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        if stored["last_error"] != "provider_error:OSError":
             self.fail("provider failure was not stored as a safe category")
+        self.assertEqual(stored["status"], "pending")
         rendered_logs = self._render_log_calls(warning_mock)
         rendered_logs += self._render_log_calls(error_mock)
         if secret in rendered_logs:
             self.fail("provider failure logs contained sensitive material")
         self.assertEqual(delivered, 0)
+
+    def test_http_429_retry_after_is_respected(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-http429",
+            source="iCloud",
+            transcript="please retry after header",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value = _SlackResponse(
+                {"ok": False, "error": "ratelimited"},
+                status_code=429,
+                headers={"Retry-After": "33"},
+            )
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT attempt_count, next_attempt_at FROM slack_deliveries "
+                "WHERE transcript_row_id = ?",
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        self.assertEqual(stored["attempt_count"], 1)
+        self.assertIsNotNone(stored["next_attempt_at"])
+
+    def test_terminal_failures_stop_retrying_after_max_attempts(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-terminal",
+            source="iCloud",
+            transcript="eventually stop retrying",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value = _SlackResponse(
+                {"ok": False, "error": "internal_error"}
+            )
+            for _ in range(6):
+                slack_delivery.process_pending_slack_deliveries()
+                conn = transcript_log._get_conn()
+                try:
+                    conn.execute(
+                        "UPDATE slack_deliveries "
+                        "SET next_attempt_at = datetime('now', '-1 second') "
+                        "WHERE transcript_row_id = ?",
+                        (row_id,),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["pending_count"], 0)
+        self.assertEqual(health["failed_count"], 1)
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(pending, [])
+        self.assertLessEqual(post_mock.call_count, 5)
 
     def test_acknowledgement_exceptions_are_sanitized_in_database_and_logs(
         self,
@@ -221,9 +356,17 @@ class SlackDeliveryTests(unittest.TestCase):
             post_mock.return_value.json.return_value = {"ok": True, "ts": "123.456"}
             delivered = slack_delivery.process_pending_slack_deliveries()
 
-        pending = transcript_log.get_pending_slack_deliveries()
-        if pending[0]["last_error"] != "acknowledgement_error:OSError":
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        if stored["last_error"] != "acknowledgement_error:OSError":
             self.fail("acknowledgement failure was not stored as a safe category")
+        self.assertEqual(stored["status"], "pending")
         rendered_logs = self._render_log_calls(warning_mock)
         rendered_logs += self._render_log_calls(error_mock)
         if secret in rendered_logs:

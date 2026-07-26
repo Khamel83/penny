@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
-from slack_delivery import process_pending_slack_deliveries
+from slack_delivery import process_pending_slack
 from transcript_log import (
+    get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
@@ -153,12 +154,15 @@ def update_health_check() -> None:
     vm = 1 if _voicememos_running() else 0
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
+    slack_health = get_slack_delivery_health()
     HEALTH_FILE.write_text(
         (
             f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|"
             f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
             f"awaiting_file:{vm_health['awaiting_file_count']}|"
-            f"voice_memo_failed:{vm_health['failed_count']}\n"
+            f"voice_memo_failed:{vm_health['failed_count']}|"
+            f"slack_pending:{slack_health['pending_count']}|"
+            f"slack_failed:{slack_health['failed_count']}\n"
         ),
         encoding="utf-8",
     )
@@ -344,6 +348,7 @@ def _process_audio_file(
             duration_seconds=duration_seconds,
             ingest_state="skipped_too_large",
             file_seen_at=datetime.now().isoformat(),
+            enqueue_slack=False,
         )
         if recording_pk is not None:
             mark_voice_memo_failed(recording_pk, "file too large")
@@ -518,7 +523,7 @@ def _process_disk_backlog(limit: int) -> None:
 
 def _process_slack_outbox() -> None:
     try:
-        delivered = process_pending_slack_deliveries(limit=20)
+        delivered = process_pending_slack(limit=20)
         if delivered:
             log.info("Delivered %s transcript(s) to Slack", delivered)
     except Exception as e:

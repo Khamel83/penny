@@ -69,6 +69,7 @@ class UploadTests(unittest.TestCase):
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
+            self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_upload_duplicate_returns_ok(self, mock_logged):
@@ -117,6 +118,7 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(body["items_added"], 1)
             mock_route.assert_called_once()
             mock_insert.assert_called_once()
+            self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
 
     def test_ingest_missing_json_returns_400(self):
         with app.test_client() as client:
@@ -179,6 +181,13 @@ def test_deliver_rejects_empty_transcript(client, monkeypatch):
 def test_deliver_routes_locally_without_maya(client, monkeypatch):
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
     seen = {}
+    insert_calls = []
+    seen_hashes = set()
+
+    def fake_insert_transcript(**kwargs):
+        insert_calls.append(kwargs)
+        seen_hashes.add(kwargs["content_hash"])
+        return 1
 
     def fake_classify_and_route(transcript, source, row_id=None,
                                 duration_seconds=None, allow_maya=True):
@@ -187,12 +196,15 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
 
     import webhook.server as server
     monkeypatch.setattr(server, "classify_and_route", fake_classify_and_route)
+    monkeypatch.setattr(server, "insert_transcript", fake_insert_transcript)
+    monkeypatch.setattr(server, "is_already_logged", lambda content_hash: content_hash in seen_hashes)
 
     resp = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
     assert resp.status_code == 200
     assert resp.get_json()["status"] == "delivered"
     assert seen["allow_maya"] is False
     assert seen["transcript"] == DELIVER_PAYLOAD["transcript"]
+    assert insert_calls[0]["enqueue_slack"] is False
 
     # Same payload again → dedup via md5 content hash
     resp2 = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())

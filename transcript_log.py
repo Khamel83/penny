@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
+SLACK_MAX_ATTEMPTS = 5
 SLACK_API_ERROR_CODES = frozenset(
     {
         "channel_not_found",
@@ -132,7 +133,9 @@ def init_db() -> None:
                 message_text TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
                 last_error TEXT,
+                provider_ts TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
@@ -141,8 +144,10 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_slack_delivery_columns(conn)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_status ON slack_deliveries(status)"
+            "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_due "
+            "ON slack_deliveries(status, next_attempt_at)"
         )
         conn.commit()
 
@@ -216,6 +221,36 @@ def _slack_channel_id() -> str:
     )
 
 
+def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+    }
+    required_columns = {
+        "next_attempt_at": "ALTER TABLE slack_deliveries ADD COLUMN next_attempt_at TEXT",
+        "provider_ts": "ALTER TABLE slack_deliveries ADD COLUMN provider_ts TEXT",
+        "sent_at": "ALTER TABLE slack_deliveries ADD COLUMN sent_at TEXT",
+        "channel_id": (
+            "ALTER TABLE slack_deliveries ADD COLUMN channel_id TEXT "
+            f"NOT NULL DEFAULT '{DEFAULT_SLACK_CHANNEL_ID}'"
+        ),
+        "message_text": (
+            "ALTER TABLE slack_deliveries ADD COLUMN message_text TEXT NOT NULL DEFAULT ''"
+        ),
+    }
+    for column, sql in required_columns.items():
+        if column not in existing:
+            conn.execute(sql)
+
+
+def _should_queue_slack_delivery(
+    *,
+    source: str,
+    ingest_state: str | None,
+    enqueue_slack: bool,
+) -> bool:
+    return enqueue_slack and source == "iCloud" and ingest_state != "skipped_too_large"
+
+
 def _queue_slack_delivery(
     conn: sqlite3.Connection,
     *,
@@ -223,8 +258,13 @@ def _queue_slack_delivery(
     source: str,
     transcript: str,
     ingest_state: str | None,
+    enqueue_slack: bool,
 ) -> None:
-    if source != "iCloud" or ingest_state == "skipped_too_large":
+    if not _should_queue_slack_delivery(
+        source=source,
+        ingest_state=ingest_state,
+        enqueue_slack=enqueue_slack,
+    ):
         return
     conn.execute(
         """INSERT OR IGNORE INTO slack_deliveries (
@@ -246,6 +286,7 @@ def insert_transcript(
     file_seen_at: str | None = None,
     transcription_started_at: str | None = None,
     transcription_completed_at: str | None = None,
+    enqueue_slack: bool = True,
 ) -> int | None:
     """Insert a transcript. Returns row id if new, None if duplicate."""
     conn = None
@@ -278,6 +319,7 @@ def insert_transcript(
                 source=source,
                 transcript=transcript,
                 ingest_state=ingest_state,
+                enqueue_slack=enqueue_slack,
             )
             conn.commit()
             log.debug(
@@ -298,17 +340,61 @@ def insert_transcript(
             conn.close()
 
 
-def get_pending_slack_deliveries(limit: int = 20) -> list[dict[str, Any]]:
+def queue_slack_delivery(transcript_id: int) -> None:
     conn = None
     try:
         conn = _get_conn()
+        row = conn.execute(
+            """
+            SELECT source, transcript, ingest_state
+            FROM transcripts
+            WHERE id = ?
+            """,
+            (transcript_id,),
+        ).fetchone()
+        if row is None:
+            return
+        _queue_slack_delivery(
+            conn,
+            transcript_row_id=transcript_id,
+            source=str(row["source"]),
+            transcript=str(row["transcript"]),
+            ingest_state=row["ingest_state"],
+            enqueue_slack=True,
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to queue Slack delivery transcript=%s: %s", transcript_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_slack_deliveries(
+    limit: int = 20,
+    transcript_id: int | None = None,
+) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        clauses = [
+            "status = 'pending'",
+            "(next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))",
+        ]
+        params: list[Any] = []
+        if transcript_id is not None:
+            clauses.append("transcript_row_id = ?")
+            params.append(transcript_id)
+        params.append(limit)
         rows = conn.execute(
-            """SELECT *
-               FROM slack_deliveries
-               WHERE status IN ('pending', 'failed')
-               ORDER BY created_at ASC, id ASC
-               LIMIT ?""",
-            (limit,),
+            f"""SELECT id, transcript_row_id, channel_id, message_text, status,
+                       attempt_count, next_attempt_at, last_error, provider_ts,
+                       created_at, updated_at, sent_at
+                FROM slack_deliveries
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?""",
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
     except Exception as e:
@@ -319,7 +405,7 @@ def get_pending_slack_deliveries(limit: int = 20) -> list[dict[str, Any]]:
             conn.close()
 
 
-def mark_slack_delivery_sent(delivery_id: int) -> None:
+def mark_slack_delivery_sent(delivery_id: int, provider_ts: str | None = None) -> None:
     conn = None
     try:
         conn = _get_conn()
@@ -327,10 +413,12 @@ def mark_slack_delivery_sent(delivery_id: int) -> None:
             """UPDATE slack_deliveries
                SET status = 'sent',
                    last_error = NULL,
+                   provider_ts = ?,
+                   next_attempt_at = NULL,
                    sent_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE id = ?""",
-            (delivery_id,),
+            (provider_ts, delivery_id),
         )
         conn.commit()
     except Exception as e:
@@ -345,19 +433,41 @@ def mark_slack_delivery_sent(delivery_id: int) -> None:
             conn.close()
 
 
-def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
+def mark_slack_delivery_failed(
+    delivery_id: int,
+    error_message: str,
+    retry_after_seconds: int = 60,
+) -> None:
     conn = None
     try:
         conn = _get_conn()
         safe_error = _safe_delivery_error(error_message)
+        current = conn.execute(
+            "SELECT attempt_count FROM slack_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        attempt_count = int(current["attempt_count"]) + 1 if current else 1
+        terminal = attempt_count >= SLACK_MAX_ATTEMPTS
+        delay = max(1, int(retry_after_seconds))
         conn.execute(
             """UPDATE slack_deliveries
-               SET status = 'failed',
-                   attempt_count = attempt_count + 1,
+               SET status = ?,
+                   attempt_count = ?,
                    last_error = ?,
+                   next_attempt_at = CASE
+                       WHEN ? THEN NULL
+                       ELSE datetime('now', '+' || ? || ' seconds')
+                   END,
                    updated_at = datetime('now')
                WHERE id = ?""",
-            (safe_error, delivery_id),
+            (
+                "failed" if terminal else "pending",
+                attempt_count,
+                safe_error,
+                1 if terminal else 0,
+                delay,
+                delivery_id,
+            ),
         )
         conn.commit()
     except Exception as e:
@@ -367,6 +477,36 @@ def mark_slack_delivery_failed(delivery_id: int, error_message: str) -> None:
             _safe_exception_class(e),
         )
         raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_slack_delivery_health() -> dict[str, int]:
+    conn = None
+    health = {"pending_count": 0, "sent_count": 0, "failed_count": 0}
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM slack_deliveries
+            GROUP BY status
+            """
+        ).fetchall()
+        for row in rows:
+            status = str(row["status"])
+            count = int(row["count"])
+            if status == "pending":
+                health["pending_count"] = count
+            elif status == "sent":
+                health["sent_count"] = count
+            elif status == "failed":
+                health["failed_count"] = count
+        return health
+    except Exception as e:
+        log.error("Failed to fetch Slack delivery health: %s", e)
+        return health
     finally:
         if conn:
             conn.close()

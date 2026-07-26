@@ -260,3 +260,9 @@ To re-authorize (should never be needed again): run `scripts/google_auth.py` on 
 | `~/.penny/google_credentials.json` | Google OAuth app credentials |
 
 Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`) are still present but superseded by `transcripts.db`.
+
+Slack delivery is durable for eligible iCloud voice transcripts: each transcript
+gets one outbox row keyed by transcript id, retries honor bounded backoff and
+Slack `Retry-After`, successful acknowledgements persist the Slack timestamp,
+and terminal failures stay visible in watcher health. Non-voice transcripts and
+skipped oversized placeholders explicitly opt out of Slack enqueue.

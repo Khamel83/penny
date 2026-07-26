@@ -19,7 +19,7 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X
 ```
 
 Fields:
@@ -30,6 +30,8 @@ Fields:
 - `latest_recording_pk` — latest Voice Memo PK durably registered in local ingest state
 - `awaiting_file` — DB entries seen but audio file not yet present on disk
 - `voice_memo_failed` — ingest entries that hit a terminal error and need investigation
+- `slack_pending` — Slack deliveries waiting for their first send or next retry window
+- `slack_failed` — Slack deliveries that exhausted the retry policy and need review
 
 ### 3. Dependency Checks on Startup
 
@@ -78,6 +80,12 @@ All transcriptions are persisted to `~/.penny/transcripts.db` (SQLite) before ro
 - Status tracking: `pending` → `routed` / `failed`
 - Failed transcripts are retried every cycle (up to 5 at a time)
 - Write-before-route ensures nothing is lost even if routing fails
+
+Eligible iCloud transcripts also create one durable `slack_deliveries` outbox row:
+- `transcript_row_id` UNIQUE prevents duplicate Slack rows on replay
+- `next_attempt_at` gates retries so failed sends do not spin every poll cycle
+- `provider_ts` stores the Slack message timestamp after acknowledgement
+- terminal `failed` rows stay visible in health output instead of retrying forever
 
 ### 6. Periodic Backup
 

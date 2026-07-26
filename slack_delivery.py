@@ -54,10 +54,20 @@ log = logging.getLogger(__name__)
 
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
+DEFAULT_RETRY_AFTER_SECONDS = 60
+MAX_RETRY_AFTER_SECONDS = 900
+TRANSIENT_SLACK_ERRORS = frozenset(
+    {"internal_error", "rate_limited", "ratelimited", "request_timeout", "service_unavailable"}
+)
 
 
 class SlackAPIError(RuntimeError):
     """A controlled error code returned by Slack."""
+
+    def __init__(self, safe_error: str, retry_after_seconds: int | None = None) -> None:
+        super().__init__(safe_error)
+        self.safe_error = safe_error
+        self.retry_after_seconds = retry_after_seconds
 
 
 class SlackConfigurationError(RuntimeError):
@@ -101,11 +111,25 @@ def _safe_slack_error_code(value: object) -> str:
     return "slack_api_error"
 
 
+def _retry_after_seconds(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(seconds, MAX_RETRY_AFTER_SECONDS))
+
+
+def _fallback_retry_after(attempt_count: int) -> int:
+    return min(DEFAULT_RETRY_AFTER_SECONDS * max(1, 2 ** attempt_count), MAX_RETRY_AFTER_SECONDS)
+
+
 def _post_to_slack(
     channel_id: str,
     message_text: str,
     client_msg_id: str,
-) -> None:
+) -> str | None:
     token = _slack_bot_token()
     if not token:
         raise SlackConfigurationError
@@ -125,14 +149,38 @@ def _post_to_slack(
         },
         timeout=10,
     )
+    if getattr(resp, "status_code", 200) == 429:
+        raise SlackAPIError(
+            "ratelimited",
+            retry_after_seconds=_retry_after_seconds(
+                getattr(resp, "headers", {}).get("Retry-After")
+            ),
+        )
     data = resp.json()
     if not data.get("ok"):
-        raise SlackAPIError(_safe_slack_error_code(data.get("error")))
+        safe_error = _safe_slack_error_code(data.get("error"))
+        retry_after = None
+        if safe_error in TRANSIENT_SLACK_ERRORS:
+            retry_after = _retry_after_seconds(
+                getattr(resp, "headers", {}).get("Retry-After")
+            )
+        raise SlackAPIError(safe_error, retry_after_seconds=retry_after)
+    provider_ts = data.get("ts")
+    return str(provider_ts) if provider_ts is not None else None
 
 
-def _record_delivery_failure(delivery_id: int, safe_error: str) -> None:
+def _record_delivery_failure(
+    delivery_id: int,
+    safe_error: str,
+    *,
+    retry_after_seconds: int,
+) -> None:
     try:
-        mark_slack_delivery_failed(delivery_id, safe_error)
+        mark_slack_delivery_failed(
+            delivery_id,
+            safe_error,
+            retry_after_seconds=retry_after_seconds,
+        )
     except Exception as ack_exc:
         log.error(
             "Failed to record Slack delivery failure id=%s: %s",
@@ -146,33 +194,49 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
     for row in get_pending_slack_deliveries(limit=limit):
         delivery_id = int(row["id"])
+        attempt_count = int(row.get("attempt_count") or 0)
         try:
-            _post_to_slack(
+            provider_ts = _post_to_slack(
                 str(row["channel_id"]),
                 str(row["message_text"]),
                 _delivery_client_msg_id(delivery_id),
             )
         except SlackAPIError as exc:
-            _record_delivery_failure(delivery_id, str(exc))
+            _record_delivery_failure(
+                delivery_id,
+                exc.safe_error,
+                retry_after_seconds=exc.retry_after_seconds
+                or _fallback_retry_after(attempt_count),
+            )
             continue
         except SlackConfigurationError:
-            _record_delivery_failure(delivery_id, "configuration_error")
+            _record_delivery_failure(
+                delivery_id,
+                "configuration_error",
+                retry_after_seconds=_fallback_retry_after(attempt_count),
+            )
             continue
         except Exception as exc:
             _record_delivery_failure(
                 delivery_id,
                 _classified_error("provider_error", exc),
+                retry_after_seconds=_fallback_retry_after(attempt_count),
             )
             continue
 
         try:
-            mark_slack_delivery_sent(delivery_id)
+            mark_slack_delivery_sent(delivery_id, provider_ts=provider_ts)
         except Exception as exc:
             _record_delivery_failure(
                 delivery_id,
                 _classified_error("acknowledgement_error", exc),
+                retry_after_seconds=_fallback_retry_after(attempt_count),
             )
             continue
 
         delivered += 1
     return delivered
+
+
+def process_pending_slack(limit: int = 20) -> int:
+    return process_pending_slack_deliveries(limit=limit)
