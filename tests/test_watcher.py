@@ -63,6 +63,39 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         failed_mock.assert_called_once_with(123, "file too large")
 
+    def test_health_check_is_non_healthy_when_slack_health_query_fails(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(watcher, "_db_recordings_count", return_value=12),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 123,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "sent_count": 0,
+                    "failed_count": 0,
+                    "health_error": 1,
+                },
+            ),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|slack_health_error:1", health)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sqlite3
 from pathlib import Path
@@ -46,7 +45,10 @@ SLACK_API_ERROR_CODES = frozenset(
 )
 _SAFE_DELIVERY_ERROR_VALUES = SLACK_API_ERROR_CODES | {
     "configuration_error",
+    "destination_mismatch",
     "delivery_error",
+    "message_truncated",
+    "provider_warning",
     "slack_api_error",
 }
 _SAFE_CLASSIFIED_ERROR_RE = re.compile(
@@ -136,6 +138,9 @@ def init_db() -> None:
                 next_attempt_at TEXT,
                 last_error TEXT,
                 provider_ts TEXT,
+                next_chunk_index INTEGER NOT NULL DEFAULT 0,
+                chunk_attempt_count INTEGER NOT NULL DEFAULT 0,
+                chunk_provider_ts TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
@@ -144,7 +149,8 @@ def init_db() -> None:
             )
             """
         )
-        _ensure_slack_delivery_columns(conn)
+        added_slack_columns = _ensure_slack_delivery_columns(conn)
+        _migrate_slack_delivery_rows(conn, added_columns=added_slack_columns)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_due "
             "ON slack_deliveries(status, next_attempt_at)"
@@ -214,14 +220,11 @@ def _safe_delivery_error(error_message: str) -> str:
 
 
 def _slack_channel_id() -> str:
-    return (
-        os.environ.get("PENNY_SLACK_CHANNEL_ID")
-        or os.environ.get("SLACK_CHANNEL_ID")
-        or DEFAULT_SLACK_CHANNEL_ID
-    )
+    """Return Penny's only allowed transcript destination."""
+    return DEFAULT_SLACK_CHANNEL_ID
 
 
-def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> None:
+def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
     existing = {
         row[1] for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
     }
@@ -236,10 +239,73 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> None:
         "message_text": (
             "ALTER TABLE slack_deliveries ADD COLUMN message_text TEXT NOT NULL DEFAULT ''"
         ),
+        "next_chunk_index": (
+            "ALTER TABLE slack_deliveries "
+            "ADD COLUMN next_chunk_index INTEGER NOT NULL DEFAULT 0"
+        ),
+        "chunk_attempt_count": (
+            "ALTER TABLE slack_deliveries "
+            "ADD COLUMN chunk_attempt_count INTEGER NOT NULL DEFAULT 0"
+        ),
+        "chunk_provider_ts": (
+            "ALTER TABLE slack_deliveries "
+            "ADD COLUMN chunk_provider_ts TEXT NOT NULL DEFAULT '[]'"
+        ),
     }
+    added: set[str] = set()
     for column, sql in required_columns.items():
         if column not in existing:
             conn.execute(sql)
+            added.add(column)
+    return added
+
+
+def _migrate_slack_delivery_rows(
+    conn: sqlite3.Connection,
+    *,
+    added_columns: set[str],
+) -> None:
+    """Normalize legacy outbox rows without reopening terminal failures."""
+    if "chunk_attempt_count" in added_columns:
+        conn.execute(
+            """
+            UPDATE slack_deliveries
+            SET chunk_attempt_count = attempt_count
+            WHERE status IN ('pending', 'failed')
+              AND attempt_count > 0
+            """
+        )
+
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET channel_id = ?,
+            updated_at = datetime('now')
+        WHERE status != 'sent'
+          AND channel_id != ?
+        """,
+        (DEFAULT_SLACK_CHANNEL_ID, DEFAULT_SLACK_CHANNEL_ID),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET status = 'pending',
+            next_attempt_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE status = 'failed'
+          AND attempt_count < ?
+        """,
+        (SLACK_MAX_ATTEMPTS,),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET next_attempt_at = NULL
+        WHERE status = 'failed'
+          AND attempt_count >= ?
+        """,
+        (SLACK_MAX_ATTEMPTS,),
+    )
 
 
 def _should_queue_slack_delivery(
@@ -389,6 +455,7 @@ def get_pending_slack_deliveries(
         rows = conn.execute(
             f"""SELECT id, transcript_row_id, channel_id, message_text, status,
                        attempt_count, next_attempt_at, last_error, provider_ts,
+                       next_chunk_index, chunk_attempt_count, chunk_provider_ts,
                        created_at, updated_at, sent_at
                 FROM slack_deliveries
                 WHERE {' AND '.join(clauses)}
@@ -415,6 +482,7 @@ def mark_slack_delivery_sent(delivery_id: int, provider_ts: str | None = None) -
                    last_error = NULL,
                    provider_ts = ?,
                    next_attempt_at = NULL,
+                   chunk_attempt_count = 0,
                    sent_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE id = ?""",
@@ -443,16 +511,24 @@ def mark_slack_delivery_failed(
         conn = _get_conn()
         safe_error = _safe_delivery_error(error_message)
         current = conn.execute(
-            "SELECT attempt_count FROM slack_deliveries WHERE id = ?",
+            """
+            SELECT attempt_count, chunk_attempt_count
+            FROM slack_deliveries
+            WHERE id = ?
+            """,
             (delivery_id,),
         ).fetchone()
         attempt_count = int(current["attempt_count"]) + 1 if current else 1
-        terminal = attempt_count >= SLACK_MAX_ATTEMPTS
+        chunk_attempt_count = (
+            int(current["chunk_attempt_count"]) + 1 if current else 1
+        )
+        terminal = chunk_attempt_count >= SLACK_MAX_ATTEMPTS
         delay = max(1, int(retry_after_seconds))
         conn.execute(
             """UPDATE slack_deliveries
                SET status = ?,
                    attempt_count = ?,
+                   chunk_attempt_count = ?,
                    last_error = ?,
                    next_attempt_at = CASE
                        WHEN ? THEN NULL
@@ -463,6 +539,7 @@ def mark_slack_delivery_failed(
             (
                 "failed" if terminal else "pending",
                 attempt_count,
+                chunk_attempt_count,
                 safe_error,
                 1 if terminal else 0,
                 delay,
@@ -482,9 +559,84 @@ def mark_slack_delivery_failed(
             conn.close()
 
 
+def mark_slack_delivery_chunk_sent(
+    delivery_id: int,
+    *,
+    chunk_index: int,
+    chunk_count: int,
+    provider_ts: str | None,
+) -> None:
+    """Persist one accepted chunk and mark the delivery sent only when complete."""
+    conn = None
+    try:
+        conn = _get_conn()
+        current = conn.execute(
+            """
+            SELECT next_chunk_index, chunk_provider_ts
+            FROM slack_deliveries
+            WHERE id = ?
+            """,
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Slack delivery row does not exist")
+
+        next_chunk_index = int(current["next_chunk_index"] or 0)
+        if next_chunk_index > chunk_index:
+            return
+        if next_chunk_index != chunk_index:
+            raise ValueError("Slack chunk acknowledgement is out of order")
+
+        timestamps = _json_loads_or_default(current["chunk_provider_ts"], [])
+        if not isinstance(timestamps, list):
+            timestamps = []
+        timestamps.append(provider_ts)
+        following_chunk = chunk_index + 1
+        complete = following_chunk >= chunk_count
+        conn.execute(
+            """
+            UPDATE slack_deliveries
+            SET status = ?,
+                next_chunk_index = ?,
+                chunk_attempt_count = 0,
+                chunk_provider_ts = ?,
+                provider_ts = ?,
+                last_error = NULL,
+                next_attempt_at = NULL,
+                sent_at = CASE WHEN ? THEN datetime('now') ELSE sent_at END,
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                "sent" if complete else "pending",
+                following_chunk,
+                json.dumps(timestamps),
+                provider_ts,
+                1 if complete else 0,
+                delivery_id,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to record Slack chunk id=%s: %s",
+            delivery_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
 def get_slack_delivery_health() -> dict[str, int]:
     conn = None
-    health = {"pending_count": 0, "sent_count": 0, "failed_count": 0}
+    health = {
+        "pending_count": 0,
+        "sent_count": 0,
+        "failed_count": 0,
+        "health_error": 0,
+    }
     try:
         conn = _get_conn()
         rows = conn.execute(
@@ -505,7 +657,11 @@ def get_slack_delivery_health() -> dict[str, int]:
                 health["failed_count"] = count
         return health
     except Exception as e:
-        log.error("Failed to fetch Slack delivery health: %s", e)
+        log.error(
+            "Failed to fetch Slack delivery health: %s",
+            _safe_exception_class(e),
+        )
+        health["health_error"] = 1
         return health
     finally:
         if conn:

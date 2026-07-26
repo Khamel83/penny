@@ -60,7 +60,7 @@ class SlackDeliveryTests(unittest.TestCase):
 
     def test_process_pending_slack_deliveries_posts_verbatim_text(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
+        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C-MISMATCHED"
         row_id = transcript_log.insert_transcript(
             content_hash="deliver1",
             source="iCloud",
@@ -78,7 +78,7 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(
             kwargs["json"],
             {
-                "channel": "C123",
+                "channel": "C0BKS0QT7FU",
                 "client_msg_id": str(
                     uuid.uuid5(
                         uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f"),
@@ -112,7 +112,7 @@ class SlackDeliveryTests(unittest.TestCase):
 
     def test_process_pending_slack_deliveries_schedules_retryable_failure(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
+        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C-MISMATCHED"
         row_id = transcript_log.insert_transcript(
             content_hash="deliver2",
             source="iCloud",
@@ -185,7 +185,7 @@ class SlackDeliveryTests(unittest.TestCase):
         self,
     ) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C123"
+        os.environ["PENNY_SLACK_CHANNEL_ID"] = "C-MISMATCHED"
         transcript_log.insert_transcript(
             content_hash="deliver3",
             source="iCloud",
@@ -197,7 +197,7 @@ class SlackDeliveryTests(unittest.TestCase):
             patch.object(slack_delivery.requests, "post") as post_mock,
             patch.object(
                 slack_delivery,
-                "mark_slack_delivery_sent",
+                "mark_slack_delivery_chunk_sent",
                 side_effect=[OSError("database is locked"), None],
             ),
         ):
@@ -225,6 +225,189 @@ class SlackDeliveryTests(unittest.TestCase):
         ]
         self.assertEqual(first_client_msg_id, second_client_msg_id)
         self.assertEqual(str(uuid.UUID(first_client_msg_id)), first_client_msg_id)
+
+    def test_long_transcript_chunks_exactly_and_retries_only_current_chunk(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript = ("A" * 39_999) + "\n" + ("B" * 40_000) + "tail"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-long",
+            source="iCloud",
+            transcript=transcript,
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.side_effect = [
+                _SlackResponse({"ok": True, "ts": "100.001"}),
+                _SlackResponse(
+                    {"ok": False, "error": "ratelimited"},
+                    headers={"Retry-After": "1"},
+                ),
+                _SlackResponse({"ok": True, "ts": "100.002"}),
+                _SlackResponse({"ok": True, "ts": "100.003"}),
+            ]
+
+            first_delivered = slack_delivery.process_pending_slack_deliveries()
+            conn = transcript_log._get_conn()
+            try:
+                after_failure = conn.execute(
+                    """
+                    SELECT status, next_chunk_index, chunk_attempt_count,
+                           chunk_provider_ts, message_text
+                    FROM slack_deliveries
+                    WHERE transcript_row_id = ?
+                    """,
+                    (row_id,),
+                ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE slack_deliveries
+                    SET next_attempt_at = datetime('now', '-1 second')
+                    WHERE transcript_row_id = ?
+                    """,
+                    (row_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            second_delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(first_delivered, 0)
+        self.assertEqual(second_delivered, 1)
+        failed_state = dict(after_failure)
+        self.assertEqual(failed_state["status"], "pending")
+        self.assertEqual(failed_state["next_chunk_index"], 1)
+        self.assertEqual(failed_state["chunk_attempt_count"], 1)
+        self.assertEqual(failed_state["message_text"], transcript)
+        self.assertEqual(
+            failed_state["chunk_provider_ts"],
+            '["100.001"]',
+        )
+
+        payloads = [call.kwargs["json"] for call in post_mock.call_args_list]
+        self.assertEqual(len(payloads), 4)
+        self.assertTrue(all(len(payload["text"]) < 40_000 for payload in payloads))
+        self.assertEqual(payloads[1]["text"], payloads[2]["text"])
+        self.assertEqual(payloads[1]["client_msg_id"], payloads[2]["client_msg_id"])
+        self.assertNotEqual(payloads[0]["client_msg_id"], payloads[1]["client_msg_id"])
+        self.assertNotEqual(payloads[1]["client_msg_id"], payloads[3]["client_msg_id"])
+        self.assertEqual(
+            payloads[0]["text"] + payloads[2]["text"] + payloads[3]["text"],
+            transcript,
+        )
+        self.assertTrue(
+            all(payload["channel"] == "C0BKS0QT7FU" for payload in payloads)
+        )
+
+        conn = transcript_log._get_conn()
+        try:
+            final_row = conn.execute(
+                """
+                SELECT status, next_chunk_index, chunk_attempt_count,
+                       chunk_provider_ts, message_text
+                FROM slack_deliveries
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        final_state = dict(final_row)
+        self.assertEqual(final_state["status"], "sent")
+        self.assertEqual(final_state["next_chunk_index"], 3)
+        self.assertEqual(final_state["chunk_attempt_count"], 0)
+        self.assertEqual(
+            final_state["chunk_provider_ts"],
+            '["100.001", "100.002", "100.003"]',
+        )
+        self.assertEqual(final_state["message_text"], transcript)
+
+    def test_slack_warning_never_marks_delivery_sent(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-warning",
+            source="iCloud",
+            transcript="warning must fail closed",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value = _SlackResponse(
+                {
+                    "ok": True,
+                    "ts": "200.001",
+                    "response_metadata": {
+                        "warnings": ["message_truncated"],
+                    },
+                }
+            )
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                """
+                SELECT status, attempt_count, next_chunk_index, last_error
+                FROM slack_deliveries
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        state = dict(row)
+        self.assertEqual(state["status"], "pending")
+        self.assertEqual(state["attempt_count"], 1)
+        self.assertEqual(state["next_chunk_index"], 0)
+        self.assertEqual(state["last_error"], "message_truncated")
+
+    def test_wrong_stored_destination_fails_without_posting(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-wrong-destination",
+            source="iCloud",
+            transcript="never post outside Penny",
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE slack_deliveries
+                SET channel_id = 'C-WRONG'
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        post_mock.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                """
+                SELECT status, attempt_count, last_error
+                FROM slack_deliveries
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        state = dict(row)
+        self.assertEqual(state["status"], "pending")
+        self.assertEqual(state["attempt_count"], 1)
+        self.assertEqual(state["last_error"], "destination_mismatch")
 
     def test_provider_exception_is_sanitized_in_database_and_logs(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
@@ -347,7 +530,7 @@ class SlackDeliveryTests(unittest.TestCase):
             patch.object(slack_delivery.requests, "post") as post_mock,
             patch.object(
                 slack_delivery,
-                "mark_slack_delivery_sent",
+                "mark_slack_delivery_chunk_sent",
                 side_effect=acknowledgement_error,
             ),
             patch.object(slack_delivery.log, "warning") as warning_mock,

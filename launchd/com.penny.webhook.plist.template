@@ -25,6 +25,10 @@
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>
         <string>/Users/macmini/.penny/google_token.json</string>
+        <key>MAYA_TRANSCRIPT_URL</key>
+        <string>YOUR_MAYA_TRANSCRIPT_URL_HERE</string>
+        <key>MAYA_INGEST_TOKEN</key>
+        <string>YOUR_MAYA_INGEST_TOKEN_HERE</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

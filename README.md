@@ -140,7 +140,7 @@ Penny has three separate notification controls. They are intentionally independe
 | Concern | Controlled by | In repo? | Default / current intent |
 |---|---|---|---|
 | Telegram alerts from Penny | `config.toml` → `[notifications].telegram_enabled` | Yes | Disabled (`false`) unless explicitly re-enabled |
-| Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN` and `PENNY_SLACK_CHANNEL_ID` in the watcher runtime environment | Yes, as env wiring and code path | Enabled when the Slack token is present; default channel is `C0BKS0QT7FU` |
+| Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN`; destination is pinned in code/template | Yes | Enabled when the Slack token is present; only channel ID `C0BKS0QT7FU` is allowed |
 | Whether Slack sends a mention, badge, push, or other notification to people in that channel | Slack workspace/channel/user settings | No | External preference; verify in Slack, never infer from Penny's Telegram setting |
 
 Do not add a Penny config setting for Slack mention behavior. Penny only decides whether to mirror the transcript into Slack; Slack decides how that post notifies people.
@@ -228,7 +228,7 @@ pip install -r requirements.txt
 | `HERMES_WEBHOOK_URL` | Optional Hermes webhook endpoint; defaults to `http://100.126.13.70:7778/webhooks/penny` |
 | `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
 | `PENNY_SLACK_BOT_TOKEN` | Slack bot token used by the watcher to post every voice memo transcript |
-| `PENNY_SLACK_CHANNEL_ID` | Slack channel for verbatim Penny voice memo transcripts; defaults to `C0BKS0QT7FU` |
+| `PENNY_SLACK_CHANNEL_ID` | Pinned watcher-template invariant `C0BKS0QT7FU`; alternate values cannot redirect delivery |
 | `MAYA_TRANSCRIPT_URL` | Maya `/ingest/transcript` endpoint used for Penny transcript routing when enabled |
 | `MAYA_INGEST_TOKEN` | Bearer token for Maya transcript ingest; read from runtime env and never persisted in repo config |
 
@@ -237,7 +237,7 @@ Plist templates with placeholders: `launchd/*.plist.template`
 Important separation:
 
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` matter only when `telegram_enabled = true`.
-- `PENNY_SLACK_BOT_TOKEN` and `PENNY_SLACK_CHANNEL_ID` control Slack transcript mirroring regardless of the Telegram toggle.
+- `PENNY_SLACK_BOT_TOKEN` enables Slack transcript mirroring regardless of the Telegram toggle; the destination is fixed to `C0BKS0QT7FU`.
 - Slack-side mention or notification behavior is configured in Slack itself, not in this repository.
 
 Hermes notifications are best-effort. Penny signs each payload with
@@ -294,5 +294,8 @@ Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`
 Slack delivery is durable for eligible iCloud voice transcripts: each transcript
 gets one outbox row keyed by transcript id, retries honor bounded backoff and
 Slack `Retry-After`, successful acknowledgements persist the Slack timestamp,
-and terminal failures stay visible in watcher health. Non-voice transcripts and
-skipped oversized placeholders explicitly opt out of Slack enqueue.
+long bodies are deterministically chunked at Slack's 40,000-character boundary
+with durable per-chunk progress, and terminal failures stay visible in watcher
+health. The full original body remains persisted and warning-bearing provider
+responses never mark a delivery sent. Non-voice transcripts and skipped
+oversized placeholders explicitly opt out of Slack enqueue.

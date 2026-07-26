@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -115,6 +116,98 @@ class TranscriptLogTests(unittest.TestCase):
             pending[0]["channel_id"],
             transcript_log.DEFAULT_SLACK_CHANNEL_ID,
         )
+
+    def test_icloud_transcript_ignores_mismatched_slack_channel_environment(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PENNY_SLACK_CHANNEL_ID": "C-MALICIOUS",
+                "SLACK_CHANNEL_ID": "C-UNRELATED",
+            },
+        ):
+            row_id = transcript_log.insert_transcript(
+                content_hash="slack-pinned-channel",
+                source="iCloud",
+                transcript="must only reach Penny",
+            )
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["channel_id"], "C0BKS0QT7FU")
+
+    def test_init_db_migrates_retryable_legacy_failures_and_wrong_destinations(
+        self,
+    ) -> None:
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_row_id INTEGER NOT NULL UNIQUE,
+                    channel_id TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO slack_deliveries (
+                    transcript_row_id, channel_id, message_text, status,
+                    attempt_count, last_error
+                ) VALUES
+                    (101, 'C-WRONG-RETRY', 'retryable legacy body', 'failed', 2, 'ratelimited'),
+                    (102, 'C-WRONG-TERMINAL', 'terminal legacy body', 'failed', 5, 'invalid_auth')
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            rows = conn.execute(
+                """
+                SELECT transcript_row_id, channel_id, status, attempt_count,
+                       next_attempt_at, provider_ts
+                FROM slack_deliveries
+                ORDER BY transcript_row_id
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("next_attempt_at", columns)
+        self.assertIn("provider_ts", columns)
+        retryable, terminal = [dict(row) for row in rows]
+        self.assertEqual(retryable["channel_id"], "C0BKS0QT7FU")
+        self.assertEqual(retryable["status"], "pending")
+        self.assertEqual(retryable["attempt_count"], 2)
+        self.assertIsNotNone(retryable["next_attempt_at"])
+        self.assertIsNone(retryable["provider_ts"])
+        self.assertEqual(terminal["channel_id"], "C0BKS0QT7FU")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(terminal["attempt_count"], 5)
+        self.assertIsNone(terminal["next_attempt_at"])
+        due = transcript_log.get_pending_slack_deliveries(transcript_id=101)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["message_text"], "retryable legacy body")
 
     def test_queue_slack_delivery_is_idempotent_for_existing_transcript(self) -> None:
         row_id = transcript_log.insert_transcript(
@@ -229,6 +322,19 @@ class TranscriptLogTests(unittest.TestCase):
         health = transcript_log.get_slack_delivery_health()
         self.assertEqual(health["pending_count"], 0)
         self.assertEqual(health["failed_count"], 1)
+
+    def test_slack_delivery_health_surfaces_database_failure(self) -> None:
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=sqlite3.OperationalError("database unavailable"),
+        ):
+            health = transcript_log.get_slack_delivery_health()
+
+        self.assertEqual(health["pending_count"], 0)
+        self.assertEqual(health["sent_count"], 0)
+        self.assertEqual(health["failed_count"], 0)
+        self.assertEqual(health["health_error"], 1)
 
     def test_mark_slack_delivery_sent_raises_write_failure(self) -> None:
         conn = Mock()

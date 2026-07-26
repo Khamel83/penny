@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import os
+import plistlib
 import py_compile
 import subprocess
 import sys
@@ -170,6 +171,35 @@ def check_launchd_templates() -> None:
         missing = [key for key in REQUIRED_LAUNCHD_KEYS if key not in text]
         if missing:
             raise SystemExit(f"FAIL: {template.relative_to(ROOT)} missing keys: {', '.join(missing)}")
+
+    maya_routing_templates = (
+        "com.penny.watcher.plist.template",
+        "com.penny.webhook.plist.template",
+        "com.penny.tasks.plist.template",
+    )
+    for template_name in maya_routing_templates:
+        template = ROOT / "launchd" / template_name
+        config = plistlib.loads(template.read_bytes())
+        environment = config["EnvironmentVariables"]
+        expected = {
+            "MAYA_TRANSCRIPT_URL": "YOUR_MAYA_TRANSCRIPT_URL_HERE",
+            "MAYA_INGEST_TOKEN": "YOUR_MAYA_INGEST_TOKEN_HERE",
+        }
+        for key, placeholder in expected.items():
+            if environment.get(key) != placeholder:
+                raise SystemExit(
+                    f"FAIL: {template.relative_to(ROOT)} must set {key} "
+                    f"to placeholder {placeholder}"
+                )
+
+    watcher = plistlib.loads(
+        (ROOT / "launchd" / "com.penny.watcher.plist.template").read_bytes()
+    )
+    watcher_environment = watcher["EnvironmentVariables"]
+    if watcher_environment.get("PENNY_SLACK_CHANNEL_ID") != "C0BKS0QT7FU":
+        raise SystemExit(
+            "FAIL: watcher Slack destination must be exactly C0BKS0QT7FU"
+        )
     print(f"  OK: validated {len(template_paths)} launchd template(s)", flush=True)
 
 

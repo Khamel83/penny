@@ -155,14 +155,17 @@ def update_health_check() -> None:
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
     slack_health = get_slack_delivery_health()
+    slack_health_error = int(slack_health.get("health_error", 0))
+    watcher_ok = 0 if slack_health_error else 1
     HEALTH_FILE.write_text(
         (
-            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|"
+            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:{watcher_ok}|voicememos:{vm}|"
             f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
             f"awaiting_file:{vm_health['awaiting_file_count']}|"
             f"voice_memo_failed:{vm_health['failed_count']}|"
             f"slack_pending:{slack_health['pending_count']}|"
-            f"slack_failed:{slack_health['failed_count']}\n"
+            f"slack_failed:{slack_health['failed_count']}|"
+            f"slack_health_error:{slack_health_error}\n"
         ),
         encoding="utf-8",
     )
