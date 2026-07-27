@@ -256,7 +256,9 @@ def _persisted_transcript_body(row_id: int | None, fallback: str) -> str:
     row = get_transcript(row_id)
     stored = row.get("transcript") if row else None
     if stored is None:
-        return fallback
+        raise RoutingError(
+            f"persisted transcript unavailable for Maya-routed row_id={row_id}"
+        )
     return str(stored)
 
 
@@ -370,6 +372,7 @@ def _route_to_maya(
 
     Returns True if Maya handled it (caller should skip local routing).
     Returns False if Maya is not configured or unavailable (caller should fall back).
+    Raises RoutingError if a row_id has no readable persisted transcript body.
     """
     log = logging.getLogger("penny.core")
     maya_url = cfg.maya.transcript_url.strip()
@@ -378,8 +381,8 @@ def _route_to_maya(
     if not maya_url or not maya_token:
         return False
 
-    client_ref = f"penny:{row_id}" if row_id is not None else None
     delivery_transcript = _persisted_transcript_body(row_id, transcript)
+    client_ref = f"penny:{row_id}" if row_id is not None else None
     payload = {
         "transcript": delivery_transcript,
         "source": source or "penny_voice",
@@ -524,11 +527,18 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
-    # Route through Maya if configured, falling back to local routing on failure.
+    # Route through Maya if configured. Transport/response failures fall back to
+    # local routing; persisted-body failures are terminal for the durable row.
     # allow_maya=False is set by the /deliver endpoint, which receives transcripts
     # FROM Maya — re-sending them would loop forever.
-    if allow_maya and _route_to_maya(transcript, source, row_id, duration_seconds):
-        return {"skip": True, "reason": "routed_to_maya"}
+    if allow_maya:
+        try:
+            if _route_to_maya(transcript, source, row_id, duration_seconds):
+                return {"skip": True, "reason": "routed_to_maya"}
+        except RoutingError as exc:
+            if row_id is not None:
+                mark_failed(row_id, str(exc))
+            raise
 
     content_type = detect_content_type(
         transcript,

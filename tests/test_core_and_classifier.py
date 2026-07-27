@@ -340,6 +340,11 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.ingest_token = "test-token"
 
         with (
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": transcript},
+            ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):
@@ -408,6 +413,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", side_effect=record_mark_routed),
         ):
@@ -430,6 +440,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "_record_maya_route_state", return_value=True) as state_mock,
             patch.object(
                 core,
@@ -489,6 +504,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", side_effect=core.requests.Timeout("timeout")),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
@@ -504,6 +524,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", side_effect=core.requests.ConnectionError("boom")),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
@@ -523,6 +548,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
@@ -545,6 +575,11 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
@@ -569,6 +604,11 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.ingest_token = "test-token"
 
         with (
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "same transcript"},
+            ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):

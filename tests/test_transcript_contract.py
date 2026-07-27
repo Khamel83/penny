@@ -183,6 +183,61 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(delivered, 0)
         slack_post.assert_not_called()
 
+    def test_unavailable_persisted_body_fails_closed_before_maya_or_local_routing(
+        self,
+    ) -> None:
+        for scenario, persisted_row in (
+            ("missing-row", None),
+            ("missing-transcript-field", {"routing_progress": None}),
+        ):
+            with self.subTest(scenario=scenario):
+                transcript = f"Fallback body must not be sent for {scenario}."
+                row_id = transcript_log.insert_transcript(
+                    content_hash=f"persisted-body-{scenario}-contract-hash",
+                    source="iCloud",
+                    transcript=transcript,
+                    ingest_state="transcribed",
+                )
+
+                with (
+                    patch.object(core, "get_transcript", return_value=persisted_row),
+                    patch.object(core, "mark_failed", transcript_log.mark_failed),
+                    patch.object(core.requests, "post") as maya_post,
+                    patch.object(core, "detect_content_type") as detect_mock,
+                    patch.object(core, "add_note") as note_mock,
+                    patch.object(core, "add_reminder") as reminder_mock,
+                    patch.object(core, "mark_routed") as mark_routed_mock,
+                    self.assertRaisesRegex(
+                        core.RoutingError,
+                        "persisted transcript.*row_id",
+                    ),
+                ):
+                    core.classify_and_route(
+                        transcript,
+                        source="iCloud",
+                        row_id=row_id,
+                    )
+
+                maya_post.assert_not_called()
+                detect_mock.assert_not_called()
+                note_mock.assert_not_called()
+                reminder_mock.assert_not_called()
+                mark_routed_mock.assert_not_called()
+
+                failed_row = transcript_log.get_transcript(row_id)
+                self.assertEqual(failed_row["status"], "failed")
+                self.assertEqual(failed_row["ingest_state"], "failed")
+                self.assertIsNone(failed_row["routed_to"])
+                self.assertIsNone(failed_row["routing_result"])
+                self.assertIsNone(failed_row["routing_progress"])
+                self.assertEqual(
+                    transcript_log.get_pending_slack_deliveries(
+                        transcript_id=row_id,
+                        routed_only=True,
+                    ),
+                    [],
+                )
+
     def test_icloud_transcript_contract_preserves_exact_body_across_maya_and_slack_retry(
         self,
     ) -> None:
