@@ -138,7 +138,7 @@ ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
 Penny has three separate notification controls. They are intentionally independent:
 
 | Concern | Controlled by | In repo? | Default / current intent |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Telegram alerts from Penny | `config.toml` → `[notifications].telegram_enabled` | Yes | Disabled (`false`) unless explicitly re-enabled |
 | Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN`; destination is pinned in code/template | Yes | Enabled when the Slack token is present; only channel ID `C0BKS0QT7FU` is allowed |
 | Whether Slack sends a mention, badge, push, or other notification to people in that channel | Slack workspace/channel/user settings | No | External preference; verify in Slack, never infer from Penny's Telegram setting |

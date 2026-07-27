@@ -291,7 +291,7 @@ def _reference_reminder_text(transcript: str) -> str:
 def _record_maya_route_state(row_id: int | None, **details: Any) -> bool:
     if row_id is None:
         return True
-    return update_transcript_progress(row_id, {"maya_route": details})
+    return bool(update_transcript_progress(row_id, {"maya_route": details}))
 
 
 def _is_valid_maya_acceptance(data: Any) -> bool:
