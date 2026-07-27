@@ -71,6 +71,7 @@ def init_db() -> None:
     try:
         conn = sqlite3.connect(str(TRANSCRIPT_DB_PATH), timeout=5.0)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS transcripts (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +163,10 @@ def init_db() -> None:
             conn.commit()
             log.info("Migrated %d entries from old processed files", migrated)
 
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
     finally:
         if conn:
             conn.close()
@@ -173,6 +178,10 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def _add_column_if_missing(
     conn: sqlite3.Connection,
     *,
@@ -180,7 +189,7 @@ def _add_column_if_missing(
     column: str,
     sql: str,
 ) -> bool:
-    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    existing = _table_columns(conn, table)
     if column in existing:
         return False
 
@@ -188,16 +197,73 @@ def _add_column_if_missing(
         conn.execute(sql)
     except sqlite3.OperationalError as original_error:
         try:
-            existing = {
-                row[1]
-                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
+            existing = _table_columns(conn, table)
         except sqlite3.OperationalError:
             raise original_error from None
         if column in existing:
             return False
         raise
     return True
+
+
+def _rename_column_if_present(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    old_column: str,
+    new_column: str,
+) -> bool:
+    existing = _table_columns(conn, table)
+    if new_column in existing or old_column not in existing:
+        return False
+
+    try:
+        conn.execute(
+            f"ALTER TABLE {table} RENAME COLUMN {old_column} TO {new_column}"
+        )
+    except sqlite3.OperationalError as original_error:
+        try:
+            existing = _table_columns(conn, table)
+        except sqlite3.OperationalError:
+            raise original_error from None
+        if new_column in existing and old_column not in existing:
+            return False
+        raise
+    return True
+
+
+def _ensure_unique_index(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    index: str,
+    column: str,
+) -> None:
+    matching = next(
+        (
+            row
+            for row in conn.execute(f"PRAGMA index_list({table})").fetchall()
+            if row[1] == index
+        ),
+        None,
+    )
+    if matching is not None:
+        if int(matching[2]) != 1 or (len(matching) > 4 and int(matching[4]) != 0):
+            raise sqlite3.IntegrityError(
+                f"{index} must be a non-partial unique index on {table}"
+            )
+        indexed_columns = [
+            row[2] for row in conn.execute(f"PRAGMA index_info({index})").fetchall()
+        ]
+        if indexed_columns != [column]:
+            raise sqlite3.IntegrityError(
+                f"{index} must cover only {table}.{column}"
+            )
+        return
+
+    conn.execute(
+        f"CREATE UNIQUE INDEX {index} ON {table}({column})"
+    )
 
 
 def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
@@ -253,7 +319,22 @@ def _slack_channel_id() -> str:
 
 
 def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
+    _rename_column_if_present(
+        conn,
+        table="slack_deliveries",
+        old_column="transcript_id",
+        new_column="transcript_row_id",
+    )
+    columns = _table_columns(conn, "slack_deliveries")
+    if {"transcript_id", "transcript_row_id"}.issubset(columns):
+        raise sqlite3.IntegrityError(
+            "slack_deliveries has conflicting transcript identity columns"
+        )
+
     required_columns = {
+        "transcript_row_id": (
+            "ALTER TABLE slack_deliveries ADD COLUMN transcript_row_id INTEGER"
+        ),
         "next_attempt_at": "ALTER TABLE slack_deliveries ADD COLUMN next_attempt_at TEXT",
         "provider_ts": "ALTER TABLE slack_deliveries ADD COLUMN provider_ts TEXT",
         "sent_at": "ALTER TABLE slack_deliveries ADD COLUMN sent_at TEXT",
@@ -286,6 +367,13 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
             sql=sql,
         ):
             added.add(column)
+
+    _ensure_unique_index(
+        conn,
+        table="slack_deliveries",
+        index="idx_slack_deliveries_transcript_row_id",
+        column="transcript_row_id",
+    )
     return added
 
 
@@ -295,6 +383,38 @@ def _migrate_slack_delivery_rows(
     added_columns: set[str],
 ) -> None:
     """Normalize legacy outbox rows without reopening terminal failures."""
+    orphan_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM slack_deliveries AS deliveries
+        LEFT JOIN transcripts
+          ON transcripts.id = deliveries.transcript_row_id
+        WHERE transcripts.id IS NULL
+        """
+    ).fetchone()[0]
+    if orphan_count:
+        raise sqlite3.IntegrityError(
+            f"slack_deliveries contains {orphan_count} orphan transcript reference(s)"
+        )
+
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET message_text = (
+                SELECT transcripts.transcript
+                FROM transcripts
+                WHERE transcripts.id = slack_deliveries.transcript_row_id
+            ),
+            updated_at = datetime('now')
+        WHERE (message_text IS NULL OR message_text = '')
+          AND EXISTS (
+                SELECT 1
+                FROM transcripts
+                WHERE transcripts.id = slack_deliveries.transcript_row_id
+            )
+        """
+    )
+
     if "chunk_attempt_count" in added_columns:
         conn.execute(
             """

@@ -156,6 +156,21 @@ class TranscriptLogTests(unittest.TestCase):
     def test_init_db_migrates_retryable_legacy_failures_and_wrong_destinations(
         self,
     ) -> None:
+        retryable_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-retryable-row",
+            source="iCloud",
+            transcript="retryable legacy body",
+            enqueue_slack=False,
+        )
+        terminal_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-terminal-row",
+            source="iCloud",
+            transcript="terminal legacy body",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(retryable_row_id)
+        self.assertIsNotNone(terminal_row_id)
+
         conn = transcript_log._get_conn()
         try:
             conn.execute("DROP TABLE slack_deliveries")
@@ -181,9 +196,10 @@ class TranscriptLogTests(unittest.TestCase):
                     transcript_row_id, channel_id, message_text, status,
                     attempt_count, last_error
                 ) VALUES
-                    (101, 'C-WRONG-RETRY', 'retryable legacy body', 'failed', 2, 'ratelimited'),
-                    (102, 'C-WRONG-TERMINAL', 'terminal legacy body', 'failed', 5, 'invalid_auth')
-                """
+                    (?, 'C-WRONG-RETRY', 'retryable legacy body', 'failed', 2, 'ratelimited'),
+                    (?, 'C-WRONG-TERMINAL', 'terminal legacy body', 'failed', 5, 'invalid_auth')
+                """,
+                (retryable_row_id, terminal_row_id),
             )
             conn.commit()
         finally:
@@ -221,9 +237,215 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(terminal["status"], "failed")
         self.assertEqual(terminal["attempt_count"], 5)
         self.assertIsNone(terminal["next_attempt_at"])
-        due = transcript_log.get_pending_slack_deliveries(transcript_id=101)
+        due = transcript_log.get_pending_slack_deliveries(
+            transcript_id=retryable_row_id
+        )
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["message_text"], "retryable legacy body")
+
+    def test_init_db_migrates_legacy_transcript_id_to_transcript_row_id(self) -> None:
+        first_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-slack-schema-1",
+            source="iCloud",
+            transcript="legacy body one",
+            enqueue_slack=False,
+        )
+        second_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-slack-schema-2",
+            source="iCloud",
+            transcript="legacy body two",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(first_row_id)
+        self.assertIsNotNone(second_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    provider_ts TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT,
+                    FOREIGN KEY(transcript_id) REFERENCES transcripts(id)
+                )
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO slack_deliveries (
+                    transcript_id
+                ) VALUES (?)
+                """,
+                [
+                    (first_row_id,),
+                    (second_row_id,),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+        transcript_log.init_db()
+        transcript_log.queue_slack_delivery(int(first_row_id))
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            rows = conn.execute(
+                """
+                SELECT transcript_row_id, message_text
+                FROM slack_deliveries
+                ORDER BY transcript_row_id
+                """
+            ).fetchall()
+            foreign_key = conn.execute(
+                "PRAGMA foreign_key_list(slack_deliveries)"
+            ).fetchone()
+            row_count = conn.execute("SELECT COUNT(*) FROM slack_deliveries").fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertIn("transcript_row_id", columns)
+        self.assertNotIn("transcript_id", columns)
+        self.assertEqual(
+            (foreign_key[2], foreign_key[3], foreign_key[4]),
+            ("transcripts", "transcript_row_id", "id"),
+        )
+        self.assertEqual(
+            rows,
+            [
+                (first_row_id, "legacy body one"),
+                (second_row_id, "legacy body two"),
+            ],
+        )
+        self.assertEqual(row_count, 2)
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=first_row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transcript_row_id"], first_row_id)
+        self.assertEqual(pending[0]["message_text"], "legacy body one")
+
+    def test_init_db_rolls_back_legacy_migration_and_retries(self) -> None:
+        transcript_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-slack-schema-retry",
+            source="iCloud",
+            transcript="retry after migration failure",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(transcript_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO slack_deliveries (transcript_id) VALUES (?)",
+                (transcript_row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with patch.object(
+            transcript_log,
+            "_migrate_slack_delivery_rows",
+            side_effect=sqlite3.OperationalError("injected migration failure"),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns_after_failure = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertIn("transcript_id", columns_after_failure)
+        self.assertNotIn("transcript_row_id", columns_after_failure)
+
+        transcript_log.init_db()
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns_after_retry = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT transcript_row_id, message_text FROM slack_deliveries"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn("transcript_row_id", columns_after_retry)
+        self.assertNotIn("transcript_id", columns_after_retry)
+        self.assertEqual(row, (transcript_row_id, "retry after migration failure"))
+
+    def test_init_db_rejects_orphan_legacy_delivery_without_partial_migration(self) -> None:
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY(transcript_id) REFERENCES transcripts(id)
+                )
+                """
+            )
+            conn.execute("INSERT INTO slack_deliveries (transcript_id) VALUES (999999)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT transcript_id FROM slack_deliveries"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn("transcript_id", columns)
+        self.assertNotIn("transcript_row_id", columns)
+        self.assertEqual(row, (999999,))
 
     def test_add_column_if_missing_returns_false_when_concurrent_alter_wins(
         self,
@@ -298,6 +520,35 @@ class TranscriptLogTests(unittest.TestCase):
             )
 
         self.assertIs(raised.exception, original_error)
+
+    def test_init_db_rejects_non_unique_transcript_identity_index(self) -> None:
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP INDEX idx_slack_deliveries_transcript_row_id")
+            conn.execute(
+                "CREATE INDEX idx_slack_deliveries_transcript_row_id "
+                "ON slack_deliveries(message_text)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            index = conn.execute(
+                """
+                SELECT name, "unique"
+                FROM pragma_index_list('slack_deliveries')
+                WHERE name = 'idx_slack_deliveries_transcript_row_id'
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(index, ("idx_slack_deliveries_transcript_row_id", 0))
 
     def test_concurrent_init_db_migrates_slack_schema_without_errors(self) -> None:
         conn = transcript_log._get_conn()
@@ -378,6 +629,103 @@ class TranscriptLogTests(unittest.TestCase):
                 "sent_at",
             }.issubset(columns)
         )
+
+    def test_concurrent_init_db_migrates_legacy_transcript_id_schema(self) -> None:
+        transcript_row_id = transcript_log.insert_transcript(
+            content_hash="concurrent-legacy-slack-schema",
+            source="iCloud",
+            transcript="concurrent legacy body",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(transcript_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    provider_ts TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO slack_deliveries (transcript_id) VALUES (?)",
+                (transcript_row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        process_count = 4
+        context = multiprocessing.get_context("spawn")
+        start_barrier = context.Barrier(process_count)
+        result_queue = context.Queue()
+        processes = [
+            context.Process(
+                target=_init_db_in_process,
+                args=(str(self.db_path), start_barrier, result_queue),
+            )
+            for _ in range(process_count)
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=15)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join()
+
+        self.assertEqual([process.exitcode for process in processes], [0] * process_count)
+        errors = [
+            result
+            for result in (result_queue.get() for _ in range(process_count))
+            if result is not None
+        ]
+        self.assertEqual(errors, [])
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            row = conn.execute(
+                """
+                SELECT transcript_row_id, message_text
+                FROM slack_deliveries
+                """
+            ).fetchone()
+            row_count = conn.execute("SELECT COUNT(*) FROM slack_deliveries").fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertIn("transcript_row_id", columns)
+        self.assertNotIn("transcript_id", columns)
+        self.assertEqual(row, (transcript_row_id, "concurrent legacy body"))
+        self.assertEqual(row_count, 1)
+
+        transcript_log.queue_slack_delivery(int(transcript_row_id))
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM slack_deliveries").fetchone()[0],
+                1,
+            )
+        finally:
+            conn.close()
 
     def test_queue_slack_delivery_is_idempotent_for_existing_transcript(self) -> None:
         row_id = transcript_log.insert_transcript(
