@@ -439,27 +439,40 @@ def queue_slack_delivery(transcript_id: int) -> None:
 def get_pending_slack_deliveries(
     limit: int = 20,
     transcript_id: int | None = None,
+    *,
+    routed_only: bool = False,
 ) -> list[dict[str, Any]]:
     conn = None
     try:
         conn = _get_conn()
         clauses = [
-            "status = 'pending'",
-            "(next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))",
+            "deliveries.status = 'pending'",
+            (
+                "(deliveries.next_attempt_at IS NULL "
+                "OR deliveries.next_attempt_at <= datetime('now'))"
+            ),
         ]
         params: list[Any] = []
+        if routed_only:
+            clauses.append("transcripts.ingest_state = 'routed'")
         if transcript_id is not None:
-            clauses.append("transcript_row_id = ?")
+            clauses.append("deliveries.transcript_row_id = ?")
             params.append(transcript_id)
         params.append(limit)
         rows = conn.execute(
-            f"""SELECT id, transcript_row_id, channel_id, message_text, status,
-                       attempt_count, next_attempt_at, last_error, provider_ts,
-                       next_chunk_index, chunk_attempt_count, chunk_provider_ts,
-                       created_at, updated_at, sent_at
-                FROM slack_deliveries
+            f"""SELECT deliveries.id, deliveries.transcript_row_id,
+                       deliveries.channel_id, deliveries.message_text,
+                       deliveries.status, deliveries.attempt_count,
+                       deliveries.next_attempt_at, deliveries.last_error,
+                       deliveries.provider_ts, deliveries.next_chunk_index,
+                       deliveries.chunk_attempt_count,
+                       deliveries.chunk_provider_ts, deliveries.created_at,
+                       deliveries.updated_at, deliveries.sent_at
+                FROM slack_deliveries AS deliveries
+                LEFT JOIN transcripts
+                  ON transcripts.id = deliveries.transcript_row_id
                 WHERE {' AND '.join(clauses)}
-                ORDER BY created_at ASC, id ASC
+                ORDER BY deliveries.created_at ASC, deliveries.id ASC
                 LIMIT ?""",
             params,
         ).fetchall()

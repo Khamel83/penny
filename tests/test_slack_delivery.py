@@ -65,6 +65,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver1",
             source="iCloud",
             transcript="Line one\nLine two, unchanged.",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -110,6 +111,60 @@ class SlackDeliveryTests(unittest.TestCase):
             conn.close()
         self.assertEqual(dict(delivery)["provider_ts"], "123.456")
 
+    def test_process_pending_slack_waits_for_local_routing(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-after-routing",
+            source="iCloud",
+            transcript="route before provider delivery",
+            ingest_state="transcribed",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            before_routing = slack_delivery.process_pending_slack_deliveries()
+            transcript_log.update_transcript_stages(row_id, ingest_state="routed")
+            post_mock.return_value = _SlackResponse(
+                {"ok": True, "ts": "123.456"}
+            )
+            after_routing = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(before_routing, 0)
+        self.assertEqual(after_routing, 1)
+        post_mock.assert_called_once()
+
+    def test_process_pending_slack_safely_defers_legacy_null_routing_state(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-legacy-null-state",
+            source="iCloud",
+            transcript="legacy pending delivery",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        post_mock.assert_not_called()
+        self.assertEqual(
+            len(
+                transcript_log.get_pending_slack_deliveries(
+                    transcript_id=row_id,
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(
+                transcript_id=row_id,
+                routed_only=True,
+            ),
+            [],
+        )
+
     def test_process_pending_slack_deliveries_schedules_retryable_failure(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         os.environ["PENNY_SLACK_CHANNEL_ID"] = "C-MISMATCHED"
@@ -117,6 +172,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver2",
             source="iCloud",
             transcript="retry me",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -154,10 +210,11 @@ class SlackDeliveryTests(unittest.TestCase):
         self,
     ) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        transcript_log.insert_transcript(
+        row_id = transcript_log.insert_transcript(
             content_hash="deliver-unrecognized-error",
             source="iCloud",
             transcript="sanitize provider-controlled error code",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -173,7 +230,8 @@ class SlackDeliveryTests(unittest.TestCase):
         conn = transcript_log._get_conn()
         try:
             row = conn.execute(
-                "SELECT last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+                "SELECT last_error FROM slack_deliveries WHERE transcript_row_id = ?",
+                (row_id,),
             ).fetchone()
         finally:
             conn.close()
@@ -190,6 +248,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver3",
             source="iCloud",
             transcript="post once despite uncertain ack",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -235,6 +294,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver-long",
             source="iCloud",
             transcript=transcript,
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -356,6 +416,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver-warning",
             source="iCloud",
             transcript="warning must fail closed",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -396,6 +457,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver-wrong-destination",
             source="iCloud",
             transcript="never post outside Penny",
+            ingest_state="routed",
         )
         conn = transcript_log._get_conn()
         try:
@@ -436,10 +498,11 @@ class SlackDeliveryTests(unittest.TestCase):
 
     def test_provider_exception_is_sanitized_in_database_and_logs(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        transcript_log.insert_transcript(
+        row_id = transcript_log.insert_transcript(
             content_hash="deliver4",
             source="iCloud",
             transcript="sanitize provider failure",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -459,7 +522,9 @@ class SlackDeliveryTests(unittest.TestCase):
         conn = transcript_log._get_conn()
         try:
             row = conn.execute(
-                "SELECT status, last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+                "SELECT status, last_error FROM slack_deliveries "
+                "WHERE transcript_row_id = ?",
+                (row_id,),
             ).fetchone()
         finally:
             conn.close()
@@ -479,6 +544,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver-http429",
             source="iCloud",
             transcript="please retry after header",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -510,6 +576,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver-terminal",
             source="iCloud",
             transcript="eventually stop retrying",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -542,10 +609,11 @@ class SlackDeliveryTests(unittest.TestCase):
         self,
     ) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
-        transcript_log.insert_transcript(
+        row_id = transcript_log.insert_transcript(
             content_hash="deliver5",
             source="iCloud",
             transcript="sanitize acknowledgement failure",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -567,7 +635,9 @@ class SlackDeliveryTests(unittest.TestCase):
         conn = transcript_log._get_conn()
         try:
             row = conn.execute(
-                "SELECT status, last_error FROM slack_deliveries WHERE transcript_row_id = 1"
+                "SELECT status, last_error FROM slack_deliveries "
+                "WHERE transcript_row_id = ?",
+                (row_id,),
             ).fetchone()
         finally:
             conn.close()
@@ -589,6 +659,7 @@ class SlackDeliveryTests(unittest.TestCase):
             content_hash="deliver6",
             source="iCloud",
             transcript="sanitize failed acknowledgement logging",
+            ingest_state="routed",
         )
         import slack_delivery
 

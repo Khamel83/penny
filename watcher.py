@@ -404,7 +404,6 @@ def _process_audio_file(
         update_transcript_stages(row_id, ingest_state="routed")
         if recording_pk is not None:
             mark_voice_memo_routed(recording_pk)
-        _process_slack_outbox()
     return True
 
 
@@ -526,7 +525,7 @@ def _process_disk_backlog(limit: int) -> None:
 
 def _process_slack_outbox() -> None:
     try:
-        delivered = process_pending_slack(limit=20)
+        delivered = process_pending_slack(limit=1)
         if delivered:
             log.info("Delivered %s transcript(s) to Slack", delivered)
     except Exception as e:
@@ -565,6 +564,36 @@ def _retry_waiting_for_files(limit: int) -> None:
         )
 
 
+def _retry_pending_routes(limit: int) -> None:
+    pending = get_pending(limit=limit)
+    for row in pending:
+        log.info(
+            "Retrying pending transcript id=%s (source=%s)",
+            row["id"],
+            row["source"],
+        )
+        try:
+            classify_and_route(
+                row["transcript"],
+                source=row["source"],
+                row_id=row["id"],
+                duration_seconds=row.get("duration_seconds"),
+            )
+            update_transcript_stages(row["id"], ingest_state="routed")
+            if row["source"] == "iCloud":
+                mark_voice_memo_routed_for_transcript(row["id"])
+        except Exception as e:
+            log.error("Retry failed for id=%s: %s", row["id"], e)
+
+
+def _process_ingest_pass() -> None:
+    _process_db_batch(get_new_recordings())
+    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
+    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
+    _retry_pending_routes(limit=5)
+    _process_slack_outbox()
+
+
 # ===== Main =====
 
 
@@ -598,10 +627,7 @@ def main() -> None:
     log.info("Running initial scan...")
     _ensure_voicememos_running()
     time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
-    _process_db_batch(get_new_recordings())
-    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
-    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
-    _process_slack_outbox()
+    _process_ingest_pass()
     update_health_check()
 
     log.info("Starting main polling loop...")
@@ -621,32 +647,7 @@ def main() -> None:
                 last_health_check = time.time()
 
             _ensure_voicememos_running()
-            _process_db_batch(get_new_recordings())
-            _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
-            _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
-            _process_slack_outbox()
-
-            # Retry any transcripts that failed routing
-            pending = get_pending(limit=5)
-            for row in pending:
-                log.info(
-                    "Retrying pending transcript id=%s (source=%s)",
-                    row["id"],
-                    row["source"],
-                )
-                try:
-                    classify_and_route(
-                        row["transcript"],
-                        source=row["source"],
-                        row_id=row["id"],
-                        duration_seconds=row.get("duration_seconds"),
-                    )
-                    update_transcript_stages(row["id"], ingest_state="routed")
-                    if row["source"] == "iCloud":
-                        mark_voice_memo_routed_for_transcript(row["id"])
-                except Exception as e:
-                    log.error("Retry failed for id=%s: %s", row["id"], e)
-            _process_slack_outbox()
+            _process_ingest_pass()
 
         except KeyboardInterrupt:
             log.info("Shutting down...")

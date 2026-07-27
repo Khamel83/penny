@@ -63,7 +63,7 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         failed_mock.assert_called_once_with(123, "file too large")
 
-    def test_new_recording_routes_before_slack_outbox_delivery(self) -> None:
+    def test_new_recording_routes_without_draining_slack_outbox(self) -> None:
         audio_path = Path(self.db_dir) / "new-recording.m4a"
         audio_path.write_bytes(b"audio")
         events: list[str] = []
@@ -86,7 +86,7 @@ class WatcherTests(unittest.TestCase):
                 watcher,
                 "_process_slack_outbox",
                 side_effect=lambda: events.append("slack"),
-            ),
+            ) as slack_mock,
         ):
             processed = watcher._process_audio_file(
                 audio_path,
@@ -94,7 +94,50 @@ class WatcherTests(unittest.TestCase):
             )
 
         self.assertTrue(processed)
-        self.assertEqual(events, ["route", "routed", "slack"])
+        self.assertEqual(events, ["route", "routed"])
+        slack_mock.assert_not_called()
+
+    def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
+        events: list[str] = []
+
+        with (
+            patch.object(watcher, "get_new_recordings", return_value=[{"Z_PK": 1}]),
+            patch.object(
+                watcher,
+                "_process_db_batch",
+                side_effect=lambda recordings: events.append("db"),
+            ),
+            patch.object(
+                watcher,
+                "_retry_waiting_for_files",
+                side_effect=lambda limit: events.append("waiting"),
+            ),
+            patch.object(
+                watcher,
+                "_process_disk_backlog",
+                side_effect=lambda limit: events.append("disk"),
+            ),
+            patch.object(
+                watcher,
+                "_retry_pending_routes",
+                side_effect=lambda limit: events.append("routes"),
+            ),
+            patch.object(
+                watcher,
+                "_process_slack_outbox",
+                side_effect=lambda: events.append("slack"),
+            ) as slack_mock,
+        ):
+            watcher._process_ingest_pass()
+
+        self.assertEqual(events, ["db", "waiting", "disk", "routes", "slack"])
+        slack_mock.assert_called_once_with()
+
+    def test_slack_outbox_helper_requests_one_delivery(self) -> None:
+        with patch.object(watcher, "process_pending_slack", return_value=0) as process_mock:
+            watcher._process_slack_outbox()
+
+        process_mock.assert_called_once_with(limit=1)
 
     def test_health_check_is_non_healthy_when_slack_health_query_fails(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"

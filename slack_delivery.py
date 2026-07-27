@@ -223,7 +223,7 @@ def _record_delivery_failure(
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
     attempted_chunks = 0
-    for row in get_pending_slack_deliveries(limit=limit):
+    for row in get_pending_slack_deliveries(limit=limit, routed_only=True):
         delivery_id = int(row["id"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
         if str(row["channel_id"]) != DEFAULT_SLACK_CHANNEL_ID:
