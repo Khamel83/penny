@@ -186,14 +186,17 @@ def _add_column_if_missing(
 
     try:
         conn.execute(sql)
-    except sqlite3.OperationalError as exc:
-        if str(exc).casefold() != f"duplicate column name: {column}".casefold():
-            raise
-        existing = {
-            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-        }
-        if column not in existing:
-            raise
+    except sqlite3.OperationalError as original_error:
+        try:
+            existing = {
+                row[1]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+        except sqlite3.OperationalError:
+            raise original_error from None
+        if column in existing:
+            return False
+        raise
     return True
 
 
