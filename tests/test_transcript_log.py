@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import multiprocessing
 import os
 import sqlite3
 import sys
@@ -26,6 +27,21 @@ os.environ["GOOGLE_TOKEN_FILE"] = "/tmp/penny_test_home/.penny/google_token.json
 logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
+
+
+def _init_db_in_process(
+    db_path: str,
+    start_barrier: object,
+    result_queue: object,
+) -> None:
+    transcript_log.TRANSCRIPT_DB_PATH = Path(db_path)
+    try:
+        start_barrier.wait()
+        transcript_log.init_db()
+    except Exception as exc:
+        result_queue.put(f"{type(exc).__name__}: {exc}")
+    else:
+        result_queue.put(None)
 
 
 class TranscriptLogTests(unittest.TestCase):
@@ -208,6 +224,160 @@ class TranscriptLogTests(unittest.TestCase):
         due = transcript_log.get_pending_slack_deliveries(transcript_id=101)
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["message_text"], "retryable legacy body")
+
+    def test_add_column_if_missing_returns_false_when_concurrent_alter_wins(
+        self,
+    ) -> None:
+        before_alter = Mock()
+        before_alter.fetchall.return_value = []
+        after_alter = Mock()
+        after_alter.fetchall.return_value = [(0, "chunk_attempt_count")]
+        conn = Mock()
+        conn.execute.side_effect = [
+            before_alter,
+            sqlite3.OperationalError("Spalte wurde gleichzeitig hinzugefügt"),
+            after_alter,
+        ]
+
+        added = transcript_log._add_column_if_missing(
+            conn,
+            table="slack_deliveries",
+            column="chunk_attempt_count",
+            sql=(
+                "ALTER TABLE slack_deliveries "
+                "ADD COLUMN chunk_attempt_count INTEGER NOT NULL DEFAULT 0"
+            ),
+        )
+
+        self.assertFalse(added)
+
+    def test_add_column_if_missing_reraises_unrelated_operational_error(
+        self,
+    ) -> None:
+        before_alter = Mock()
+        before_alter.fetchall.return_value = []
+        after_alter = Mock()
+        after_alter.fetchall.return_value = []
+        original_error = sqlite3.OperationalError("database disk image is malformed")
+        conn = Mock()
+        conn.execute.side_effect = [before_alter, original_error, after_alter]
+
+        with self.assertRaises(sqlite3.OperationalError) as raised:
+            transcript_log._add_column_if_missing(
+                conn,
+                table="slack_deliveries",
+                column="chunk_attempt_count",
+                sql=(
+                    "ALTER TABLE slack_deliveries "
+                    "ADD COLUMN chunk_attempt_count INTEGER NOT NULL DEFAULT 0"
+                ),
+            )
+
+        self.assertIs(raised.exception, original_error)
+        self.assertEqual(conn.execute.call_count, 3)
+
+    def test_add_column_if_missing_preserves_error_when_schema_reread_fails(
+        self,
+    ) -> None:
+        before_alter = Mock()
+        before_alter.fetchall.return_value = []
+        original_error = sqlite3.OperationalError("database is locked")
+        reread_error = sqlite3.OperationalError("schema unavailable")
+        conn = Mock()
+        conn.execute.side_effect = [before_alter, original_error, reread_error]
+
+        with self.assertRaises(sqlite3.OperationalError) as raised:
+            transcript_log._add_column_if_missing(
+                conn,
+                table="slack_deliveries",
+                column="chunk_attempt_count",
+                sql=(
+                    "ALTER TABLE slack_deliveries "
+                    "ADD COLUMN chunk_attempt_count INTEGER NOT NULL DEFAULT 0"
+                ),
+            )
+
+        self.assertIs(raised.exception, original_error)
+
+    def test_concurrent_init_db_migrates_slack_schema_without_errors(self) -> None:
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_row_id INTEGER NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        process_count = 4
+        context = multiprocessing.get_context("spawn")
+        start_barrier = context.Barrier(process_count)
+        result_queue = context.Queue()
+        processes = [
+            context.Process(
+                target=_init_db_in_process,
+                args=(str(self.db_path), start_barrier, result_queue),
+            )
+            for _ in range(process_count)
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=15)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join()
+
+        self.assertEqual([process.exitcode for process in processes], [0] * process_count)
+        errors = [
+            result
+            for result in (result_queue.get() for _ in range(process_count))
+            if result is not None
+        ]
+        self.assertEqual(errors, [])
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        self.assertTrue(
+            {
+                "id",
+                "transcript_row_id",
+                "channel_id",
+                "message_text",
+                "status",
+                "attempt_count",
+                "next_attempt_at",
+                "last_error",
+                "provider_ts",
+                "next_chunk_index",
+                "chunk_attempt_count",
+                "chunk_provider_ts",
+                "created_at",
+                "updated_at",
+                "sent_at",
+            }.issubset(columns)
+        )
 
     def test_queue_slack_delivery_is_idempotent_for_existing_transcript(self) -> None:
         row_id = transcript_log.insert_transcript(

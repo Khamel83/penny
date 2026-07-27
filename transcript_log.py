@@ -173,10 +173,34 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    column: str,
+    sql: str,
+) -> bool:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column in existing:
+        return False
+
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as original_error:
+        try:
+            existing = {
+                row[1]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+        except sqlite3.OperationalError:
+            raise original_error from None
+        if column in existing:
+            return False
+        raise
+    return True
+
+
 def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()
-    }
     required_columns = {
         "duration_seconds": "ALTER TABLE transcripts ADD COLUMN duration_seconds REAL",
         "ingest_state": "ALTER TABLE transcripts ADD COLUMN ingest_state TEXT",
@@ -190,8 +214,12 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "last_error_at": "ALTER TABLE transcripts ADD COLUMN last_error_at TEXT",
     }
     for column, sql in required_columns.items():
-        if column not in existing:
-            conn.execute(sql)
+        _add_column_if_missing(
+            conn,
+            table="transcripts",
+            column=column,
+            sql=sql,
+        )
 
 
 def _json_loads_or_default(raw: str | None, default: Any) -> Any:
@@ -225,9 +253,6 @@ def _slack_channel_id() -> str:
 
 
 def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
-    existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
-    }
     required_columns = {
         "next_attempt_at": "ALTER TABLE slack_deliveries ADD COLUMN next_attempt_at TEXT",
         "provider_ts": "ALTER TABLE slack_deliveries ADD COLUMN provider_ts TEXT",
@@ -254,8 +279,12 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
     }
     added: set[str] = set()
     for column, sql in required_columns.items():
-        if column not in existing:
-            conn.execute(sql)
+        if _add_column_if_missing(
+            conn,
+            table="slack_deliveries",
+            column=column,
+            sql=sql,
+        ):
             added.add(column)
     return added
 
