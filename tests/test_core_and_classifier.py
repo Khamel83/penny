@@ -53,6 +53,12 @@ class CorePipelineTests(unittest.TestCase):
             self.assertFalse(core.send_telegram("hello"))
             post_mock.assert_not_called()
 
+    def test_send_telegram_is_suppressed_by_repo_default_config(self) -> None:
+        self.assertFalse(core.cfg.notifications.telegram_enabled)
+        with patch.object(core.requests, "post") as post_mock:
+            self.assertFalse(core.send_telegram("hello"))
+            post_mock.assert_not_called()
+
     def test_notify_hermes_sends_signed_payload(self) -> None:
         with (
             patch.dict(
@@ -143,21 +149,27 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
             result = core.classify_and_route("hmm whatever", source="iCloud")
         self.assertTrue(result.get("skip"))
+        note_mock.assert_called_once_with(
+            "hmm whatever", folder_name="Penny", source="iCloud"
+        )
 
     def test_long_note_goes_to_notes(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
             result = core.classify_and_route(
                 "long rambling journal entry...", source="iCloud"
             )
         self.assertTrue(result.get("skip"))
         self.assertEqual(result.get("reason"), "long_note")
+        note_mock.assert_called_once_with(
+            "long rambling journal entry...", folder_name="Penny", source="iCloud"
+        )
 
     def test_long_note_raises_when_note_write_fails(self) -> None:
         with (
@@ -170,12 +182,16 @@ class CorePipelineTests(unittest.TestCase):
     def test_unclear_creates_note_and_ref_reminder(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "add_note", return_value=True) as note_mock,
+            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
         ):
             result = core.classify_and_route("maybe a todo?", source="iCloud")
         self.assertTrue(result.get("skip"))
         self.assertIn("unclear", result.get("reason", ""))
+        note_mock.assert_called_once_with(
+            "maybe a todo?", folder_name="Penny", source="iCloud"
+        )
+        reminder_mock.assert_called_once()
 
     def test_unclear_reference_reminder_uses_timestamp_and_excerpt(self) -> None:
         with (
@@ -237,6 +253,7 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "add_note") as note_mock,
             patch.object(core, "add_reminder") as reminder_mock,
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("maybe todo", source="iCloud", row_id=42)
         self.assertTrue(result.get("skip"))
@@ -260,6 +277,7 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"routing_progress": json.dumps(progress)},
             ),
             patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+            patch.object(core, "mark_routed", return_value=True),
         ):
             core.classify_and_route("milk and call dentist", source="iCloud", row_id=42)
         reminder_mock.assert_called_once_with("call dentist", "Health", "Inbox")
@@ -310,6 +328,156 @@ class CorePipelineTests(unittest.TestCase):
         self.assertIn("/ingest/transcript", mock_post.call_args[0][0])
 
     @patch("core.requests.post")
+    def test_maya_payload_includes_full_transcript_source_and_client_ref(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+        transcript = ("full transcript " * 30).strip()
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": transcript},
+            ),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route(
+                transcript,
+                source="iCloud",
+                row_id=468,
+                duration_seconds=12.5,
+            )
+
+        payload = mock_post.call_args_list[0].kwargs["json"]
+        self.assertEqual(payload["transcript"], transcript)
+        self.assertEqual(payload["source"], "iCloud")
+        self.assertEqual(payload["client_ref"], "penny:468")
+        self.assertEqual(payload["duration_seconds"], 12.5)
+
+    @patch("core.requests.post")
+    def test_maya_payload_uses_persisted_transcript_body_verbatim(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+        persisted_transcript = (
+            "Penny contract   canary line one.\tTabbed tail  \n"
+            "    Indented line two keeps punctuation, numbers 12345, and spacing exactly.\n"
+            "Line three has  repeated  spaces and a trailing pad.  "
+        )
+        normalized_transcript = core.normalize_transcript_text(persisted_transcript)
+        self.assertNotEqual(normalized_transcript, persisted_transcript)
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core, "get_transcript", return_value={"transcript": persisted_transcript}),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route(
+                persisted_transcript,
+                source="iCloud",
+                row_id=468,
+            )
+
+        payload = mock_post.call_args_list[0].kwargs["json"]
+        self.assertEqual(payload["transcript"], persisted_transcript)
+
+    def test_maya_success_marks_routed_only_after_response_is_accepted(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+        events: list[str] = []
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+
+        def response_json():
+            events.append("json")
+            return {"ok": True, "routed_to": "clio", "routing_detail": "accepted"}
+
+        def record_mark_routed(*args, **kwargs):
+            events.append("mark_routed")
+            return True
+
+        response.json.side_effect = response_json
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", side_effect=record_mark_routed),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertEqual(result.get("reason"), "routed_to_maya")
+        self.assertEqual(events, ["json", "mark_routed"])
+
+    def test_falls_back_when_maya_acceptance_cannot_be_persisted_locally(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "accepted",
+        }
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "_record_maya_route_state", return_value=True) as state_mock,
+            patch.object(
+                core,
+                "mark_routed",
+                side_effect=[False, True],
+            ) as mark_routed_mock,
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True) as note_mock,
+            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertEqual(
+            mark_routed_mock.call_args_list[0],
+            unittest.mock.call(
+            468,
+            {
+                "ok": True,
+                "routed_to": "clio",
+                "routing_detail": "accepted",
+            },
+            "maya",
+            ),
+        )
+        states = [call.kwargs["state"] for call in state_mock.call_args_list]
+        self.assertEqual(states, ["attempting", "accepted", "failed"])
+        note_mock.assert_called_once_with(
+            "buy milk", folder_name="Penny", source="test"
+        )
+        reminder_mock.assert_called_once()
+
+    @patch("core.requests.post")
     def test_falls_back_when_maya_unavailable(self, mock_post):
         """When Maya returns non-2xx, fall back to local routing."""
         mock_post.return_value.status_code = 503
@@ -322,12 +490,133 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test")
 
         mock_post.assert_called_once()
         # Local routing should still happen
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_times_out(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core.requests, "post", side_effect=core.requests.Timeout("timeout")),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_transport_fails(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(core.requests, "post", side_effect=core.requests.ConnectionError("boom")),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+
+    def test_falls_back_when_maya_returns_malformed_200_json(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("bad json")
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed") as mark_routed_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertFalse(
+            any(call.args[2] == "maya" for call in mark_routed_mock.call_args_list)
+        )
+
+    def test_falls_back_when_maya_200_body_is_not_acceptance(self):
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        response = unittest.mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"ok": False, "error": "duplicate"}
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "buy milk"},
+            ),
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "add_note", return_value=True),
+            patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed") as mark_routed_mock,
+        ):
+            result = core.classify_and_route("buy milk", source="test", row_id=468)
+
+        self.assertNotEqual(result.get("reason"), "routed_to_maya")
+        self.assertFalse(
+            any(call.args[2] == "maya" for call in mark_routed_mock.call_args_list)
+        )
+
+    @patch("core.requests.post")
+    def test_duplicate_client_ref_reuses_same_transcript_row_id(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "ok": True,
+            "routed_to": "clio",
+            "routing_detail": "duplicate accepted",
+        }
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+
+        with (
+            patch.object(
+                core,
+                "get_transcript",
+                return_value={"transcript": "same transcript"},
+            ),
+            patch.object(core, "_record_maya_route_state", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route("same transcript", source="iCloud", row_id=470)
+            core.classify_and_route("same transcript", source="iCloud", row_id=470)
+
+        client_refs = [call.kwargs["json"]["client_ref"] for call in mock_post.call_args_list]
+        self.assertEqual(client_refs, ["penny:470", "penny:470"])
 
     def test_does_not_call_maya_when_not_configured(self):
         """When Maya URL is empty, skip Maya entirely."""

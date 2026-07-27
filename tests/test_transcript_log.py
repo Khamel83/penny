@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -76,6 +77,7 @@ class TranscriptLogTests(unittest.TestCase):
             source="iCloud",
             transcript="(skipped: file too large)",
             ingest_state="skipped_too_large",
+            enqueue_slack=False,
         )
 
         self.assertIsNotNone(row_id)
@@ -83,16 +85,316 @@ class TranscriptLogTests(unittest.TestCase):
             transcript_log.get_transcript(row_id)["transcript"],
             "(skipped: file too large)",
         )
-        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(transcript_id=row_id),
+            [],
+        )
 
     def test_non_voice_sources_do_not_queue_slack_delivery(self) -> None:
         transcript_log.insert_transcript(
             content_hash="slack2",
             source="Google Tasks",
             transcript="buy milk",
+            enqueue_slack=False,
         )
 
         self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+
+    def test_icloud_transcript_uses_default_slack_channel_without_telegram_dependency(
+        self,
+    ) -> None:
+        os.environ.pop("PENNY_SLACK_CHANNEL_ID", None)
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-default-channel",
+            source="iCloud",
+            transcript="voice memo transcript",
+        )
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(
+            pending[0]["channel_id"],
+            transcript_log.DEFAULT_SLACK_CHANNEL_ID,
+        )
+
+    def test_icloud_transcript_ignores_mismatched_slack_channel_environment(
+        self,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PENNY_SLACK_CHANNEL_ID": "C-MALICIOUS",
+                "SLACK_CHANNEL_ID": "C-UNRELATED",
+            },
+        ):
+            row_id = transcript_log.insert_transcript(
+                content_hash="slack-pinned-channel",
+                source="iCloud",
+                transcript="must only reach Penny",
+            )
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["channel_id"], "C0BKS0QT7FU")
+
+    def test_init_db_migrates_retryable_legacy_failures_and_wrong_destinations(
+        self,
+    ) -> None:
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_row_id INTEGER NOT NULL UNIQUE,
+                    channel_id TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO slack_deliveries (
+                    transcript_row_id, channel_id, message_text, status,
+                    attempt_count, last_error
+                ) VALUES
+                    (101, 'C-WRONG-RETRY', 'retryable legacy body', 'failed', 2, 'ratelimited'),
+                    (102, 'C-WRONG-TERMINAL', 'terminal legacy body', 'failed', 5, 'invalid_auth')
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)").fetchall()
+            }
+            rows = conn.execute(
+                """
+                SELECT transcript_row_id, channel_id, status, attempt_count,
+                       next_attempt_at, provider_ts
+                FROM slack_deliveries
+                ORDER BY transcript_row_id
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertIn("next_attempt_at", columns)
+        self.assertIn("provider_ts", columns)
+        retryable, terminal = [dict(row) for row in rows]
+        self.assertEqual(retryable["channel_id"], "C0BKS0QT7FU")
+        self.assertEqual(retryable["status"], "pending")
+        self.assertEqual(retryable["attempt_count"], 2)
+        self.assertIsNotNone(retryable["next_attempt_at"])
+        self.assertIsNone(retryable["provider_ts"])
+        self.assertEqual(terminal["channel_id"], "C0BKS0QT7FU")
+        self.assertEqual(terminal["status"], "failed")
+        self.assertEqual(terminal["attempt_count"], 5)
+        self.assertIsNone(terminal["next_attempt_at"])
+        due = transcript_log.get_pending_slack_deliveries(transcript_id=101)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["message_text"], "retryable legacy body")
+
+    def test_queue_slack_delivery_is_idempotent_for_existing_transcript(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-requeue",
+            source="iCloud",
+            transcript="retry only once",
+        )
+
+        transcript_log.queue_slack_delivery(row_id)
+        transcript_log.queue_slack_delivery(row_id)
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transcript_row_id"], row_id)
+
+    def test_mark_slack_delivery_sent_persists_provider_timestamp(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="provider-ts",
+            source="iCloud",
+            transcript="capture slack ts",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)[0][
+            "id"
+        ]
+
+        transcript_log.mark_slack_delivery_sent(delivery_id, provider_ts="123.456")
+
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["pending_count"], 0)
+        self.assertEqual(health["sent_count"], 1)
+        self.assertEqual(health["failed_count"], 0)
+
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, provider_ts FROM slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(dict(row)["status"], "sent")
+        self.assertEqual(dict(row)["provider_ts"], "123.456")
+
+    def test_mark_slack_delivery_failed_schedules_retry_and_hides_until_due(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="retry-later",
+            source="iCloud",
+            transcript="back off",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)[0][
+            "id"
+        ]
+
+        transcript_log.mark_slack_delivery_failed(
+            delivery_id,
+            "ratelimited",
+            retry_after_seconds=120,
+        )
+
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(transcript_id=row_id),
+            [],
+        )
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["pending_count"], 1)
+        self.assertEqual(health["failed_count"], 0)
+
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, attempt_count, next_attempt_at, last_error "
+                "FROM slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        self.assertEqual(stored["status"], "pending")
+        self.assertEqual(stored["attempt_count"], 1)
+        self.assertEqual(stored["last_error"], "ratelimited")
+        self.assertIsNotNone(stored["next_attempt_at"])
+
+    def test_terminal_failed_delivery_remains_visible_in_health(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="retry-terminal",
+            source="iCloud",
+            transcript="give up eventually",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)[0][
+            "id"
+        ]
+
+        for _ in range(5):
+            transcript_log.mark_slack_delivery_failed(
+                delivery_id,
+                "slack_api_error",
+                retry_after_seconds=1,
+            )
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE slack_deliveries SET next_attempt_at = datetime('now', '-1 second') "
+                    "WHERE id = ?",
+                    (delivery_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
+        self.assertEqual(pending, [])
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["pending_count"], 0)
+        self.assertEqual(health["failed_count"], 1)
+
+    def test_slack_delivery_health_surfaces_database_failure(self) -> None:
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=sqlite3.OperationalError("database unavailable"),
+        ):
+            health = transcript_log.get_slack_delivery_health()
+
+        self.assertEqual(health["pending_count"], 0)
+        self.assertEqual(health["sent_count"], 0)
+        self.assertEqual(health["failed_count"], 0)
+        self.assertEqual(health["health_error"], 1)
+
+    def test_mark_slack_delivery_sent_raises_write_failure(self) -> None:
+        conn = Mock()
+        conn.execute.side_effect = OSError("database is locked")
+
+        with patch.object(transcript_log, "_get_conn", return_value=conn):
+            with self.assertRaisesRegex(OSError, "database is locked"):
+                transcript_log.mark_slack_delivery_sent(1)
+
+        conn.close.assert_called_once()
+
+    def test_mark_slack_delivery_failed_raises_write_failure(self) -> None:
+        conn = Mock()
+        conn.execute.side_effect = OSError("database is locked")
+
+        with patch.object(transcript_log, "_get_conn", return_value=conn):
+            with self.assertRaisesRegex(OSError, "database is locked"):
+                transcript_log.mark_slack_delivery_failed(1, "ratelimited")
+
+        conn.close.assert_called_once()
+
+    def test_slack_acknowledgement_helpers_do_not_log_exception_text(self) -> None:
+        conn = Mock()
+        secret = "xoxb-" + "private-test-value"
+        conn.execute.side_effect = OSError("database included bearer " + secret)
+
+        with (
+            patch.object(transcript_log, "_get_conn", return_value=conn),
+            patch.object(transcript_log.log, "error") as error_mock,
+        ):
+            with self.assertRaises(OSError):
+                transcript_log.mark_slack_delivery_sent(1)
+
+        message, *args = error_mock.call_args.args
+        rendered_log = str(message) % tuple(args)
+        if secret in rendered_log:
+            self.fail("acknowledgement helper log contained sensitive material")
+
+    def test_mark_slack_delivery_failed_rejects_untrusted_error_text(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="slack-error-boundary",
+            source="iCloud",
+            transcript="sanitize persistence boundary",
+        )
+        transcript_log.mark_slack_delivery_failed(
+            1,
+            "unexpectedsecretvalue",
+        )
+
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, last_error FROM slack_deliveries WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        stored = dict(row)
+        if stored["last_error"] != "delivery_error":
+            self.fail("delivery error persistence accepted untrusted text")
+        self.assertEqual(stored["status"], "pending")
 
     def test_dedup_rejects_duplicate(self) -> None:
         rid1 = transcript_log.insert_transcript(

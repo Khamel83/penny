@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
-from slack_delivery import process_pending_slack_deliveries
+from slack_delivery import process_pending_slack
 from transcript_log import (
+    get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
@@ -32,7 +33,6 @@ from transcript_log import (
     mark_voice_memo_routed,
     mark_voice_memo_routed_for_transcript,
     mark_voice_memo_waiting_for_file,
-    update_transcript_stages,
     upsert_voice_memo_recording,
 )
 
@@ -153,12 +153,18 @@ def update_health_check() -> None:
     vm = 1 if _voicememos_running() else 0
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
+    slack_health = get_slack_delivery_health()
+    slack_health_error = int(slack_health.get("health_error", 0))
+    watcher_ok = 0 if slack_health_error else 1
     HEALTH_FILE.write_text(
         (
-            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:1|voicememos:{vm}|"
+            f"{now}|db_records:{_db_recordings_count()}|watcher_ok:{watcher_ok}|voicememos:{vm}|"
             f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
             f"awaiting_file:{vm_health['awaiting_file_count']}|"
-            f"voice_memo_failed:{vm_health['failed_count']}\n"
+            f"voice_memo_failed:{vm_health['failed_count']}|"
+            f"slack_pending:{slack_health['pending_count']}|"
+            f"slack_failed:{slack_health['failed_count']}|"
+            f"slack_health_error:{slack_health_error}\n"
         ),
         encoding="utf-8",
     )
@@ -344,6 +350,7 @@ def _process_audio_file(
             duration_seconds=duration_seconds,
             ingest_state="skipped_too_large",
             file_seen_at=datetime.now().isoformat(),
+            enqueue_slack=False,
         )
         if recording_pk is not None:
             mark_voice_memo_failed(recording_pk, "file too large")
@@ -387,14 +394,12 @@ def _process_audio_file(
                 content_hash=file_hash,
                 audio_path=str(audio_path),
             )
-        _process_slack_outbox()
         classify_and_route(
             transcript,
             source="iCloud",
             row_id=row_id,
             duration_seconds=duration_seconds,
         )
-        update_transcript_stages(row_id, ingest_state="routed")
         if recording_pk is not None:
             mark_voice_memo_routed(recording_pk)
     return True
@@ -518,7 +523,7 @@ def _process_disk_backlog(limit: int) -> None:
 
 def _process_slack_outbox() -> None:
     try:
-        delivered = process_pending_slack_deliveries(limit=20)
+        delivered = process_pending_slack(limit=1)
         if delivered:
             log.info("Delivered %s transcript(s) to Slack", delivered)
     except Exception as e:
@@ -557,6 +562,35 @@ def _retry_waiting_for_files(limit: int) -> None:
         )
 
 
+def _retry_pending_routes(limit: int) -> None:
+    pending = get_pending(limit=limit)
+    for row in pending:
+        log.info(
+            "Retrying pending transcript id=%s (source=%s)",
+            row["id"],
+            row["source"],
+        )
+        try:
+            classify_and_route(
+                row["transcript"],
+                source=row["source"],
+                row_id=row["id"],
+                duration_seconds=row.get("duration_seconds"),
+            )
+            if row["source"] == "iCloud":
+                mark_voice_memo_routed_for_transcript(row["id"])
+        except Exception as e:
+            log.error("Retry failed for id=%s: %s", row["id"], e)
+
+
+def _process_ingest_pass() -> None:
+    _process_db_batch(get_new_recordings())
+    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
+    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
+    _retry_pending_routes(limit=5)
+    _process_slack_outbox()
+
+
 # ===== Main =====
 
 
@@ -590,10 +624,7 @@ def main() -> None:
     log.info("Running initial scan...")
     _ensure_voicememos_running()
     time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
-    _process_db_batch(get_new_recordings())
-    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
-    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
-    _process_slack_outbox()
+    _process_ingest_pass()
     update_health_check()
 
     log.info("Starting main polling loop...")
@@ -613,32 +644,7 @@ def main() -> None:
                 last_health_check = time.time()
 
             _ensure_voicememos_running()
-            _process_db_batch(get_new_recordings())
-            _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
-            _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
-            _process_slack_outbox()
-
-            # Retry any transcripts that failed routing
-            pending = get_pending(limit=5)
-            for row in pending:
-                log.info(
-                    "Retrying pending transcript id=%s (source=%s)",
-                    row["id"],
-                    row["source"],
-                )
-                try:
-                    classify_and_route(
-                        row["transcript"],
-                        source=row["source"],
-                        row_id=row["id"],
-                        duration_seconds=row.get("duration_seconds"),
-                    )
-                    update_transcript_stages(row["id"], ingest_state="routed")
-                    if row["source"] == "iCloud":
-                        mark_voice_memo_routed_for_transcript(row["id"])
-                except Exception as e:
-                    log.error("Retry failed for id=%s: %s", row["id"], e)
-            _process_slack_outbox()
+            _process_ingest_pass()
 
         except KeyboardInterrupt:
             log.info("Shutting down...")

@@ -129,6 +129,7 @@ def upload():
             content_hash=file_hash,
             source="Shortcut",
             transcript=transcript,
+            enqueue_slack=False,
         )
         if row_id is not None:
             result = classify_and_route(transcript, source="Shortcut", row_id=row_id)
@@ -179,6 +180,7 @@ def ingest():
             content_hash=content_hash,
             source=source,
             transcript=text,
+            enqueue_slack=False,
         )
         if row_id is not None:
             result = classify_and_route(text, source=source, row_id=row_id)
@@ -225,6 +227,7 @@ def deliver():
         source=f"maya:{source}",
         transcript=text,
         duration_seconds=duration,
+        enqueue_slack=False,
     )
     log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",
              len(text), source, row_id)

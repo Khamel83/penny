@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import urllib.request
+import uuid
 
 try:
     import requests
@@ -43,14 +44,37 @@ except ImportError:
     requests = _RequestsCompat()
 
 from transcript_log import (
+    DEFAULT_SLACK_CHANNEL_ID,
+    SLACK_API_ERROR_CODES,
     get_pending_slack_deliveries,
+    mark_slack_delivery_chunk_sent,
     mark_slack_delivery_failed,
-    mark_slack_delivery_sent,
 )
 
 log = logging.getLogger(__name__)
 
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
+DEFAULT_RETRY_AFTER_SECONDS = 60
+MAX_RETRY_AFTER_SECONDS = 900
+SLACK_MAX_MESSAGE_CHARACTERS = 39_999
+MAX_SLACK_CHUNKS_PER_PASS = 1
+TRANSIENT_SLACK_ERRORS = frozenset(
+    {"internal_error", "rate_limited", "ratelimited", "request_timeout", "service_unavailable"}
+)
+
+
+class SlackAPIError(RuntimeError):
+    """A controlled error code returned by Slack."""
+
+    def __init__(self, safe_error: str, retry_after_seconds: int | None = None) -> None:
+        super().__init__(safe_error)
+        self.safe_error = safe_error
+        self.retry_after_seconds = retry_after_seconds
+
+
+class SlackConfigurationError(RuntimeError):
+    """A local Slack delivery configuration error."""
 
 
 def _slack_bot_token() -> str:
@@ -59,15 +83,89 @@ def _slack_bot_token() -> str:
     )
 
 
-def _post_to_slack(channel_id: str, message_text: str) -> None:
+def _delivery_client_msg_id(delivery_id: int, chunk_index: int = 0) -> str:
+    identity = f"penny:slack-delivery:{delivery_id}"
+    if chunk_index:
+        identity += f":chunk:{chunk_index}"
+    return str(
+        uuid.uuid5(
+            SLACK_DELIVERY_NAMESPACE,
+            identity,
+        )
+    )
+
+
+def _safe_exception_class(exc: Exception) -> str:
+    class_name = type(exc).__name__
+    if (
+        class_name
+        and len(class_name) <= 48
+        and class_name[0].isalpha()
+        and all(character.isalnum() or character == "_" for character in class_name)
+    ):
+        return class_name
+    return "Exception"
+
+
+def _classified_error(category: str, exc: Exception) -> str:
+    return f"{category}:{_safe_exception_class(exc)}"
+
+
+def _safe_slack_error_code(value: object) -> str:
+    if isinstance(value, str) and value in SLACK_API_ERROR_CODES:
+        return value
+    return "slack_api_error"
+
+
+def _retry_after_seconds(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(seconds, MAX_RETRY_AFTER_SECONDS))
+
+
+def _fallback_retry_after(attempt_count: int) -> int:
+    return min(DEFAULT_RETRY_AFTER_SECONDS * max(1, 2 ** attempt_count), MAX_RETRY_AFTER_SECONDS)
+
+
+def _message_chunks(message_text: str) -> list[str]:
+    if not message_text:
+        return [""]
+    return [
+        message_text[index : index + SLACK_MAX_MESSAGE_CHARACTERS]
+        for index in range(0, len(message_text), SLACK_MAX_MESSAGE_CHARACTERS)
+    ]
+
+
+def _warning_error(data: dict) -> str | None:
+    metadata = data.get("response_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    warnings = metadata.get("warnings")
+    if not warnings:
+        return None
+    if isinstance(warnings, list) and "message_truncated" in warnings:
+        return "message_truncated"
+    return "provider_warning"
+
+
+def _post_to_slack(
+    channel_id: str,
+    message_text: str,
+    client_msg_id: str,
+) -> str | None:
     token = _slack_bot_token()
     if not token:
-        raise RuntimeError("PENNY_SLACK_BOT_TOKEN/SLACK_BOT_TOKEN is not configured")
+        raise SlackConfigurationError
 
     resp = requests.post(
         SLACK_POST_MESSAGE_URL,
         json={
             "channel": channel_id,
+            "client_msg_id": client_msg_id,
             "text": message_text,
             "unfurl_links": False,
             "unfurl_media": False,
@@ -78,20 +176,118 @@ def _post_to_slack(channel_id: str, message_text: str) -> None:
         },
         timeout=10,
     )
+    if getattr(resp, "status_code", 200) == 429:
+        raise SlackAPIError(
+            "ratelimited",
+            retry_after_seconds=_retry_after_seconds(
+                getattr(resp, "headers", {}).get("Retry-After")
+            ),
+        )
     data = resp.json()
     if not data.get("ok"):
-        raise RuntimeError(str(data.get("error") or f"HTTP {resp.status_code}"))
+        safe_error = _safe_slack_error_code(data.get("error"))
+        retry_after = None
+        if safe_error in TRANSIENT_SLACK_ERRORS:
+            retry_after = _retry_after_seconds(
+                getattr(resp, "headers", {}).get("Retry-After")
+            )
+        raise SlackAPIError(safe_error, retry_after_seconds=retry_after)
+    warning_error = _warning_error(data)
+    if warning_error is not None:
+        raise SlackAPIError(warning_error)
+    provider_ts = data.get("ts")
+    return str(provider_ts) if provider_ts is not None else None
+
+
+def _record_delivery_failure(
+    delivery_id: int,
+    safe_error: str,
+    *,
+    retry_after_seconds: int,
+) -> None:
+    try:
+        mark_slack_delivery_failed(
+            delivery_id,
+            safe_error,
+            retry_after_seconds=retry_after_seconds,
+        )
+    except Exception as ack_exc:
+        log.error(
+            "Failed to record Slack delivery failure id=%s: %s",
+            delivery_id,
+            _classified_error("acknowledgement_error", ack_exc),
+        )
+    log.warning("Slack delivery failed id=%s: %s", delivery_id, safe_error)
 
 
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
-    for row in get_pending_slack_deliveries(limit=limit):
+    attempted_chunks = 0
+    for row in get_pending_slack_deliveries(limit=limit, routed_only=True):
         delivery_id = int(row["id"])
+        chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
+        if str(row["channel_id"]) != DEFAULT_SLACK_CHANNEL_ID:
+            _record_delivery_failure(
+                delivery_id,
+                "destination_mismatch",
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            continue
+
+        if attempted_chunks >= MAX_SLACK_CHUNKS_PER_PASS:
+            break
+
+        chunks = _message_chunks(str(row["message_text"]))
+        chunk_index = int(row.get("next_chunk_index") or 0)
+        attempted_chunks += 1
         try:
-            _post_to_slack(str(row["channel_id"]), str(row["message_text"]))
-            mark_slack_delivery_sent(delivery_id)
-            delivered += 1
+            provider_ts = _post_to_slack(
+                DEFAULT_SLACK_CHANNEL_ID,
+                chunks[chunk_index],
+                _delivery_client_msg_id(delivery_id, chunk_index),
+            )
+        except SlackAPIError as exc:
+            _record_delivery_failure(
+                delivery_id,
+                exc.safe_error,
+                retry_after_seconds=exc.retry_after_seconds
+                or _fallback_retry_after(chunk_attempt_count),
+            )
+            break
+        except SlackConfigurationError:
+            _record_delivery_failure(
+                delivery_id,
+                "configuration_error",
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
         except Exception as exc:
-            mark_slack_delivery_failed(delivery_id, str(exc))
-            log.warning("Slack delivery failed id=%s: %s", delivery_id, exc)
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("provider_error", exc),
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
+
+        try:
+            mark_slack_delivery_chunk_sent(
+                delivery_id,
+                chunk_index=chunk_index,
+                chunk_count=len(chunks),
+                provider_ts=provider_ts,
+            )
+        except Exception as exc:
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("acknowledgement_error", exc),
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
+
+        if chunk_index + 1 >= len(chunks):
+            delivered += 1
     return delivered
+
+
+def process_pending_slack(limit: int = 20) -> int:
+    return process_pending_slack_deliveries(limit=limit)

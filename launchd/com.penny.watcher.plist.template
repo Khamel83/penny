@@ -29,6 +29,10 @@
         <string>YOUR_SLACK_BOT_TOKEN_HERE</string>
         <key>PENNY_SLACK_CHANNEL_ID</key>
         <string>C0BKS0QT7FU</string>
+        <key>MAYA_TRANSCRIPT_URL</key>
+        <string>YOUR_MAYA_TRANSCRIPT_URL_HERE</string>
+        <key>MAYA_INGEST_TOKEN</key>
+        <string>YOUR_MAYA_INGEST_TOKEN_HERE</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

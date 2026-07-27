@@ -89,6 +89,10 @@ class ConfigTests(unittest.TestCase):
         os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
         os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
+    def test_config_loads_telegram_disabled_from_config_toml(self):
+        cfg = config.get_config()
+        self.assertFalse(cfg.notifications.telegram_enabled)
+
     def test_maya_config_env_overrides(self):
         os.environ["MAYA_TRANSCRIPT_URL"] = "http://localhost:8200/ingest/transcript"
         os.environ["MAYA_INGEST_TOKEN"] = "sekrit"

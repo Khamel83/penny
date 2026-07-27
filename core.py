@@ -228,10 +228,12 @@ def build_result_message(transcript: str, result: Dict[str, Any], source: str) -
 
 
 def normalize_transcript_text(transcript: str) -> str:
-    """Strip common Whisper control-token artifacts and normalize whitespace."""
+    """Strip common Whisper control-token artifacts while preserving line breaks."""
     raw = str(transcript or "")
     cleaned = WHISPER_TOKEN_RE.sub(" ", raw)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+    cleaned = "\n".join(line.strip() for line in cleaned.split("\n")).strip()
 
     # Heuristic: near-empty remnants from token-heavy output (e.g. "SE<|hr|><|hr|>").
     if "<|" in raw and len(cleaned) <= 3:
@@ -246,6 +248,18 @@ def _target_reminders_list(category: str) -> str:
     if target_list not in cfg.apple_reminders.lists:
         return cfg.apple_reminders.default_list
     return target_list
+
+
+def _persisted_transcript_body(row_id: int | None, fallback: str) -> str:
+    if row_id is None:
+        return fallback
+    row = get_transcript(row_id)
+    stored = row.get("transcript") if row else None
+    if stored is None:
+        raise RoutingError(
+            f"persisted transcript unavailable for Maya-routed row_id={row_id}"
+        )
+    return str(stored)
 
 
 def _load_routing_progress(row_id: int | None) -> dict[str, Any]:
@@ -274,6 +288,80 @@ def _reference_reminder_text(transcript: str) -> str:
     return f"Review Penny note ({timestamp}): {excerpt}"
 
 
+def _record_maya_route_state(row_id: int | None, **details: Any) -> bool:
+    if row_id is None:
+        return True
+    return bool(update_transcript_progress(row_id, {"maya_route": details}))
+
+
+def _is_valid_maya_acceptance(data: Any) -> bool:
+    return (
+        isinstance(data, dict)
+        and bool(data.get("ok"))
+        and isinstance(data.get("routed_to"), str)
+        and bool(str(data.get("routed_to")).strip())
+    )
+
+
+def _confirm_maya_acceptance(
+    row_id: int | None,
+    *,
+    attempted_at: str,
+    client_ref: str | None,
+    source: str,
+    status_code: int,
+    data: dict[str, Any],
+) -> bool:
+    log = logging.getLogger("penny.core")
+    accepted_at = datetime.now(timezone.utc).isoformat()
+    accepted_recorded = _record_maya_route_state(
+        row_id,
+        state="accepted",
+        attempted_at=attempted_at,
+        accepted_at=accepted_at,
+        client_ref=client_ref,
+        source=source,
+        status_code=status_code,
+        routed_to=data.get("routed_to"),
+        routing_detail=data.get("routing_detail"),
+    )
+    if not accepted_recorded:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=source,
+            status_code=status_code,
+            routed_to=data.get("routed_to"),
+            routing_detail=data.get("routing_detail"),
+            error_message="Maya accepted transcript but Penny could not record the acceptance locally",
+        )
+        log.error("Maya acceptance could not be recorded locally for row_id=%s", row_id)
+        return False
+
+    routed_recorded = True
+    if row_id is not None:
+        routed_recorded = mark_routed(row_id, data, "maya")
+    if not routed_recorded:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            accepted_at=accepted_at,
+            client_ref=client_ref,
+            source=source,
+            status_code=status_code,
+            routed_to=data.get("routed_to"),
+            routing_detail=data.get("routing_detail"),
+            error_message="Maya accepted transcript but Penny could not mark it routed locally",
+        )
+        log.error("Maya routed status could not be recorded locally for row_id=%s", row_id)
+        return False
+
+    return True
+
+
 def _route_to_maya(
     transcript: str,
     source: str,
@@ -284,6 +372,7 @@ def _route_to_maya(
 
     Returns True if Maya handled it (caller should skip local routing).
     Returns False if Maya is not configured or unavailable (caller should fall back).
+    Raises RoutingError if a row_id has no readable persisted transcript body.
     """
     log = logging.getLogger("penny.core")
     maya_url = cfg.maya.transcript_url.strip()
@@ -292,16 +381,27 @@ def _route_to_maya(
     if not maya_url or not maya_token:
         return False
 
+    delivery_transcript = _persisted_transcript_body(row_id, transcript)
+    client_ref = f"penny:{row_id}" if row_id is not None else None
     payload = {
-        "transcript": transcript,
+        "transcript": delivery_transcript,
         "source": source or "penny_voice",
     }
     if duration_seconds is not None:
         payload["duration_seconds"] = duration_seconds
-    if row_id is not None:
+    if client_ref is not None:
         # Maya dedupes on client_ref, so a re-sent transcript (retry, watcher
         # replay) can never become a second drop or a duplicate Clio task.
-        payload["client_ref"] = f"penny:{row_id}"
+        payload["client_ref"] = client_ref
+
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    _record_maya_route_state(
+        row_id,
+        state="attempting",
+        attempted_at=attempted_at,
+        client_ref=client_ref,
+        source=payload["source"],
+    )
 
     try:
         resp = requests.post(
@@ -313,22 +413,79 @@ def _route_to_maya(
             },
             timeout=10,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            if row_id is not None:
-                mark_routed(row_id, data, "maya")
-            log.info(
-                "Routed to Maya: routed_to=%s detail=%s",
-                data.get("routed_to"),
-                data.get("routing_detail"),
-            )
-            return True
-        else:
-            log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
     except Exception as exc:
+        _record_maya_route_state(
+            row_id,
+            state="failed",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         log.warning("Maya routing failed: %s — falling back to local routing", exc)
+        return False
 
-    return False
+    if resp.status_code != 200:
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_message=f"HTTP {resp.status_code}",
+            response_excerpt=resp.text[:200],
+        )
+        log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
+        return False
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_type=type(exc).__name__,
+            error_message="Malformed Maya 200 response",
+        )
+        log.warning("Maya returned malformed 200 response: %s", exc)
+        return False
+
+    if not _is_valid_maya_acceptance(data):
+        _record_maya_route_state(
+            row_id,
+            state="rejected",
+            attempted_at=attempted_at,
+            client_ref=client_ref,
+            source=payload["source"],
+            status_code=resp.status_code,
+            error_message="Maya 200 response did not confirm acceptance",
+            response_excerpt=json.dumps(data, default=str)[:200],
+        )
+        log.warning("Maya 200 response did not confirm acceptance")
+        return False
+
+    if not _confirm_maya_acceptance(
+        row_id,
+        attempted_at=attempted_at,
+        client_ref=client_ref,
+        source=payload["source"],
+        status_code=resp.status_code,
+        data=data,
+    ):
+        return False
+    log.info(
+        "Routed to Maya: routed_to=%s detail=%s",
+        data.get("routed_to"),
+        data.get("routing_detail"),
+    )
+    return True
+
 
 
 def classify_and_route(
@@ -357,7 +514,9 @@ def classify_and_route(
 
     if not transcript:
         if row_id is not None:
-            mark_failed(row_id, "empty transcript after normalization")
+            error_message = "empty transcript after normalization"
+            mark_failed(row_id, error_message)
+            raise RoutingError(error_message)
         return {"skip": True, "reason": "empty transcript"}
 
     if row_id is not None:
@@ -368,11 +527,18 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
-    # Route through Maya if configured, falling back to local routing on failure.
+    # Route through Maya if configured. Transport/response failures fall back to
+    # local routing; persisted-body failures are terminal for the durable row.
     # allow_maya=False is set by the /deliver endpoint, which receives transcripts
     # FROM Maya — re-sending them would loop forever.
-    if allow_maya and _route_to_maya(transcript, source, row_id, duration_seconds):
-        return {"skip": True, "reason": "routed_to_maya"}
+    if allow_maya:
+        try:
+            if _route_to_maya(transcript, source, row_id, duration_seconds):
+                return {"skip": True, "reason": "routed_to_maya"}
+        except RoutingError as exc:
+            if row_id is not None:
+                mark_failed(row_id, str(exc))
+            raise
 
     content_type = detect_content_type(
         transcript,
@@ -397,7 +563,12 @@ def classify_and_route(
                         },
                     )
             if row_id is not None:
-                mark_routed(row_id, {"type": "long_note"}, "note in Penny")
+                if not mark_routed(
+                    row_id,
+                    {"type": "long_note"},
+                    "note in Penny",
+                ):
+                    raise RoutingError("Failed to mark transcript routed locally")
             return _finish_route(
                 transcript, {"skip": True, "reason": "long_note"}, source
             )
@@ -442,11 +613,12 @@ def classify_and_route(
                     )
 
             if row_id is not None:
-                mark_routed(
+                if not mark_routed(
                     row_id,
                     {"type": "unclear", "ref_reminder": ref_text},
                     "note + ref reminder",
-                )
+                ):
+                    raise RoutingError("Failed to mark transcript routed locally")
             result = {
                 "skip": True,
                 "reason": "unclear content, saved to Notes with reference",
@@ -472,7 +644,8 @@ def classify_and_route(
                         row_id, {"note_created": True, "note_folder": "Penny"}
                     )
             if row_id is not None:
-                mark_routed(row_id, result, "note in Penny")
+                if not mark_routed(row_id, result, "note in Penny"):
+                    raise RoutingError("Failed to mark transcript routed locally")
             return _finish_route(transcript, result, source)
 
         items = result.get("items", [])
@@ -509,7 +682,8 @@ def classify_and_route(
             send_telegram(msg)
 
         if row_id is not None:
-            mark_routed(row_id, result, f"{routed_count} reminder(s)")
+            if not mark_routed(row_id, result, f"{routed_count} reminder(s)"):
+                raise RoutingError("Failed to mark transcript routed locally")
 
         return _finish_route(transcript, result, source)
 

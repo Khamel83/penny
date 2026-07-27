@@ -127,6 +127,7 @@ def poll_once(service, tasklist_id: str) -> int:
             content_hash=task_id,
             source="Google Tasks",
             transcript=task_title,
+            enqueue_slack=False,
         )
 
         try:

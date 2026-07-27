@@ -85,6 +85,23 @@ class TasksPollerTests(unittest.TestCase):
         self.assertEqual(len(service.tasks().updated), 1)
         self.assertEqual(service.tasks().updated[0]["task"], "t2")
 
+    def test_poll_once_disables_slack_enqueue_for_google_tasks(self) -> None:
+        service = _Service([{"id": "t4", "title": "schedule oil change"}])
+
+        with (
+            patch.object(tasks_poller, "is_already_logged", return_value=False),
+            patch.object(tasks_poller, "insert_transcript", return_value=1) as insert_mock,
+            patch.object(
+                tasks_poller,
+                "classify_and_route",
+                return_value={"items": [{"item": "schedule oil change"}]},
+            ),
+        ):
+            count = tasks_poller.poll_once(service, "list-1")
+
+        self.assertEqual(count, 1)
+        self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
+
     def test_poll_once_skips_already_logged(self) -> None:
         service = _Service([{"id": "t3", "title": "already done"}])
 

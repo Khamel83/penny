@@ -19,7 +19,7 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0
 ```
 
 Fields:
@@ -30,6 +30,9 @@ Fields:
 - `latest_recording_pk` — latest Voice Memo PK durably registered in local ingest state
 - `awaiting_file` — DB entries seen but audio file not yet present on disk
 - `voice_memo_failed` — ingest entries that hit a terminal error and need investigation
+- `slack_pending` — Slack deliveries waiting for their first send or next retry window
+- `slack_failed` — Slack deliveries that exhausted the retry policy and need review
+- `slack_health_error` — `1` when Slack outbox health could not be read; this also forces `watcher_ok:0`
 
 ### 3. Dependency Checks on Startup
 
@@ -78,6 +81,25 @@ All transcriptions are persisted to `~/.penny/transcripts.db` (SQLite) before ro
 - Status tracking: `pending` → `routed` / `failed`
 - Failed transcripts are retried every cycle (up to 5 at a time)
 - Write-before-route ensures nothing is lost even if routing fails
+
+Eligible iCloud transcripts also create one durable `slack_deliveries` outbox row:
+- `transcript_row_id` UNIQUE prevents duplicate Slack rows on replay
+- `next_attempt_at` gates retries so failed sends do not spin every poll cycle
+- `provider_ts` stores the Slack message timestamp after acknowledgement
+- bodies over Slack's 40,000-character `chat.postMessage` boundary are split into deterministic chunks; `next_chunk_index`, per-chunk retry state, and stable per-chunk client message IDs make retries durable and idempotent
+- each outbox pass attempts at most one Slack chunk, leaving later chunks durably pending so ingestion and poll-loop draining remain bounded
+- the complete original transcript remains in `message_text`; concatenating acknowledged chunks reproduces it exactly
+- terminal `failed` rows stay visible in health output instead of retrying forever
+- Slack transcript delivery is independent from `config.toml`'s Telegram toggle; the watcher uses `PENNY_SLACK_BOT_TOKEN` and always targets channel ID `C0BKS0QT7FU`
+- `PENNY_SLACK_CHANNEL_ID` in the tracked watcher template is a pinned runtime invariant, not a configurable destination; alternate `PENNY_SLACK_CHANNEL_ID` or generic `SLACK_CHANNEL_ID` values cannot redirect new delivery
+- Slack mentions, push notifications, badges, and channel notification preferences are external Slack settings, not Penny repository settings
+
+Maya routing is a separate evidence stream from both transcript receipt and Slack delivery:
+- Penny sends the full persisted transcript body, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
+- Penny reads the Maya bearer token only from `MAYA_INGEST_TOKEN` at runtime and does not persist or print it
+- `routing_progress.maya_route` records whether Maya was `attempting`, `accepted`, `rejected`, or `failed`
+- only a validated Maya acceptance response marks the transcript as routed to `maya`; non-200, malformed 200, timeout, and transport failures fall back to local routing with the rejection/failure details preserved in local state
+- for a newly ingested recording, Maya or local routing completes before the watcher attempts its Slack outbox copy
 
 ### 6. Periodic Backup
 
@@ -129,6 +151,94 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 # Old processed.txt files will be re-migrated (hashes only, no transcripts)
 # Homelab backup can restore transcript text: homelab:~/backups/penny/transcript_history.json
 ```
+
+### Evidence checklist for one transcript
+
+When validating one transcript end-to-end, collect evidence in this order:
+
+1. Penny receipt: transcript row in `transcripts.db` proves Penny received and persisted it locally.
+2. Maya acceptance or rejection: `routing_progress.maya_route` shows the latest Maya attempt, using `client_ref = penny:<transcript_id>`.
+3. Slack acceptance or rejection: `slack_deliveries` shows whether the verbatim Slack copy was acknowledged, retried, or terminally failed.
+
+These categories are intentionally independent. A Maya rejection is not a missing Penny receipt, and a Slack failure is not proof that Maya or local routing failed.
+
+### Notification control inventory
+
+When someone asks "are notifications enabled?", answer with the exact layer:
+
+1. Telegram: `config.toml` `[notifications].telegram_enabled`. `false` disables Telegram sends without removing the code path or credentials.
+2. Slack transcript mirroring: watcher runtime env `PENNY_SLACK_BOT_TOKEN` enables posting. The destination is pinned to channel ID `C0BKS0QT7FU`; it is not selected from the environment.
+3. Slack user/channel notification behavior: external Slack preference. Penny does not store or infer this setting, and Telegram state must never be used as a proxy for it.
+
+### Live Slack verification sequence for operators
+
+Use this when closing a notification-policy issue or verifying the Slack canary after a deployment. The controller runs the live canary; this repo only documents how to inspect the result.
+
+1. Check Penny's real health endpoint:
+
+```bash
+ssh macmini "curl -fsS http://127.0.0.1:5678/health"
+```
+
+Expected result:
+
+- JSON includes `"status":"ok"` and `"service":"penny-webhook"`.
+- With the current repo policy, `"telegram_configured"` may be `false`; that does not disable Slack transcript mirroring.
+
+2. Check watcher health and Slack outbox counters:
+
+```bash
+ssh macmini "cat ~/.penny/health.txt"
+```
+
+Expected result:
+
+- `watcher_ok:1`
+- `slack_pending:`, `slack_failed:`, and `slack_health_error:0` fields are present
+- no unexpected growth in `slack_failed`
+
+3. Check Slack runtime wiring without printing the token:
+
+```bash
+ssh macmini '
+runtime_snapshot="$(mktemp)"
+trap "rm -f \"$runtime_snapshot\"" EXIT
+launchctl print gui/$(id -u)/com.penny.watcher > "$runtime_snapshot" || exit 1
+slack_configured=False
+slack_channel_ok=False
+while IFS= read -r line; do
+  case "$line" in
+    *"PENNY_SLACK_BOT_TOKEN => "?*) slack_configured=True ;;
+  esac
+  case "$line" in
+    *"PENNY_SLACK_CHANNEL_ID => C0BKS0QT7FU") slack_channel_ok=True ;;
+  esac
+done < "$runtime_snapshot"
+echo "slack_configured=$slack_configured"
+echo "slack_channel_ok=$slack_channel_ok"
+'
+```
+
+Expected result:
+
+- `slack_configured=True`
+- `slack_channel_ok=True`
+
+4. After the controller runs the live canary, read `#penny` channel ID `C0BKS0QT7FU` and verify this exact text appears verbatim:
+
+```text
+Penny health canary 20260726T205704Z: receipt test only; no action required.
+```
+
+Concrete verification procedure:
+
+- run the read-only health command above and confirm the response still shows `status=ok`
+- run the read-only watcher-runtime check above and confirm `slack_configured=True` and `slack_channel_ok=True`
+- then read the `#penny` channel and match the canary text exactly, character for character
+
+That combination proves Penny transcript delivery was not suppressed by `telegram_enabled = false`. It does not prove, inspect, or change external Slack mention, badge, or push-notification preferences.
+
+Slack mention, badge, and push-notification preferences are external Slack settings. Penny cannot inspect, change, or prove those preferences from repository state, so do not claim they were modified here.
 
 ### Mode 4: ffmpeg Path Issues
 
