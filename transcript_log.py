@@ -163,6 +163,10 @@ def init_db() -> None:
             conn.commit()
             log.info("Migrated %d entries from old processed files", migrated)
 
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
     finally:
         if conn:
             conn.close()
@@ -226,6 +230,40 @@ def _rename_column_if_present(
             return False
         raise
     return True
+
+
+def _ensure_unique_index(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    index: str,
+    column: str,
+) -> None:
+    matching = next(
+        (
+            row
+            for row in conn.execute(f"PRAGMA index_list({table})").fetchall()
+            if row[1] == index
+        ),
+        None,
+    )
+    if matching is not None:
+        if int(matching[2]) != 1 or (len(matching) > 4 and int(matching[4]) != 0):
+            raise sqlite3.IntegrityError(
+                f"{index} must be a non-partial unique index on {table}"
+            )
+        indexed_columns = [
+            row[2] for row in conn.execute(f"PRAGMA index_info({index})").fetchall()
+        ]
+        if indexed_columns != [column]:
+            raise sqlite3.IntegrityError(
+                f"{index} must cover only {table}.{column}"
+            )
+        return
+
+    conn.execute(
+        f"CREATE UNIQUE INDEX {index} ON {table}({column})"
+    )
 
 
 def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
@@ -330,12 +368,11 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
         ):
             added.add(column)
 
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS
-            idx_slack_deliveries_transcript_row_id
-        ON slack_deliveries(transcript_row_id)
-        """
+    _ensure_unique_index(
+        conn,
+        table="slack_deliveries",
+        index="idx_slack_deliveries_transcript_row_id",
+        column="transcript_row_id",
     )
     return added
 
