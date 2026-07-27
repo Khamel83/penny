@@ -511,7 +511,9 @@ def classify_and_route(
 
     if not transcript:
         if row_id is not None:
-            mark_failed(row_id, "empty transcript after normalization")
+            error_message = "empty transcript after normalization"
+            mark_failed(row_id, error_message)
+            raise RoutingError(error_message)
         return {"skip": True, "reason": "empty transcript"}
 
     if row_id is not None:
@@ -551,7 +553,12 @@ def classify_and_route(
                         },
                     )
             if row_id is not None:
-                mark_routed(row_id, {"type": "long_note"}, "note in Penny")
+                if not mark_routed(
+                    row_id,
+                    {"type": "long_note"},
+                    "note in Penny",
+                ):
+                    raise RoutingError("Failed to mark transcript routed locally")
             return _finish_route(
                 transcript, {"skip": True, "reason": "long_note"}, source
             )
@@ -596,11 +603,12 @@ def classify_and_route(
                     )
 
             if row_id is not None:
-                mark_routed(
+                if not mark_routed(
                     row_id,
                     {"type": "unclear", "ref_reminder": ref_text},
                     "note + ref reminder",
-                )
+                ):
+                    raise RoutingError("Failed to mark transcript routed locally")
             result = {
                 "skip": True,
                 "reason": "unclear content, saved to Notes with reference",
@@ -626,7 +634,8 @@ def classify_and_route(
                         row_id, {"note_created": True, "note_folder": "Penny"}
                     )
             if row_id is not None:
-                mark_routed(row_id, result, "note in Penny")
+                if not mark_routed(row_id, result, "note in Penny"):
+                    raise RoutingError("Failed to mark transcript routed locally")
             return _finish_route(transcript, result, source)
 
         items = result.get("items", [])
@@ -663,7 +672,8 @@ def classify_and_route(
             send_telegram(msg)
 
         if row_id is not None:
-            mark_routed(row_id, result, f"{routed_count} reminder(s)")
+            if not mark_routed(row_id, result, f"{routed_count} reminder(s)"):
+                raise RoutingError("Failed to mark transcript routed locally")
 
         return _finish_route(transcript, result, source)
 

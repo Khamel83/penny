@@ -33,7 +33,6 @@ from transcript_log import (
     mark_voice_memo_routed,
     mark_voice_memo_routed_for_transcript,
     mark_voice_memo_waiting_for_file,
-    update_transcript_stages,
     upsert_voice_memo_recording,
 )
 
@@ -401,7 +400,6 @@ def _process_audio_file(
             row_id=row_id,
             duration_seconds=duration_seconds,
         )
-        update_transcript_stages(row_id, ingest_state="routed")
         if recording_pk is not None:
             mark_voice_memo_routed(recording_pk)
     return True
@@ -579,7 +577,6 @@ def _retry_pending_routes(limit: int) -> None:
                 row_id=row["id"],
                 duration_seconds=row.get("duration_seconds"),
             )
-            update_transcript_stages(row["id"], ingest_state="routed")
             if row["source"] == "iCloud":
                 mark_voice_memo_routed_for_transcript(row["id"])
         except Exception as e:

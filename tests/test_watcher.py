@@ -80,8 +80,8 @@ class WatcherTests(unittest.TestCase):
             patch.object(
                 watcher,
                 "update_transcript_stages",
-                side_effect=lambda *args, **kwargs: events.append("routed"),
-            ),
+                create=True,
+            ) as stage_mock,
             patch.object(
                 watcher,
                 "_process_slack_outbox",
@@ -94,8 +94,71 @@ class WatcherTests(unittest.TestCase):
             )
 
         self.assertTrue(processed)
-        self.assertEqual(events, ["route", "routed"])
+        self.assertEqual(events, ["route"])
+        stage_mock.assert_not_called()
         slack_mock.assert_not_called()
+
+    def test_empty_transcription_remains_failed_and_not_slack_eligible(self) -> None:
+        audio_path = Path(self.db_dir) / "empty-transcription.m4a"
+        audio_path.write_bytes(b"audio")
+
+        with (
+            patch.object(watcher, "transcribe", return_value="SE<|hr|><|hr|><|hr|>"),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "empty transcript after normalization",
+            ),
+        ):
+            watcher._process_audio_file(
+                audio_path,
+                file_hash="empty-transcription-hash",
+            )
+
+        failed_row = transcript_log.get_transcript_by_hash(
+            "empty-transcription-hash"
+        )
+        self.assertEqual(failed_row["status"], "failed")
+        stored_row = transcript_log.get_transcript(failed_row["id"])
+        self.assertEqual(stored_row["ingest_state"], "failed")
+        self.assertEqual(
+            len(
+                transcript_log.get_pending_slack_deliveries(
+                    transcript_id=failed_row["id"],
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(
+                transcript_id=failed_row["id"],
+                routed_only=True,
+            ),
+            [],
+        )
+
+    def test_retry_pending_routes_does_not_promote_state_after_core_returns(
+        self,
+    ) -> None:
+        pending_row = {
+            "id": 42,
+            "source": "iCloud",
+            "transcript": "route this transcript",
+            "duration_seconds": None,
+        }
+
+        with (
+            patch.object(watcher, "get_pending", return_value=[pending_row]),
+            patch.object(watcher, "classify_and_route", return_value={"ok": True}),
+            patch.object(
+                watcher,
+                "update_transcript_stages",
+                create=True,
+            ) as stage_mock,
+            patch.object(watcher, "mark_voice_memo_routed_for_transcript"),
+        ):
+            watcher._retry_pending_routes(limit=1)
+
+        stage_mock.assert_not_called()
 
     def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
         events: list[str] = []

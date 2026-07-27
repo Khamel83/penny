@@ -78,6 +78,111 @@ class TranscriptContractTests(unittest.TestCase):
         core.cfg.maya.transcript_url = self.original_maya_url
         core.cfg.maya.ingest_token = self.original_maya_token
 
+    def test_empty_normalized_transcript_stays_failed_and_not_slack_eligible(
+        self,
+    ) -> None:
+        transcript = "SE<|hr|><|hr|><|hr|>"
+        row_id = transcript_log.insert_transcript(
+            content_hash="empty-normalized-contract-hash",
+            source="iCloud",
+            transcript=transcript,
+            ingest_state="transcribed",
+        )
+
+        with (
+            patch.object(core, "mark_failed", transcript_log.mark_failed),
+            self.assertRaisesRegex(
+                core.RoutingError,
+                "empty transcript after normalization",
+            ),
+        ):
+            core.classify_and_route(
+                transcript,
+                source="iCloud",
+                row_id=row_id,
+            )
+
+        failed_row = transcript_log.get_transcript(row_id)
+        self.assertEqual(failed_row["status"], "failed")
+        self.assertEqual(failed_row["ingest_state"], "failed")
+        self.assertEqual(
+            len(
+                transcript_log.get_pending_slack_deliveries(
+                    transcript_id=row_id,
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(
+                transcript_id=row_id,
+                routed_only=True,
+            ),
+            [],
+        )
+
+        with patch.object(slack_delivery.requests, "post") as slack_post:
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        slack_post.assert_not_called()
+
+    def test_local_mark_routed_failure_stays_failed_and_not_slack_eligible(
+        self,
+    ) -> None:
+        transcript = "A long note that should be saved locally."
+        row_id = transcript_log.insert_transcript(
+            content_hash="local-mark-routed-failure-contract-hash",
+            source="iCloud",
+            transcript=transcript,
+            ingest_state="transcribed",
+        )
+        core.cfg.maya.transcript_url = ""
+        core.cfg.maya.ingest_token = ""
+
+        with (
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "add_note", return_value=True) as add_note_mock,
+            patch.object(core, "mark_routed", return_value=False) as mark_routed_mock,
+            patch.object(core, "mark_failed", transcript_log.mark_failed),
+            self.assertRaisesRegex(
+                core.RoutingError,
+                "mark transcript routed",
+            ),
+        ):
+            core.classify_and_route(
+                transcript,
+                source="iCloud",
+                row_id=row_id,
+            )
+
+        add_note_mock.assert_called_once_with(
+            transcript,
+            folder_name="Penny",
+            source="iCloud",
+        )
+        mark_routed_mock.assert_called_once_with(
+            row_id,
+            {"type": "long_note"},
+            "note in Penny",
+        )
+        failed_row = transcript_log.get_transcript(row_id)
+        self.assertEqual(failed_row["status"], "failed")
+        self.assertEqual(failed_row["ingest_state"], "failed")
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(
+                transcript_id=row_id,
+                routed_only=True,
+            ),
+            [],
+        )
+
+        with patch.object(slack_delivery.requests, "post") as slack_post:
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        slack_post.assert_not_called()
+
     def test_icloud_transcript_contract_preserves_exact_body_across_maya_and_slack_retry(
         self,
     ) -> None:

@@ -253,6 +253,7 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "add_note") as note_mock,
             patch.object(core, "add_reminder") as reminder_mock,
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("maybe todo", source="iCloud", row_id=42)
         self.assertTrue(result.get("skip"))
@@ -276,6 +277,7 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"routing_progress": json.dumps(progress)},
             ),
             patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+            patch.object(core, "mark_routed", return_value=True),
         ):
             core.classify_and_route("milk and call dentist", source="iCloud", row_id=42)
         reminder_mock.assert_called_once_with("call dentist", "Health", "Inbox")
@@ -429,7 +431,11 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core.requests, "post", return_value=response),
             patch.object(core, "_record_maya_route_state", return_value=True) as state_mock,
-            patch.object(core, "mark_routed", return_value=False) as mark_routed_mock,
+            patch.object(
+                core,
+                "mark_routed",
+                side_effect=[False, True],
+            ) as mark_routed_mock,
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True) as note_mock,
             patch.object(core, "add_reminder", return_value=True) as reminder_mock,
@@ -469,6 +475,7 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test")
 
@@ -485,6 +492,7 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
 
@@ -499,6 +507,7 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "add_note", return_value=True),
             patch.object(core, "add_reminder", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
 
