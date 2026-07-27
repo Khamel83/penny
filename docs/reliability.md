@@ -87,6 +87,7 @@ Eligible iCloud transcripts also create one durable `slack_deliveries` outbox ro
 - `next_attempt_at` gates retries so failed sends do not spin every poll cycle
 - `provider_ts` stores the Slack message timestamp after acknowledgement
 - bodies over Slack's 40,000-character `chat.postMessage` boundary are split into deterministic chunks; `next_chunk_index`, per-chunk retry state, and stable per-chunk client message IDs make retries durable and idempotent
+- each outbox pass attempts at most one Slack chunk, leaving later chunks durably pending so ingestion and poll-loop draining remain bounded
 - the complete original transcript remains in `message_text`; concatenating acknowledged chunks reproduces it exactly
 - terminal `failed` rows stay visible in health output instead of retrying forever
 - Slack transcript delivery is independent from `config.toml`'s Telegram toggle; the watcher uses `PENNY_SLACK_BOT_TOKEN` and always targets channel ID `C0BKS0QT7FU`
@@ -98,6 +99,7 @@ Maya routing is a separate evidence stream from both transcript receipt and Slac
 - Penny reads the Maya bearer token only from `MAYA_INGEST_TOKEN` at runtime and does not persist or print it
 - `routing_progress.maya_route` records whether Maya was `attempting`, `accepted`, `rejected`, or `failed`
 - only a validated Maya acceptance response marks the transcript as routed to `maya`; non-200, malformed 200, timeout, and transport failures fall back to local routing with the rejection/failure details preserved in local state
+- for a newly ingested recording, Maya or local routing completes before the watcher attempts its Slack outbox copy
 
 ### 6. Periodic Backup
 

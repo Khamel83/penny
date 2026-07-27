@@ -63,6 +63,39 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         failed_mock.assert_called_once_with(123, "file too large")
 
+    def test_new_recording_routes_before_slack_outbox_delivery(self) -> None:
+        audio_path = Path(self.db_dir) / "new-recording.m4a"
+        audio_path.write_bytes(b"audio")
+        events: list[str] = []
+
+        with (
+            patch.object(watcher, "get_transcript_by_hash", return_value=None),
+            patch.object(watcher, "transcribe", return_value="route this transcript"),
+            patch.object(watcher, "insert_transcript", return_value=42),
+            patch.object(
+                watcher,
+                "classify_and_route",
+                side_effect=lambda *args, **kwargs: events.append("route"),
+            ),
+            patch.object(
+                watcher,
+                "update_transcript_stages",
+                side_effect=lambda *args, **kwargs: events.append("routed"),
+            ),
+            patch.object(
+                watcher,
+                "_process_slack_outbox",
+                side_effect=lambda: events.append("slack"),
+            ),
+        ):
+            processed = watcher._process_audio_file(
+                audio_path,
+                file_hash="new-recording-hash",
+            )
+
+        self.assertTrue(processed)
+        self.assertEqual(events, ["route", "routed", "slack"])
+
     def test_health_check_is_non_healthy_when_slack_health_query_fails(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
         with (

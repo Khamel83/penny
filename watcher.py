@@ -395,7 +395,6 @@ def _process_audio_file(
                 content_hash=file_hash,
                 audio_path=str(audio_path),
             )
-        _process_slack_outbox()
         classify_and_route(
             transcript,
             source="iCloud",
@@ -405,6 +404,7 @@ def _process_audio_file(
         update_transcript_stages(row_id, ingest_state="routed")
         if recording_pk is not None:
             mark_voice_memo_routed(recording_pk)
+        _process_slack_outbox()
     return True
 
 

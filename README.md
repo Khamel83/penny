@@ -295,7 +295,9 @@ Slack delivery is durable for eligible iCloud voice transcripts: each transcript
 gets one outbox row keyed by transcript id, retries honor bounded backoff and
 Slack `Retry-After`, successful acknowledgements persist the Slack timestamp,
 long bodies are deterministically chunked at Slack's 40,000-character boundary
-with durable per-chunk progress, and terminal failures stay visible in watcher
-health. The full original body remains persisted and warning-bearing provider
-responses never mark a delivery sent. Non-voice transcripts and skipped
+with durable per-chunk progress, and each outbox pass attempts at most one
+chunk. Fresh recordings complete Maya or local routing before Slack delivery is
+attempted, and terminal failures stay visible in watcher health. The full
+original body remains persisted and warning-bearing provider responses never
+mark a delivery sent. Non-voice transcripts and skipped
 oversized placeholders explicitly opt out of Slack enqueue.

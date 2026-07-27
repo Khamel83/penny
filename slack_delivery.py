@@ -58,6 +58,7 @@ SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
 DEFAULT_RETRY_AFTER_SECONDS = 60
 MAX_RETRY_AFTER_SECONDS = 900
 SLACK_MAX_MESSAGE_CHARACTERS = 39_999
+MAX_SLACK_CHUNKS_PER_PASS = 1
 TRANSIENT_SLACK_ERRORS = frozenset(
     {"internal_error", "rate_limited", "ratelimited", "request_timeout", "service_unavailable"}
 )
@@ -221,6 +222,7 @@ def _record_delivery_failure(
 
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
+    attempted_chunks = 0
     for row in get_pending_slack_deliveries(limit=limit):
         delivery_id = int(row["id"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
@@ -232,61 +234,57 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
             )
             continue
 
+        if attempted_chunks >= MAX_SLACK_CHUNKS_PER_PASS:
+            break
+
         chunks = _message_chunks(str(row["message_text"]))
-        next_chunk_index = int(row.get("next_chunk_index") or 0)
-        delivery_complete = True
-        for chunk_index in range(next_chunk_index, len(chunks)):
-            try:
-                provider_ts = _post_to_slack(
-                    DEFAULT_SLACK_CHANNEL_ID,
-                    chunks[chunk_index],
-                    _delivery_client_msg_id(delivery_id, chunk_index),
-                )
-            except SlackAPIError as exc:
-                _record_delivery_failure(
-                    delivery_id,
-                    exc.safe_error,
-                    retry_after_seconds=exc.retry_after_seconds
-                    or _fallback_retry_after(chunk_attempt_count),
-                )
-                delivery_complete = False
-                break
-            except SlackConfigurationError:
-                _record_delivery_failure(
-                    delivery_id,
-                    "configuration_error",
-                    retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
-                )
-                delivery_complete = False
-                break
-            except Exception as exc:
-                _record_delivery_failure(
-                    delivery_id,
-                    _classified_error("provider_error", exc),
-                    retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
-                )
-                delivery_complete = False
-                break
+        chunk_index = int(row.get("next_chunk_index") or 0)
+        attempted_chunks += 1
+        try:
+            provider_ts = _post_to_slack(
+                DEFAULT_SLACK_CHANNEL_ID,
+                chunks[chunk_index],
+                _delivery_client_msg_id(delivery_id, chunk_index),
+            )
+        except SlackAPIError as exc:
+            _record_delivery_failure(
+                delivery_id,
+                exc.safe_error,
+                retry_after_seconds=exc.retry_after_seconds
+                or _fallback_retry_after(chunk_attempt_count),
+            )
+            break
+        except SlackConfigurationError:
+            _record_delivery_failure(
+                delivery_id,
+                "configuration_error",
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
+        except Exception as exc:
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("provider_error", exc),
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
 
-            try:
-                mark_slack_delivery_chunk_sent(
-                    delivery_id,
-                    chunk_index=chunk_index,
-                    chunk_count=len(chunks),
-                    provider_ts=provider_ts,
-                )
-            except Exception as exc:
-                _record_delivery_failure(
-                    delivery_id,
-                    _classified_error("acknowledgement_error", exc),
-                    retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
-                )
-                delivery_complete = False
-                break
+        try:
+            mark_slack_delivery_chunk_sent(
+                delivery_id,
+                chunk_index=chunk_index,
+                chunk_count=len(chunks),
+                provider_ts=provider_ts,
+            )
+        except Exception as exc:
+            _record_delivery_failure(
+                delivery_id,
+                _classified_error("acknowledgement_error", exc),
+                retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+            )
+            break
 
-            chunk_attempt_count = 0
-
-        if delivery_complete:
+        if chunk_index + 1 >= len(chunks):
             delivered += 1
     return delivered
 

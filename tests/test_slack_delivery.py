@@ -226,7 +226,7 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(first_client_msg_id, second_client_msg_id)
         self.assertEqual(str(uuid.UUID(first_client_msg_id)), first_client_msg_id)
 
-    def test_long_transcript_chunks_exactly_and_retries_only_current_chunk(
+    def test_long_transcript_sends_one_chunk_per_pass_and_retries_current_chunk(
         self,
     ) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
@@ -252,6 +252,29 @@ class SlackDeliveryTests(unittest.TestCase):
             first_delivered = slack_delivery.process_pending_slack_deliveries()
             conn = transcript_log._get_conn()
             try:
+                after_first_pass = conn.execute(
+                    """
+                    SELECT status, next_chunk_index, chunk_attempt_count,
+                           chunk_provider_ts, message_text
+                    FROM slack_deliveries
+                    WHERE transcript_row_id = ?
+                    """,
+                    (row_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(first_delivered, 0)
+            self.assertEqual(post_mock.call_count, 1)
+            first_pass_state = dict(after_first_pass)
+            self.assertEqual(first_pass_state["status"], "pending")
+            self.assertEqual(first_pass_state["next_chunk_index"], 1)
+            self.assertEqual(first_pass_state["chunk_attempt_count"], 0)
+            self.assertEqual(first_pass_state["chunk_provider_ts"], '["100.001"]')
+
+            second_delivered = slack_delivery.process_pending_slack_deliveries()
+            conn = transcript_log._get_conn()
+            try:
                 after_failure = conn.execute(
                     """
                     SELECT status, next_chunk_index, chunk_attempt_count,
@@ -273,10 +296,12 @@ class SlackDeliveryTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            second_delivered = slack_delivery.process_pending_slack_deliveries()
+            third_delivered = slack_delivery.process_pending_slack_deliveries()
+            fourth_delivered = slack_delivery.process_pending_slack_deliveries()
 
-        self.assertEqual(first_delivered, 0)
-        self.assertEqual(second_delivered, 1)
+        self.assertEqual(second_delivered, 0)
+        self.assertEqual(third_delivered, 0)
+        self.assertEqual(fourth_delivered, 1)
         failed_state = dict(after_failure)
         self.assertEqual(failed_state["status"], "pending")
         self.assertEqual(failed_state["next_chunk_index"], 1)
