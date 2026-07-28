@@ -175,6 +175,14 @@ def _maya_receipt(
     }
 
 
+def _slack_section_text(payload: dict[str, object]) -> str:
+    return "".join(
+        block["text"]["text"]
+        for block in payload["blocks"]
+        if block["type"] == "section"
+    )
+
+
 class TranscriptContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
@@ -1005,6 +1013,16 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(second_payload["channel"], "C0BKS0QT7FU")
         self.assertEqual(first_payload["text"], transcript)
         self.assertEqual(second_payload["text"], transcript)
+        self.assertEqual(first_payload["client_msg_id"], second_payload["client_msg_id"])
+        self.assertNotIn("thread_ts", first_payload)
+        self.assertNotIn("thread_ts", second_payload)
+        self.assertEqual(
+            first_payload["blocks"][0]["elements"][0]["text"],
+            f"Penny transcript {row_id}",
+        )
+        self.assertEqual(_slack_section_text(first_payload), transcript)
+        self.assertEqual(_slack_section_text(second_payload), transcript)
+        self.assertEqual(first_payload["blocks"], second_payload["blocks"])
 
         conn = transcript_log._get_conn()
         try:

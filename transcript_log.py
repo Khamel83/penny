@@ -846,7 +846,7 @@ def mark_slack_delivery_chunk_sent(
                 next_chunk_index = ?,
                 chunk_attempt_count = 0,
                 chunk_provider_ts = ?,
-                provider_ts = ?,
+                provider_ts = COALESCE(provider_ts, ?),
                 last_error = NULL,
                 next_attempt_at = NULL,
                 sent_at = CASE WHEN ? THEN datetime('now') ELSE sent_at END,

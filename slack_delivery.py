@@ -8,6 +8,7 @@ import logging
 import os
 import urllib.request
 import uuid
+from dataclasses import dataclass
 
 try:
     import requests
@@ -57,11 +58,27 @@ SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 SLACK_DELIVERY_NAMESPACE = uuid.UUID("bc6feeb4-d1e8-4e84-8483-699c02146a2f")
 DEFAULT_RETRY_AFTER_SECONDS = 60
 MAX_RETRY_AFTER_SECONDS = 900
-SLACK_MAX_MESSAGE_CHARACTERS = 39_999
-MAX_SLACK_CHUNKS_PER_PASS = 1
+SLACK_MAX_FALLBACK_CHARACTERS = 4_000
+SLACK_MAX_SECTION_CHARACTERS = 3_000
+SLACK_MAX_BLOCKS_PER_MESSAGE = 50
+SLACK_MAX_SECTIONS_PER_MESSAGE = SLACK_MAX_BLOCKS_PER_MESSAGE - 1
+MAX_SLACK_POSTS_PER_PASS = 1
 TRANSIENT_SLACK_ERRORS = frozenset(
     {"internal_error", "rate_limited", "ratelimited", "request_timeout", "service_unavailable"}
 )
+
+
+@dataclass(frozen=True)
+class SlackTranscriptPost:
+    text: str
+    blocks: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class SlackTranscriptMessage(SlackTranscriptPost):
+    """One deterministic parent plus any required threaded continuations."""
+
+    continuations: tuple[SlackTranscriptPost, ...]
 
 
 class SlackAPIError(RuntimeError):
@@ -131,13 +148,99 @@ def _fallback_retry_after(attempt_count: int) -> int:
     return min(DEFAULT_RETRY_AFTER_SECONDS * max(1, 2 ** attempt_count), MAX_RETRY_AFTER_SECONDS)
 
 
-def _message_chunks(message_text: str) -> list[str]:
-    if not message_text:
-        return [""]
-    return [
-        message_text[index : index + SLACK_MAX_MESSAGE_CHARACTERS]
-        for index in range(0, len(message_text), SLACK_MAX_MESSAGE_CHARACTERS)
+def _plain_text_sections(text: str) -> list[str]:
+    sections: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= SLACK_MAX_SECTION_CHARACTERS:
+            sections.append(remaining)
+            break
+
+        window = remaining[:SLACK_MAX_SECTION_CHARACTERS]
+        split_at = max(
+            window.rfind("\n") + 1,
+            window.rfind(" ") + 1,
+            window.rfind("\t") + 1,
+            window.rfind("\r") + 1,
+        )
+        if split_at <= 0:
+            split_at = SLACK_MAX_SECTION_CHARACTERS
+        sections.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return sections
+
+
+def _context_block(label: str) -> dict[str, object]:
+    return {
+        "type": "context",
+        "elements": [
+            {
+                "type": "plain_text",
+                "text": label,
+                "emoji": False,
+            }
+        ],
+    }
+
+
+def _section_blocks(sections: list[str]) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": section,
+                "emoji": False,
+            },
+        }
+        for section in sections
+    )
+
+
+def _transcript_post(label: str, sections: list[str]) -> SlackTranscriptPost:
+    section_text = "".join(sections)
+    return SlackTranscriptPost(
+        text=section_text[:SLACK_MAX_FALLBACK_CHARACTERS],
+        blocks=(_context_block(label), *_section_blocks(sections)),
+    )
+
+
+def build_transcript_message(
+    transcript_id: int,
+    text: str,
+) -> SlackTranscriptMessage:
+    """Pack an exact transcript into deterministic bounded plain-text blocks."""
+    sections = _plain_text_sections(text)
+    section_groups = [
+        sections[index : index + SLACK_MAX_SECTIONS_PER_MESSAGE]
+        for index in range(0, len(sections), SLACK_MAX_SECTIONS_PER_MESSAGE)
     ]
+    if not section_groups:
+        section_groups = [[]]
+
+    parent = _transcript_post(
+        f"Penny transcript {transcript_id}",
+        section_groups[0],
+    )
+    continuation_count = len(section_groups) - 1
+    continuations = tuple(
+        _transcript_post(
+            (
+                f"Penny transcript {transcript_id} "
+                f"continuation {continuation_index} of {continuation_count}"
+            ),
+            section_group,
+        )
+        for continuation_index, section_group in enumerate(
+            section_groups[1:],
+            start=1,
+        )
+    )
+    return SlackTranscriptMessage(
+        text=parent.text,
+        blocks=parent.blocks,
+        continuations=continuations,
+    )
 
 
 def _warning_error(data: dict) -> str | None:
@@ -154,22 +257,29 @@ def _warning_error(data: dict) -> str | None:
 
 def _post_to_slack(
     channel_id: str,
-    message_text: str,
+    message: SlackTranscriptPost,
     client_msg_id: str,
+    *,
+    thread_ts: str | None = None,
 ) -> str | None:
     token = _slack_bot_token()
     if not token:
         raise SlackConfigurationError
 
+    payload: dict[str, object] = {
+        "channel": channel_id,
+        "client_msg_id": client_msg_id,
+        "text": message.text,
+        "blocks": list(message.blocks),
+        "unfurl_links": False,
+        "unfurl_media": False,
+    }
+    if thread_ts is not None:
+        payload["thread_ts"] = thread_ts
+
     resp = requests.post(
         SLACK_POST_MESSAGE_URL,
-        json={
-            "channel": channel_id,
-            "client_msg_id": client_msg_id,
-            "text": message_text,
-            "unfurl_links": False,
-            "unfurl_media": False,
-        },
+        json=payload,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
@@ -222,7 +332,7 @@ def _record_delivery_failure(
 
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
-    attempted_chunks = 0
+    attempted_posts = 0
     for row in get_pending_slack_deliveries(limit=limit, routed_only=True):
         delivery_id = int(row["id"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
@@ -234,17 +344,31 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
             )
             continue
 
-        if attempted_chunks >= MAX_SLACK_CHUNKS_PER_PASS:
+        if attempted_posts >= MAX_SLACK_POSTS_PER_PASS:
             break
 
-        chunks = _message_chunks(str(row["message_text"]))
+        message = build_transcript_message(
+            int(row["transcript_row_id"]),
+            str(row["message_text"]),
+        )
+        posts: tuple[SlackTranscriptPost, ...] = (
+            message,
+            *message.continuations,
+        )
         chunk_index = int(row.get("next_chunk_index") or 0)
-        attempted_chunks += 1
+        attempted_posts += 1
         try:
+            thread_ts = None
+            if chunk_index > 0:
+                parent_provider_ts = row.get("provider_ts")
+                if parent_provider_ts is None:
+                    raise ValueError("Slack parent receipt is unavailable")
+                thread_ts = str(parent_provider_ts)
             provider_ts = _post_to_slack(
                 DEFAULT_SLACK_CHANNEL_ID,
-                chunks[chunk_index],
+                posts[chunk_index],
                 _delivery_client_msg_id(delivery_id, chunk_index),
+                thread_ts=thread_ts,
             )
         except SlackAPIError as exc:
             _record_delivery_failure(
@@ -273,7 +397,7 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
             mark_slack_delivery_chunk_sent(
                 delivery_id,
                 chunk_index=chunk_index,
-                chunk_count=len(chunks),
+                chunk_count=len(posts),
                 provider_ts=provider_ts,
             )
         except Exception as exc:
@@ -284,7 +408,7 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
             )
             break
 
-        if chunk_index + 1 >= len(chunks):
+        if chunk_index + 1 >= len(posts):
             delivered += 1
     return delivered
 
