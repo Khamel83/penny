@@ -501,6 +501,7 @@ def insert_transcript(
     file_seen_at: str | None = None,
     transcription_started_at: str | None = None,
     transcription_completed_at: str | None = None,
+    error_message: str | None = None,
     enqueue_slack: bool = True,
 ) -> int | None:
     """Insert a transcript. Returns row id if new, None if duplicate."""
@@ -511,9 +512,9 @@ def insert_transcript(
             """INSERT OR IGNORE INTO transcripts (
                    content_hash, source, transcript, audio_path,
                    duration_seconds, ingest_state, discovered_at, file_seen_at,
-                   transcription_started_at, transcription_completed_at
+                   transcription_started_at, transcription_completed_at, error_message
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 content_hash,
                 source,
@@ -525,6 +526,7 @@ def insert_transcript(
                 file_seen_at,
                 transcription_started_at,
                 transcription_completed_at,
+                error_message,
             ),
         )
         if cursor.lastrowid and cursor.rowcount > 0:
@@ -869,7 +871,7 @@ def get_transcript_by_hash(content_hash: str) -> dict[str, Any] | None:
 
 
 def get_pending(limit: int = 20) -> list[dict]:
-    """Fetch transcripts with status='pending' or 'failed', oldest first."""
+    """Fetch routable pending or failed transcripts, oldest first."""
     conn = None
     try:
         conn = _get_conn()
@@ -880,6 +882,7 @@ def get_pending(limit: int = 20) -> list[dict]:
                       routing_progress, routing_result
                FROM transcripts
                WHERE status IN ('pending', 'failed')
+                 AND COALESCE(ingest_state, '') != 'needs_review'
                ORDER BY created_at ASC
                LIMIT ?""",
             (limit,),

@@ -169,26 +169,33 @@ class WatcherTests(unittest.TestCase):
 
         stage_mock.assert_not_called()
 
-    def test_retry_pending_routes_skips_quality_review_rows(self) -> None:
-        review_row = {
-            "id": 42,
-            "source": "iCloud",
-            "transcript": "unreviewed transcript",
-            "duration_seconds": None,
-        }
+    def test_retry_pending_routes_does_not_let_review_rows_consume_limit(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="quality-review-hash",
+            source="iCloud",
+            transcript="unreviewed transcript",
+            ingest_state="needs_review",
+            enqueue_slack=False,
+        )
+        eligible_id = transcript_log.insert_transcript(
+            content_hash="eligible-route-hash",
+            source="iCloud",
+            transcript="route this eligible transcript",
+            ingest_state="transcribed",
+            enqueue_slack=False,
+        )
 
         with (
-            patch.object(watcher, "get_pending", return_value=[review_row]),
-            patch.object(
-                watcher,
-                "get_transcript",
-                return_value={"ingest_state": "needs_review"},
-            ),
             patch.object(watcher, "classify_and_route") as route_mock,
         ):
             watcher._retry_pending_routes(limit=1)
 
-        route_mock.assert_not_called()
+        route_mock.assert_called_once_with(
+            "route this eligible transcript",
+            source="iCloud",
+            row_id=eligible_id,
+            duration_seconds=None,
+        )
 
     def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
         events: list[str] = []

@@ -57,6 +57,42 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(data["service"], "penny-webhook")
 
 
+def test_upload_low_quality_transcript_is_durable_and_not_published(client, monkeypatch):
+    import transcript_log
+    import webhook.server as server
+
+    rejected_text = "A valid memo first. " + "Vous " * 20
+    monkeypatch.setattr(server, "get_file_hash", lambda _: "review-upload-hash")
+    monkeypatch.setattr(server, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(
+        server,
+        "transcribe",
+        lambda _: TranscriptionResult(
+            rejected_text,
+            QualityResult(False, "consecutive_token_repetition"),
+            2,
+        ),
+    )
+    route_mock = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route_mock)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"fake audio data"), "test.m4a")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 422
+    assert response.get_json() == {"error": "Transcript needs review"}
+    row = transcript_log.get_transcript_by_hash("review-upload-hash")
+    assert row["transcript"] == rejected_text
+    stored = transcript_log.get_transcript(row["id"])
+    assert stored["ingest_state"] == "needs_review"
+    assert stored["error_message"] == "consecutive_token_repetition"
+    assert transcript_log.get_pending_slack_deliveries(transcript_id=row["id"]) == []
+    route_mock.assert_not_called()
+
+
 class UploadTests(unittest.TestCase):
     @patch("webhook.server.is_already_logged", return_value=False)
     @patch(
@@ -74,29 +110,6 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
-
-    @patch("webhook.server.is_already_logged", return_value=False)
-    @patch(
-        "webhook.server.transcribe",
-        return_value=TranscriptionResult(
-            "A valid memo first. " + "Vous " * 20,
-            QualityResult(False, "needs_review"),
-            2,
-        ),
-    )
-    @patch("webhook.server.insert_transcript")
-    @patch("webhook.server.classify_and_route")
-    def test_upload_low_quality_transcript_requires_review_before_publication(
-        self, mock_route, mock_insert, mock_transcribe, mock_logged
-    ):
-        with app.test_client() as client:
-            data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
-            resp = client.post("/upload", data=data, content_type="multipart/form-data")
-
-        self.assertEqual(resp.status_code, 422)
-        self.assertEqual(resp.get_json(), {"error": "Transcript needs review"})
-        mock_insert.assert_not_called()
-        mock_route.assert_not_called()
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_upload_duplicate_returns_ok(self, mock_logged):

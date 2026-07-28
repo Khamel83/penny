@@ -21,7 +21,6 @@ from slack_delivery import process_pending_slack
 from transcript_quality import transcribe_with_quality
 from transcript_log import (
     get_slack_delivery_health,
-    get_transcript,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
@@ -684,10 +683,6 @@ def _retry_waiting_for_files(limit: int) -> None:
 def _retry_pending_routes(limit: int) -> None:
     pending = get_pending(limit=limit)
     for row in pending:
-        current = get_transcript(row["id"])
-        if current and current.get("ingest_state") == "needs_review":
-            log.warning("Skipping transcript id=%s pending quality review", row["id"])
-            continue
         log.info(
             "Retrying pending transcript id=%s (source=%s)",
             row["id"],

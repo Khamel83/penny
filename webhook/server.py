@@ -127,6 +127,14 @@ def upload():
                 "Upload transcript needs review (reason=%s)",
                 transcription.quality.reason,
             )
+            insert_transcript(
+                content_hash=file_hash,
+                source="Shortcut",
+                transcript=transcription.text,
+                ingest_state="needs_review",
+                error_message=transcription.quality.reason,
+                enqueue_slack=False,
+            )
             return jsonify({"error": "Transcript needs review"}), 422
 
         transcript = transcription.text

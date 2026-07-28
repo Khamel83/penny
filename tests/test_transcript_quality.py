@@ -1,7 +1,9 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import Mock
+
+import pytest
 
 from transcript_quality import evaluate_transcript, transcribe_with_quality
 
@@ -17,6 +19,28 @@ def test_clean_english_passes():
     assert evaluate_transcript(
         "Create one ticket in the repository after checking the API."
     ).passed
+
+
+def test_low_diversity_suffix_fails():
+    result = evaluate_transcript("A valid memo first. " + "alpha beta " * 10)
+
+    assert result.passed is False
+    assert result.reason == "low_diversity_suffix"
+
+
+def test_whisper_control_token_remnant_fails():
+    result = evaluate_transcript("Create a ticket <|notimestamps|> after review.")
+
+    assert result.passed is False
+    assert result.reason == "control_token"
+
+
+@pytest.mark.parametrize("text", ["", "   ", "...?! —"])
+def test_empty_or_punctuation_only_output_fails(text):
+    result = evaluate_transcript(text)
+
+    assert result.passed is False
+    assert result.reason == "empty_output"
 
 
 def test_transcription_retries_once_and_selects_clean_second_result(monkeypatch):
