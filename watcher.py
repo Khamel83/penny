@@ -652,7 +652,7 @@ def _process_slack_outbox() -> None:
 
 def _process_maya_outbox() -> None:
     try:
-        delivered = process_pending_maya_deliveries(limit=1)
+        delivered = process_pending_maya_deliveries(limit=20)
         if delivered:
             log.info("Delivered %s transcript(s) to Maya", delivered)
     except Exception as e:

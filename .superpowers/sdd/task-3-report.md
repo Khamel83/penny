@@ -96,3 +96,102 @@ small, and uses the existing config and Task 2 persistence interfaces.
 
 No external services, credentials, Apple Notes, Slack, Maya, or personal data
 were contacted by the tests.
+
+## Important-findings fixes
+
+### Scope
+
+- Fix base SHA: `183db460f38f0e543831738ce334a39d1499f8c3`
+- Commit subject: `fix: address Penny Maya delivery review findings`
+- Changed production files: `maya_delivery.py`, `transcript_log.py`, `watcher.py`
+- Changed tests/artifact: `tests/test_transcript_contract.py`,
+  `tests/test_transcript_log.py`, `tests/test_watcher.py`,
+  `tests/fixtures/maya_penny_transcript_submission.schema.json`
+
+### RED evidence
+
+1. `/Users/macmini/penny/venv/bin/python -m pytest
+   tests/test_transcript_contract.py tests/test_transcript_log.py
+   tests/test_watcher.py -q -k 'local_maya_receipt_write or
+   backs_off_transient or canonical_migration_adds_safe or
+   maya_outbox_helper'`
+   → `4 failed, 66 deselected`.
+   - A simulated local SQLite receipt write was converted to terminal `failed`.
+   - Transient delivery had no persisted attempt/backoff fields.
+   - Legacy migration did not add the retry columns.
+   - The watcher requested only one Maya row per pass.
+2. `/Users/macmini/penny/venv/bin/python -m pytest
+   tests/test_transcript_contract.py -q -k 'maya_v2_envelope_is_persisted or
+   posts_authenticated'`
+   → `2 failed, 10 deselected`; both failed because the canonical generated
+   Maya JSON-schema fixture did not yet exist.
+
+### GREEN evidence
+
+- `/Users/macmini/penny/venv/bin/python -m pytest
+  tests/test_transcript_contract.py tests/test_transcript_log.py
+  tests/test_watcher.py -q -k 'local_maya_receipt_write or
+  backs_off_transient or canonical_migration_adds_safe or maya_outbox_helper
+  or maya_v2_envelope_is_persisted or posts_authenticated'`
+  → `6 passed, 64 deselected`
+- `/Users/macmini/penny/venv/bin/python -m pytest
+  tests/test_transcript_contract.py tests/test_transcript_log.py
+  tests/test_core_and_classifier.py tests/test_webhook.py
+  tests/test_watcher.py -q`
+  → `129 passed, 2 subtests passed in 0.68s`
+- `/Users/macmini/penny/venv/bin/python -m pytest -q -k 'not
+  test_process_audio_file_links_already_logged_voice_memo'`
+  → `185 passed, 1 deselected, 2 subtests passed in 0.78s`
+- Changed-file `py_compile` → pass
+- Generated-artifact comparison against Maya's actual
+  `PennyTranscriptSubmission.model_json_schema()` → exact match; recorded
+  source and schema SHA-256 values match
+- `git diff --check` → pass
+
+The unfiltered broader suite remains `185 passed, 1 failed, 2 subtests passed`.
+The only failure is the separately tracked pre-existing `watcher.transcribe`
+test seam documented above; these Important-findings fixes do not modify it.
+
+### Canonical artifact provenance
+
+- Maya model:
+  `app.integrations.penny.contracts.PennyTranscriptSubmission`
+- Maya commit: `a8af56f0ef57848832d9ba0f0f4b923c7f1a3918`
+- Model source SHA-256:
+  `042c55c7133a46d831e798fc38061d33b202500ae99001c42e45ba7764e942e5`
+- Generated schema SHA-256:
+  `f23a15776806318844659c81f3008e0bb9766cf467ce2b10f63cff1cc53a7d8d`
+
+Penny's tests use a generic standard-library JSON-schema subset validator
+against this checked artifact. They do not define a second Pydantic contract.
+The artifact validates exact fields, `extra="forbid"` behavior, scalar types,
+SHA-256 patterns, date-time format, audio-provenance value types, and source
+span structure. Existing semantic assertions continue to verify transcript
+hash, stable client reference, and persisted provenance values. Schema and
+source hashes make drift detectable; when the sibling Maya source is present,
+the test also compares its live SHA-256.
+
+### Self-review
+
+#### Standards
+
+No repository-specific standards violations or actionable smell-baseline
+findings were found. Retry state remains in the existing transcript ledger,
+and transport/validation/persistence responsibilities are separated in the
+delivery worker.
+
+#### Spec
+
+- Remote malformed receipts and request identity/hash conflicts enter bounded
+  terminal receipt failure state.
+- Local receipt persistence exceptions are logged separately, leave the row
+  replayable, and never call terminal invalid-receipt/conflict persistence.
+- Transient request/408/425/429/5xx failures increment a durable attempt count,
+  retain bounded error vocabulary, and schedule exponential 30–1,800 second
+  backoff.
+- Due-row selection excludes scheduled future attempts. A worker call snapshots
+  up to its limit and continues across failures, while the watcher requests a
+  bounded 20-row pass, preventing the oldest transient row from starving later
+  eligible rows.
+- The known earlier `watcher.transcribe` seam remains separately tracked and
+  unchanged.

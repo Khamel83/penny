@@ -4,6 +4,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -61,32 +63,132 @@ class _MayaResponse:
         return self._payload
 
 
-def _assert_valid_maya_submission(body: dict[str, object]) -> None:
-    """Mirror Maya's PennyTranscriptSubmission boundary without adding Pydantic."""
-    assert set(body) == {
-        "schema_version",
-        "transcript_id",
-        "transcript_sha256",
-        "transcript",
-        "source",
-        "captured_at",
-        "duration_seconds",
-        "audio_provenance",
-        "source_spans",
-        "client_ref",
+_MAYA_SUBMISSION_SCHEMA_PATH = (
+    Path(__file__).parent
+    / "fixtures"
+    / "maya_penny_transcript_submission.schema.json"
+)
+
+
+def _load_checked_maya_submission_schema() -> dict[str, object]:
+    artifact = json.loads(_MAYA_SUBMISSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+    provenance = artifact.pop("x-generated-from")
+    canonical_bytes = json.dumps(
+        artifact,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert provenance == {
+        "generator": (
+            "app.integrations.penny.contracts."
+            "PennyTranscriptSubmission.model_json_schema"
+        ),
+        "maya_commit": provenance["maya_commit"],
+        "maya_source": "app/integrations/penny/contracts.py",
+        "maya_source_sha256": provenance["maya_source_sha256"],
+        "schema_sha256": hashlib.sha256(canonical_bytes).hexdigest(),
     }
-    assert body["schema_version"] == "penny-maya.v2"
-    assert isinstance(body["transcript_id"], str)
-    assert isinstance(body["transcript"], str) and body["transcript"].strip()
-    assert body["transcript_sha256"] == hashlib.sha256(
-        body["transcript"].encode("utf-8")
-    ).hexdigest()
-    assert body["client_ref"] == f"penny:{body['transcript_id']}"
-    assert isinstance(body["source"], str)
-    datetime.fromisoformat(str(body["captured_at"]).replace("Z", "+00:00"))
-    assert body["duration_seconds"] is None or body["duration_seconds"] >= 0
-    assert isinstance(body["audio_provenance"], dict)
-    assert isinstance(body["source_spans"], list)
+    assert re.fullmatch(r"[0-9a-f]{40}", provenance["maya_commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", provenance["maya_source_sha256"])
+    maya_repo = Path(
+        os.environ.get("MAYA_REPO_ROOT", str(ROOT.parents[1] / "maya"))
+    )
+    maya_source = maya_repo / provenance["maya_source"]
+    if maya_source.is_file():
+        assert (
+            hashlib.sha256(maya_source.read_bytes()).hexdigest()
+            == provenance["maya_source_sha256"]
+        ), "Maya contract source drifted; regenerate the checked schema fixture"
+    return artifact
+
+
+def _assert_json_schema(
+    value: object,
+    schema: dict[str, object],
+    root_schema: dict[str, object],
+    *,
+    path: str = "$",
+) -> None:
+    if "$ref" in schema:
+        reference = str(schema["$ref"])
+        assert reference.startswith("#/")
+        resolved: object = root_schema
+        for component in reference[2:].split("/"):
+            assert isinstance(resolved, dict)
+            resolved = resolved[component]
+        assert isinstance(resolved, dict)
+        _assert_json_schema(value, resolved, root_schema, path=path)
+        return
+
+    if "anyOf" in schema:
+        errors = []
+        for candidate in schema["anyOf"]:
+            try:
+                _assert_json_schema(value, candidate, root_schema, path=path)
+            except AssertionError as exc:
+                errors.append(str(exc))
+            else:
+                return
+        raise AssertionError(f"{path} did not match anyOf: {errors}")
+
+    if "const" in schema:
+        assert value == schema["const"], f"{path} has the wrong constant"
+
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        assert isinstance(value, dict), f"{path} must be an object"
+        required = set(schema.get("required", []))
+        assert required.issubset(value), f"{path} is missing {required - set(value)}"
+        properties = schema.get("properties", {})
+        assert isinstance(properties, dict)
+        extra_keys = set(value) - set(properties)
+        additional = schema.get("additionalProperties", True)
+        if additional is False:
+            assert not extra_keys, f"{path} has unexpected fields {extra_keys}"
+        elif isinstance(additional, dict):
+            for key in extra_keys:
+                _assert_json_schema(
+                    value[key],
+                    additional,
+                    root_schema,
+                    path=f"{path}.{key}",
+                )
+        for key, property_schema in properties.items():
+            if key in value:
+                _assert_json_schema(
+                    value[key],
+                    property_schema,
+                    root_schema,
+                    path=f"{path}.{key}",
+                )
+    elif expected_type == "array":
+        assert isinstance(value, list), f"{path} must be an array"
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _assert_json_schema(
+                    item,
+                    item_schema,
+                    root_schema,
+                    path=f"{path}[{index}]",
+                )
+    elif expected_type == "string":
+        assert isinstance(value, str), f"{path} must be a string"
+        assert len(value) >= int(schema.get("minLength", 0))
+        if "maxLength" in schema:
+            assert len(value) <= int(schema["maxLength"])
+        if "pattern" in schema:
+            assert re.search(str(schema["pattern"]), value)
+        if schema.get("format") == "date-time":
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            assert parsed.tzinfo is not None, f"{path} must include a timezone"
+    elif expected_type == "integer":
+        assert isinstance(value, int) and not isinstance(value, bool)
+    elif expected_type == "number":
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif expected_type == "null":
+        assert value is None, f"{path} must be null"
 
 
 def _maya_receipt(
@@ -184,6 +286,8 @@ class TranscriptContractTests(unittest.TestCase):
         )
 
         envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        schema = _load_checked_maya_submission_schema()
+        _assert_json_schema(envelope, schema, schema)
         pending_ids = {
             delivery["id"] for delivery in transcript_log.get_pending_maya_deliveries()
         }
@@ -310,7 +414,8 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(delivered, 1)
         posted = maya_post.call_args.kwargs
         posted_body = json.loads(posted["data"].decode("utf-8"))
-        _assert_valid_maya_submission(posted_body)
+        schema = _load_checked_maya_submission_schema()
+        _assert_json_schema(posted_body, schema, schema)
         self.assertEqual(posted_body, envelope)
         self.assertEqual(
             posted["headers"],
@@ -367,6 +472,21 @@ class TranscriptContractTests(unittest.TestCase):
         ):
             first_delivered = maya_delivery.process_pending_maya_deliveries()
             after_timeout = transcript_log.get_transcript(int(row_id))
+            self.assertIsNotNone(after_timeout["maya_next_attempt_at"])
+            self.assertEqual(after_timeout["maya_delivery_attempt_count"], 1)
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    """
+                    UPDATE transcripts
+                    SET maya_next_attempt_at = datetime('now', '-1 second')
+                    WHERE id = ?
+                    """,
+                    (row_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
             second_delivered = maya_delivery.process_pending_maya_deliveries()
 
         self.assertEqual(first_delivered, 0)
@@ -378,6 +498,136 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(first_body, second_body)
         self.assertEqual(json.loads(first_body.decode("utf-8")), envelope)
         add_note.assert_not_called()
+
+    def test_local_maya_receipt_write_failure_stays_pending_and_replays(
+        self,
+    ) -> None:
+        import maya_delivery
+
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-local-receipt-write-hash",
+            source="iCloud",
+            transcript="Replay after a local receipt write failure.",
+            discovered_at="2026-07-28T18:02:00Z",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        responses = [
+            _MayaResponse(
+                _maya_receipt(
+                    envelope,
+                    drop_id="drop-local-write-replay",
+                    duplicate=False,
+                )
+            ),
+            _MayaResponse(
+                _maya_receipt(
+                    envelope,
+                    drop_id="drop-local-write-replay",
+                    duplicate=True,
+                )
+            ),
+        ]
+        persistence_attempts = 0
+
+        def persist_receipt(transcript_row_id: int, drop_id: str) -> None:
+            nonlocal persistence_attempts
+            persistence_attempts += 1
+            if persistence_attempts == 1:
+                raise sqlite3.OperationalError("simulated local write failure")
+            transcript_log.mark_maya_delivery_sent(transcript_row_id, drop_id)
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya:8200/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(
+                maya_delivery.requests,
+                "post",
+                side_effect=responses,
+            ),
+            patch.object(
+                maya_delivery,
+                "mark_maya_delivery_sent",
+                side_effect=persist_receipt,
+            ),
+        ):
+            first_delivered = maya_delivery.process_pending_maya_deliveries(limit=1)
+            after_failure = transcript_log.get_transcript(int(row_id))
+            second_delivered = maya_delivery.process_pending_maya_deliveries(limit=1)
+
+        self.assertEqual(first_delivered, 0)
+        self.assertEqual(after_failure["maya_delivery_status"], "pending")
+        self.assertIsNone(after_failure["maya_delivery_error"])
+        self.assertIsNone(after_failure["maya_drop_id"])
+        self.assertEqual(second_delivered, 1)
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-local-write-replay")
+
+    def test_maya_delivery_pass_backs_off_transient_row_and_attempts_later_row(
+        self,
+    ) -> None:
+        import maya_delivery
+
+        first_id = transcript_log.insert_transcript(
+            content_hash="maya-fair-first-hash",
+            source="iCloud",
+            transcript="The first delivery times out.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        second_id = transcript_log.insert_transcript(
+            content_hash="maya-fair-second-hash",
+            source="iCloud",
+            transcript="The second delivery must still be attempted.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        second_envelope = transcript_log.build_maya_v2_envelope(int(second_id))
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya:8200/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(
+                maya_delivery.requests,
+                "post",
+                side_effect=[
+                    maya_delivery.requests.Timeout("simulated oldest-row timeout"),
+                    _MayaResponse(
+                        _maya_receipt(
+                            second_envelope,
+                            drop_id="drop-fair-second",
+                            duplicate=False,
+                        )
+                    ),
+                ],
+            ) as maya_post,
+        ):
+            delivered = maya_delivery.process_pending_maya_deliveries(limit=2)
+
+        self.assertEqual(delivered, 1)
+        self.assertEqual(maya_post.call_count, 2)
+        attempted_ids = [
+            json.loads(call.kwargs["data"].decode("utf-8"))["transcript_id"]
+            for call in maya_post.call_args_list
+        ]
+        self.assertEqual(attempted_ids, [str(first_id), str(second_id)])
+        first = transcript_log.get_transcript(int(first_id))
+        second = transcript_log.get_transcript(int(second_id))
+        self.assertEqual(first["maya_delivery_status"], "pending")
+        self.assertEqual(first["maya_delivery_attempt_count"], 1)
+        self.assertIsNotNone(first["maya_next_attempt_at"])
+        self.assertEqual(second["maya_delivery_status"], "sent")
+        self.assertEqual(transcript_log.get_pending_maya_deliveries(), [])
 
     def test_maya_delivery_worker_fails_closed_on_conflicting_receipt_and_skips_review(
         self,

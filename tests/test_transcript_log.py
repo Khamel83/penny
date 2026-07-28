@@ -237,6 +237,8 @@ class TranscriptLogTests(unittest.TestCase):
                 "transcript_sha256",
                 "maya_delivery_status",
                 "maya_drop_id",
+                "maya_delivery_attempt_count",
+                "maya_next_attempt_at",
                 "superseded_by_transcript_row_id",
             }.issubset(columns)
         )

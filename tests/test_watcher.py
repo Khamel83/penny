@@ -308,7 +308,7 @@ class WatcherTests(unittest.TestCase):
         ) as process_mock:
             watcher._process_maya_outbox()
 
-        process_mock.assert_called_once_with(limit=1)
+        process_mock.assert_called_once_with(limit=20)
 
     def test_voicememos_sync_is_refreshed_even_when_process_is_running(self) -> None:
         calls: list[list[str]] = []

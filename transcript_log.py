@@ -103,12 +103,18 @@ def init_db() -> None:
                 maya_delivery_status TEXT NOT NULL DEFAULT 'pending',
                 maya_drop_id    TEXT,
                 maya_delivery_error TEXT,
+                maya_delivery_attempt_count INTEGER NOT NULL DEFAULT 0,
+                maya_next_attempt_at TEXT,
                 superseded_by_transcript_row_id INTEGER
             )
         """)
         _ensure_transcript_columns(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transcripts_maya_delivery_due "
+            "ON transcripts(maya_delivery_status, maya_next_attempt_at)"
         )
         conn.execute(
             """
@@ -300,6 +306,13 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "maya_drop_id": "ALTER TABLE transcripts ADD COLUMN maya_drop_id TEXT",
         "maya_delivery_error": (
             "ALTER TABLE transcripts ADD COLUMN maya_delivery_error TEXT"
+        ),
+        "maya_delivery_attempt_count": (
+            "ALTER TABLE transcripts "
+            "ADD COLUMN maya_delivery_attempt_count INTEGER NOT NULL DEFAULT 0"
+        ),
+        "maya_next_attempt_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_next_attempt_at TEXT"
         ),
         "superseded_by_transcript_row_id": (
             "ALTER TABLE transcripts "
@@ -940,6 +953,10 @@ def get_pending_maya_deliveries(limit: int = 20) -> list[dict[str, Any]]:
               AND quality_status = 'passed'
               AND source NOT LIKE 'maya:%'
               AND COALESCE(ingest_state, '') != 'needs_review'
+              AND (
+                    maya_next_attempt_at IS NULL
+                    OR maya_next_attempt_at <= datetime('now')
+                  )
             ORDER BY created_at ASC, id ASC
             LIMIT ?
             """,
@@ -967,6 +984,7 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
             SET maya_delivery_status = 'sent',
                 maya_drop_id = ?,
                 maya_delivery_error = NULL,
+                maya_next_attempt_at = NULL,
                 updated_at = datetime('now')
             WHERE id = ?
               AND (
@@ -1010,6 +1028,7 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
             UPDATE transcripts
             SET maya_delivery_status = 'failed',
                 maya_delivery_error = ?,
+                maya_next_attempt_at = NULL,
                 updated_at = datetime('now')
             WHERE id = ?
               AND maya_delivery_status != 'sent'
@@ -1031,6 +1050,59 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
     except Exception as e:
         log.error(
             "Failed to mark Maya delivery failed id=%s: %s",
+            transcript_row_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_maya_delivery_retryable(
+    transcript_row_id: int,
+    error_message: str,
+    retry_after_seconds: int = 60,
+) -> None:
+    """Persist a transient Maya failure while keeping the row replayable."""
+    conn = None
+    try:
+        conn = _get_conn()
+        delay = max(1, min(int(retry_after_seconds), 3600))
+        cursor = conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_delivery_status = 'pending',
+                maya_delivery_attempt_count =
+                    COALESCE(maya_delivery_attempt_count, 0) + 1,
+                maya_delivery_error = ?,
+                maya_next_attempt_at =
+                    datetime('now', '+' || ? || ' seconds'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND maya_delivery_status = 'pending'
+              AND maya_drop_id IS NULL
+            """,
+            (
+                _safe_delivery_error(error_message),
+                delay,
+                transcript_row_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            current = conn.execute(
+                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
+                (transcript_row_id,),
+            ).fetchone()
+            if current is None:
+                raise LookupError("Transcript row does not exist")
+            if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
+                return
+            raise ValueError("Maya retry cannot transition the current delivery state")
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to schedule Maya delivery retry id=%s: %s",
             transcript_row_id,
             _safe_exception_class(e),
         )
