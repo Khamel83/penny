@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -77,6 +78,112 @@ class TranscriptContractTests(unittest.TestCase):
     def _restore_maya_config(self) -> None:
         core.cfg.maya.transcript_url = self.original_maya_url
         core.cfg.maya.ingest_token = self.original_maya_token
+
+    def test_maya_v2_envelope_is_persisted_and_pending_query_excludes_ineligible_rows(
+        self,
+    ) -> None:
+        transcript = "Persist this exact v2 transcript."
+        audio_path = "/tmp/penny-v2-test.m4a"
+        row_id = transcript_log.insert_transcript(
+            content_hash="audio-sha256-for-v2-test",
+            source="iCloud",
+            transcript=transcript,
+            audio_path=audio_path,
+            duration_seconds=42.5,
+            ingest_state="transcribed",
+            discovered_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+        )
+        self.assertIsNotNone(row_id)
+        transcript_log.upsert_voice_memo_recording(
+            9876,
+            label="v2 test recording",
+            raw_path="recording.m4a",
+            duration_seconds=42.5,
+        )
+        transcript_log.link_voice_memo_transcript(
+            9876,
+            transcript_row_id=int(row_id),
+            content_hash="audio-sha256-for-v2-test",
+            audio_path=audio_path,
+        )
+        maya_source_row_id = transcript_log.insert_transcript(
+            content_hash="maya-origin-row",
+            source="maya:reminder",
+            transcript="Maya-originated rows never return to Maya.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        review_row_id = transcript_log.insert_transcript(
+            content_hash="review-row",
+            source="iCloud",
+            transcript="Human review remains local.",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            enqueue_slack=False,
+        )
+
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        pending_ids = {
+            delivery["id"] for delivery in transcript_log.get_pending_maya_deliveries()
+        }
+
+        self.assertEqual(
+            set(envelope),
+            {
+                "schema_version",
+                "transcript_id",
+                "transcript_sha256",
+                "transcript",
+                "source",
+                "captured_at",
+                "duration_seconds",
+                "audio_provenance",
+                "source_spans",
+                "client_ref",
+            },
+        )
+        self.assertEqual(envelope["schema_version"], "penny-maya.v2")
+        self.assertEqual(envelope["transcript_id"], str(row_id))
+        self.assertEqual(
+            envelope["transcript_sha256"],
+            hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(envelope["transcript"], transcript)
+        self.assertEqual(envelope["source"], "icloud")
+        self.assertEqual(envelope["captured_at"], "2026-07-28T12:34:56Z")
+        self.assertEqual(envelope["duration_seconds"], 42.5)
+        self.assertEqual(
+            envelope["audio_provenance"],
+            {
+                "content_hash": "audio-sha256-for-v2-test",
+                "audio_path": audio_path,
+                "recording_pk": 9876,
+            },
+        )
+        self.assertEqual(envelope["source_spans"], [])
+        self.assertEqual(envelope["client_ref"], f"penny:{row_id}")
+        self.assertEqual(pending_ids, {row_id})
+        self.assertNotIn(maya_source_row_id, pending_ids)
+        self.assertNotIn(review_row_id, pending_ids)
+
+    def test_maya_v2_envelope_normalizes_persisted_capture_time_to_iso8601_utc(
+        self,
+    ) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="captured-at-audio-hash",
+            source="iCloud",
+            transcript="Use the SQLite capture timestamp.",
+            quality_status="passed",
+        )
+        self.assertIsNotNone(row_id)
+
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+
+        self.assertRegex(
+            str(envelope["captured_at"]),
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$",
+        )
 
     def test_empty_normalized_transcript_stays_failed_and_not_slack_eligible(
         self,

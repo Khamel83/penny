@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import logging
 import multiprocessing
 import os
@@ -152,6 +153,196 @@ class TranscriptLogTests(unittest.TestCase):
         pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["channel_id"], "C0BKS0QT7FU")
+
+    def test_canonical_migration_adds_safe_columns_without_replacing_legacy_rows(
+        self,
+    ) -> None:
+        self.db_path.unlink()
+        legacy_transcript = "Legacy transcript remains readable."
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute(
+                """
+                CREATE TABLE transcripts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_hash TEXT NOT NULL UNIQUE,
+                    source TEXT NOT NULL,
+                    transcript TEXT NOT NULL,
+                    audio_path TEXT,
+                    duration_seconds REAL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    ingest_state TEXT,
+                    routing_result TEXT,
+                    routing_progress TEXT,
+                    error_message TEXT,
+                    discovered_at TEXT,
+                    file_seen_at TEXT,
+                    transcription_started_at TEXT,
+                    transcription_completed_at TEXT,
+                    routing_started_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    last_error_at TEXT,
+                    routed_at TEXT,
+                    routed_to TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO transcripts (
+                    content_hash, source, transcript, ingest_state, discovered_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-content-hash",
+                    "iCloud",
+                    legacy_transcript,
+                    "transcribed",
+                    "2026-07-28T12:00:00Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(transcripts)")
+            }
+            row = dict(
+                conn.execute(
+                    """
+                    SELECT content_hash, transcript, quality_status, quality_detail,
+                           transcript_sha256, maya_delivery_status, maya_drop_id,
+                           superseded_by_transcript_row_id
+                    FROM transcripts
+                    WHERE content_hash = ?
+                    """,
+                    ("legacy-content-hash",),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+        self.assertTrue(
+            {
+                "quality_status",
+                "quality_detail",
+                "transcript_sha256",
+                "maya_delivery_status",
+                "maya_drop_id",
+                "superseded_by_transcript_row_id",
+            }.issubset(columns)
+        )
+        self.assertEqual(row["content_hash"], "legacy-content-hash")
+        self.assertEqual(row["transcript"], legacy_transcript)
+        self.assertEqual(row["quality_status"], "passed")
+        self.assertIsNone(row["quality_detail"])
+        self.assertEqual(
+            row["transcript_sha256"],
+            hashlib.sha256(legacy_transcript.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(row["maya_delivery_status"], "pending")
+        self.assertIsNone(row["maya_drop_id"])
+        self.assertIsNone(row["superseded_by_transcript_row_id"])
+
+    def test_canonical_insert_uses_exact_utf8_hash_and_queues_only_passed_quality(
+        self,
+    ) -> None:
+        passed_text = "Caf\u00e9 notes stay byte-exact."
+        passed_row_id = transcript_log.insert_transcript(
+            content_hash="canonical-passed-audio-hash",
+            source="iCloud",
+            transcript=passed_text,
+            quality_status="passed",
+        )
+        review_row_id = transcript_log.insert_transcript(
+            content_hash="canonical-review-audio-hash",
+            source="iCloud",
+            transcript="This requires human review.",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="control_token",
+        )
+
+        self.assertIsNotNone(passed_row_id)
+        self.assertIsNotNone(review_row_id)
+        passed = transcript_log.get_transcript(int(passed_row_id))
+        review = transcript_log.get_transcript(int(review_row_id))
+        self.assertEqual(
+            passed["transcript_sha256"],
+            hashlib.sha256(passed_text.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(passed["quality_status"], "passed")
+        self.assertIsNone(passed["quality_detail"])
+        self.assertEqual(review["quality_status"], "needs_review")
+        self.assertEqual(review["quality_detail"], "control_token")
+        self.assertEqual(
+            [delivery["transcript_row_id"] for delivery in transcript_log.get_pending_slack_deliveries()],
+            [passed_row_id],
+        )
+
+    def test_maya_delivery_receipts_and_failures_persist_independent_state(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-delivery-state-audio-hash",
+            source="iCloud",
+            transcript="Persist delivery acknowledgement state.",
+            quality_status="passed",
+        )
+        self.assertIsNotNone(row_id)
+
+        transcript_log.mark_maya_delivery_failed(
+            int(row_id),
+            "raw provider response must not be persisted",
+        )
+        failed = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(failed["maya_delivery_status"], "failed")
+        self.assertEqual(failed["maya_delivery_error"], "delivery_error")
+        self.assertIsNone(failed["maya_drop_id"])
+
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
+        sent = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(sent["maya_delivery_status"], "sent")
+        self.assertEqual(sent["maya_drop_id"], "drop-penny-v2-123")
+        self.assertIsNone(sent["maya_delivery_error"])
+
+    def test_canonical_processed_file_migration_persists_exact_utf8_hash(self) -> None:
+        processed_file = Path(self.db_dir) / "legacy_processed.txt"
+        processed_file.write_text("legacy-processed-hash\n", encoding="utf-8")
+
+        with patch.object(
+            transcript_log,
+            "_MIGRATION_SOURCES",
+            [(processed_file, "iCloud")],
+        ):
+            conn = transcript_log._get_conn()
+            try:
+                migrated = transcript_log._migrate_processed_files(conn)
+                conn.commit()
+            finally:
+                conn.close()
+
+        self.assertEqual(migrated, 1)
+        conn = transcript_log._get_conn()
+        try:
+            stored_sha256 = conn.execute(
+                "SELECT transcript_sha256 FROM transcripts WHERE content_hash = ?",
+                ("legacy-processed-hash",),
+            ).fetchone()["transcript_sha256"]
+        finally:
+            conn.close()
+        self.assertEqual(
+            stored_sha256,
+            hashlib.sha256(
+                "(migrated \u2014 original transcript not preserved)".encode("utf-8")
+            ).hexdigest(),
+        )
 
     def test_init_db_migrates_retryable_legacy_failures_and_wrong_destinations(
         self,

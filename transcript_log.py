@@ -13,10 +13,12 @@ The log serves two purposes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +96,14 @@ def init_db() -> None:
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 last_error_at   TEXT,
                 routed_at       TEXT,
-                routed_to       TEXT
+                routed_to       TEXT,
+                quality_status  TEXT NOT NULL DEFAULT 'passed',
+                quality_detail  TEXT,
+                transcript_sha256 TEXT,
+                maya_delivery_status TEXT NOT NULL DEFAULT 'pending',
+                maya_drop_id    TEXT,
+                maya_delivery_error TEXT,
+                superseded_by_transcript_row_id INTEGER
             )
         """)
         _ensure_transcript_columns(conn)
@@ -278,6 +287,24 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "routing_started_at": "ALTER TABLE transcripts ADD COLUMN routing_started_at TEXT",
         "updated_at": "ALTER TABLE transcripts ADD COLUMN updated_at TEXT",
         "last_error_at": "ALTER TABLE transcripts ADD COLUMN last_error_at TEXT",
+        "quality_status": (
+            "ALTER TABLE transcripts "
+            "ADD COLUMN quality_status TEXT NOT NULL DEFAULT 'passed'"
+        ),
+        "quality_detail": "ALTER TABLE transcripts ADD COLUMN quality_detail TEXT",
+        "transcript_sha256": "ALTER TABLE transcripts ADD COLUMN transcript_sha256 TEXT",
+        "maya_delivery_status": (
+            "ALTER TABLE transcripts "
+            "ADD COLUMN maya_delivery_status TEXT NOT NULL DEFAULT 'pending'"
+        ),
+        "maya_drop_id": "ALTER TABLE transcripts ADD COLUMN maya_drop_id TEXT",
+        "maya_delivery_error": (
+            "ALTER TABLE transcripts ADD COLUMN maya_delivery_error TEXT"
+        ),
+        "superseded_by_transcript_row_id": (
+            "ALTER TABLE transcripts "
+            "ADD COLUMN superseded_by_transcript_row_id INTEGER"
+        ),
     }
     for column, sql in required_columns.items():
         _add_column_if_missing(
@@ -286,6 +313,17 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
             column=column,
             sql=sql,
         )
+
+    rows = conn.execute(
+        "SELECT id, transcript FROM transcripts WHERE transcript_sha256 IS NULL"
+    ).fetchall()
+    conn.executemany(
+        "UPDATE transcripts SET transcript_sha256 = ? WHERE id = ?",
+        [
+            (hashlib.sha256(str(row[1]).encode("utf-8")).hexdigest(), row[0])
+            for row in rows
+        ],
+    )
 
 
 def _json_loads_or_default(raw: str | None, default: Any) -> Any:
@@ -311,6 +349,17 @@ def _safe_delivery_error(error_message: str) -> str:
     ):
         return error_message
     return "delivery_error"
+
+
+def _as_iso8601_utc(value: object) -> str:
+    """Normalize a persisted capture timestamp for the Maya v2 contract."""
+    try:
+        captured_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("Persisted capture timestamp is invalid") from exc
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(tzinfo=timezone.utc)
+    return captured_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _slack_channel_id() -> str:
@@ -461,9 +510,15 @@ def _should_queue_slack_delivery(
     *,
     source: str,
     ingest_state: str | None,
+    quality_status: str,
     enqueue_slack: bool,
 ) -> bool:
-    return enqueue_slack and source == "iCloud" and ingest_state != "skipped_too_large"
+    return (
+        enqueue_slack
+        and source == "iCloud"
+        and ingest_state != "skipped_too_large"
+        and quality_status == "passed"
+    )
 
 
 def _queue_slack_delivery(
@@ -473,11 +528,13 @@ def _queue_slack_delivery(
     source: str,
     transcript: str,
     ingest_state: str | None,
+    quality_status: str,
     enqueue_slack: bool,
 ) -> None:
     if not _should_queue_slack_delivery(
         source=source,
         ingest_state=ingest_state,
+        quality_status=quality_status,
         enqueue_slack=enqueue_slack,
     ):
         return
@@ -502,9 +559,14 @@ def insert_transcript(
     transcription_started_at: str | None = None,
     transcription_completed_at: str | None = None,
     error_message: str | None = None,
+    quality_status: str | None = None,
+    quality_detail: str | None = None,
     enqueue_slack: bool = True,
 ) -> int | None:
     """Insert a transcript. Returns row id if new, None if duplicate."""
+    if quality_status is None:
+        quality_status = "needs_review" if ingest_state == "needs_review" else "passed"
+    transcript_sha256 = hashlib.sha256(transcript.encode("utf-8")).hexdigest()
     conn = None
     try:
         conn = _get_conn()
@@ -512,9 +574,10 @@ def insert_transcript(
             """INSERT OR IGNORE INTO transcripts (
                    content_hash, source, transcript, audio_path,
                    duration_seconds, ingest_state, discovered_at, file_seen_at,
-                   transcription_started_at, transcription_completed_at, error_message
+                   transcription_started_at, transcription_completed_at, error_message,
+                   quality_status, quality_detail, transcript_sha256
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 content_hash,
                 source,
@@ -527,6 +590,9 @@ def insert_transcript(
                 transcription_started_at,
                 transcription_completed_at,
                 error_message,
+                quality_status,
+                quality_detail,
+                transcript_sha256,
             ),
         )
         if cursor.lastrowid and cursor.rowcount > 0:
@@ -536,6 +602,7 @@ def insert_transcript(
                 source=source,
                 transcript=transcript,
                 ingest_state=ingest_state,
+                quality_status=quality_status,
                 enqueue_slack=enqueue_slack,
             )
             conn.commit()
@@ -563,7 +630,7 @@ def queue_slack_delivery(transcript_id: int) -> None:
         conn = _get_conn()
         row = conn.execute(
             """
-            SELECT source, transcript, ingest_state
+            SELECT source, transcript, ingest_state, quality_status
             FROM transcripts
             WHERE id = ?
             """,
@@ -577,6 +644,7 @@ def queue_slack_delivery(transcript_id: int) -> None:
             source=str(row["source"]),
             transcript=str(row["transcript"]),
             ingest_state=row["ingest_state"],
+            quality_status=str(row["quality_status"]),
             enqueue_slack=True,
         )
         conn.commit()
@@ -785,6 +853,162 @@ def mark_slack_delivery_chunk_sent(
         log.error(
             "Failed to record Slack chunk id=%s: %s",
             delivery_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def build_maya_v2_envelope(transcript_row_id: int) -> dict[str, object]:
+    """Build the exact Penny-to-Maya v2 payload from one persisted row."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN")
+        row = conn.execute(
+            """
+            SELECT transcripts.id, transcripts.content_hash, transcripts.source,
+                   transcripts.transcript, transcripts.audio_path,
+                   transcripts.duration_seconds, transcripts.discovered_at,
+                   transcripts.file_seen_at, transcripts.created_at,
+                   transcripts.transcript_sha256, transcripts.quality_status,
+                   (
+                       SELECT recording_pk
+                       FROM voice_memo_ingest
+                       WHERE transcript_row_id = transcripts.id
+                       ORDER BY recording_pk ASC
+                       LIMIT 1
+                   ) AS recording_pk
+            FROM transcripts
+            WHERE transcripts.id = ?
+            """,
+            (transcript_row_id,),
+        ).fetchone()
+        conn.rollback()
+        if row is None:
+            raise LookupError("Transcript row does not exist")
+        if row["quality_status"] != "passed":
+            raise ValueError("Only passed transcripts can be delivered to Maya")
+
+        transcript = str(row["transcript"])
+        transcript_sha256 = hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+        persisted_sha256 = row["transcript_sha256"]
+        if persisted_sha256 != transcript_sha256:
+            raise ValueError("Persisted transcript SHA-256 does not match transcript bytes")
+        captured_at = _as_iso8601_utc(
+            row["discovered_at"] or row["file_seen_at"] or row["created_at"]
+        )
+        return {
+            "schema_version": "penny-maya.v2",
+            "transcript_id": str(row["id"]),
+            "transcript_sha256": transcript_sha256,
+            "transcript": transcript,
+            "source": str(row["source"]).lower(),
+            "captured_at": captured_at,
+            "duration_seconds": row["duration_seconds"],
+            "audio_provenance": {
+                "content_hash": str(row["content_hash"]),
+                "audio_path": row["audio_path"],
+                "recording_pk": row["recording_pk"],
+            },
+            "source_spans": [],
+            "client_ref": f"penny:{row['id']}",
+        }
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_maya_deliveries(limit: int = 20) -> list[dict[str, Any]]:
+    """Return eligible transcript rows that have not reached Maya durably."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM transcripts
+            WHERE maya_delivery_status = 'pending'
+              AND quality_status = 'passed'
+              AND source NOT LIKE 'maya:%'
+              AND COALESCE(ingest_state, '') != 'needs_review'
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        log.error("Failed to fetch pending Maya deliveries: %s", _safe_exception_class(e))
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
+    """Persist Maya's durable receipt, accepting only exact Drop replays."""
+    if not drop_id:
+        raise ValueError("Maya Drop ID is required")
+    conn = None
+    try:
+        conn = _get_conn()
+        current = conn.execute(
+            "SELECT maya_drop_id FROM transcripts WHERE id = ?",
+            (transcript_row_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Transcript row does not exist")
+        if current["maya_drop_id"] not in (None, drop_id):
+            raise ValueError("Maya Drop ID conflicts with the durable receipt")
+        conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_delivery_status = 'sent',
+                maya_drop_id = ?,
+                maya_delivery_error = NULL,
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (drop_id, transcript_row_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to mark Maya delivery sent id=%s: %s",
+            transcript_row_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> None:
+    """Persist a bounded Maya delivery failure without changing Slack state."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_delivery_status = 'failed',
+                maya_delivery_error = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (_safe_delivery_error(error_message), transcript_row_id),
+        )
+        if cursor.rowcount == 0:
+            raise LookupError("Transcript row does not exist")
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to mark Maya delivery failed id=%s: %s",
+            transcript_row_id,
             _safe_exception_class(e),
         )
         raise
@@ -1288,13 +1512,18 @@ def _migrate_processed_files(conn: sqlite3.Connection) -> int:
             if not hash_val:
                 continue
             try:
+                transcript = "(migrated — original transcript not preserved)"
                 cursor = conn.execute(
-                    """INSERT OR IGNORE INTO transcripts (content_hash, source, transcript, status)
-                       VALUES (?, ?, ?, 'routed')""",
+                    """
+                    INSERT OR IGNORE INTO transcripts (
+                        content_hash, source, transcript, status, transcript_sha256
+                    ) VALUES (?, ?, ?, 'routed', ?)
+                    """,
                     (
                         hash_val,
                         source,
-                        "(migrated — original transcript not preserved)",
+                        transcript,
+                        hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
                     ),
                 )
                 if cursor.rowcount > 0:
