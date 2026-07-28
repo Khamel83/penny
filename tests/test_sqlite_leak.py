@@ -152,7 +152,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             ) as file_seen_mock, patch.object(
                 watcher, "link_voice_memo_transcript"
             ) as link_mock, patch.object(
-                watcher, "transcribe"
+                watcher, "transcribe_with_quality"
             ) as transcribe_mock:
                 result = watcher._process_audio_file(audio_path, recording_pk=7)
 
