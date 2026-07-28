@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
 SLACK_MAX_ATTEMPTS = 5
+SLACK_DELIVERY_PLAN_LEGACY_TOP_LEVEL_V1 = "legacy_top_level_v1"
+SLACK_DELIVERY_PLAN_BLOCK_KIT_V2 = "block_kit_v2"
+SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR = (
+    "legacy_partial_reconciliation_required"
+)
 SLACK_API_ERROR_CODES = frozenset(
     {
         "channel_not_found",
@@ -50,8 +55,10 @@ _SAFE_DELIVERY_ERROR_VALUES = SLACK_API_ERROR_CODES | {
     "destination_mismatch",
     "delivery_error",
     "message_truncated",
+    "provider_response_error",
     "provider_warning",
     "slack_api_error",
+    SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR,
 }
 _SAFE_CLASSIFIED_ERROR_RE = re.compile(
     r"(?:provider|acknowledgement)_error:[A-Za-z][A-Za-z0-9_]{0,47}"
@@ -149,6 +156,7 @@ def init_db() -> None:
                 transcript_row_id INTEGER NOT NULL,
                 channel_id TEXT NOT NULL,
                 message_text TEXT NOT NULL,
+                delivery_plan_version TEXT NOT NULL DEFAULT 'block_kit_v2',
                 status TEXT NOT NULL DEFAULT 'pending',
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at TEXT,
@@ -398,6 +406,7 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
             "ALTER TABLE slack_deliveries ADD COLUMN transcript_row_id INTEGER"
         ),
         "next_attempt_at": "ALTER TABLE slack_deliveries ADD COLUMN next_attempt_at TEXT",
+        "last_error": "ALTER TABLE slack_deliveries ADD COLUMN last_error TEXT",
         "provider_ts": "ALTER TABLE slack_deliveries ADD COLUMN provider_ts TEXT",
         "sent_at": "ALTER TABLE slack_deliveries ADD COLUMN sent_at TEXT",
         "channel_id": (
@@ -406,6 +415,9 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
         ),
         "message_text": (
             "ALTER TABLE slack_deliveries ADD COLUMN message_text TEXT NOT NULL DEFAULT ''"
+        ),
+        "delivery_plan_version": (
+            "ALTER TABLE slack_deliveries ADD COLUMN delivery_plan_version TEXT"
         ),
         "next_chunk_index": (
             "ALTER TABLE slack_deliveries "
@@ -511,6 +523,59 @@ def _migrate_slack_delivery_rows(
     conn.execute(
         """
         UPDATE slack_deliveries
+        SET delivery_plan_version = ?,
+            updated_at = datetime('now')
+        WHERE delivery_plan_version IS NULL
+          AND status = 'sent'
+        """,
+        (SLACK_DELIVERY_PLAN_LEGACY_TOP_LEVEL_V1,),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET delivery_plan_version = ?,
+            updated_at = datetime('now')
+        WHERE delivery_plan_version IS NULL
+          AND status IN ('pending', 'failed')
+          AND COALESCE(next_chunk_index, 0) = 0
+          AND provider_ts IS NULL
+          AND COALESCE(chunk_provider_ts, '[]') = '[]'
+        """,
+        (SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET delivery_plan_version = ?,
+            status = 'failed',
+            last_error = ?,
+            next_attempt_at = NULL,
+            updated_at = datetime('now')
+        WHERE delivery_plan_version IS NULL
+        """,
+        (
+            SLACK_DELIVERY_PLAN_LEGACY_TOP_LEVEL_V1,
+            SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
+        SET status = 'failed',
+            last_error = ?,
+            next_attempt_at = NULL,
+            updated_at = datetime('now')
+        WHERE status = 'pending'
+          AND delivery_plan_version != ?
+        """,
+        (
+            SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR,
+            SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE slack_deliveries
         SET next_attempt_at = NULL
         WHERE status = 'failed'
           AND attempt_count >= ?
@@ -553,10 +618,16 @@ def _queue_slack_delivery(
         return
     conn.execute(
         """INSERT OR IGNORE INTO slack_deliveries (
-               transcript_row_id, channel_id, message_text
+               transcript_row_id, channel_id, message_text,
+               delivery_plan_version
            )
-           VALUES (?, ?, ?)""",
-        (transcript_row_id, _slack_channel_id(), transcript),
+           VALUES (?, ?, ?, ?)""",
+        (
+            transcript_row_id,
+            _slack_channel_id(),
+            transcript,
+            SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
+        ),
     )
 
 
@@ -695,6 +766,7 @@ def get_pending_slack_deliveries(
         rows = conn.execute(
             f"""SELECT deliveries.id, deliveries.transcript_row_id,
                        deliveries.channel_id, deliveries.message_text,
+                       deliveries.delivery_plan_version,
                        deliveries.status, deliveries.attempt_count,
                        deliveries.next_attempt_at, deliveries.last_error,
                        deliveries.provider_ts, deliveries.next_chunk_index,
@@ -796,6 +868,36 @@ def mark_slack_delivery_failed(
     except Exception as e:
         log.error(
             "Failed to mark Slack delivery failed id=%s: %s",
+            delivery_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_slack_delivery_reconciliation_required(delivery_id: int) -> None:
+    """Fail closed when persisted progress cannot use the current plan."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE slack_deliveries
+            SET status = 'failed',
+                last_error = ?,
+                next_attempt_at = NULL,
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND status != 'sent'
+            """,
+            (SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR, delivery_id),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error(
+            "Failed to mark Slack reconciliation required id=%s: %s",
             delivery_id,
             _safe_exception_class(e),
         )

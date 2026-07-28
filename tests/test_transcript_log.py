@@ -536,6 +536,178 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["message_text"], "retryable legacy body")
 
+    def test_init_db_versions_legacy_plans_without_reinterpreting_partial_progress(
+        self,
+    ) -> None:
+        sent_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-sent",
+            source="iCloud",
+            transcript="sent legacy body",
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        unstarted_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-unstarted",
+            source="iCloud",
+            transcript="unstarted legacy body",
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        partial_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-partial",
+            source="iCloud",
+            transcript="P" * 80_000,
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(sent_row_id)
+        self.assertIsNotNone(unstarted_row_id)
+        self.assertIsNotNone(partial_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_row_id INTEGER NOT NULL UNIQUE,
+                    channel_id TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    provider_ts TEXT,
+                    next_chunk_index INTEGER NOT NULL DEFAULT 0,
+                    chunk_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    chunk_provider_ts TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT,
+                    FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+                )
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO slack_deliveries (
+                    transcript_row_id, channel_id, message_text, status,
+                    provider_ts, next_chunk_index, chunk_provider_ts, sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        sent_row_id,
+                        "C0BKS0QT7FU",
+                        "sent legacy body",
+                        "sent",
+                        "legacy.latest",
+                        2,
+                        '["legacy.first", "legacy.latest"]',
+                        "2026-07-28 12:00:00",
+                    ),
+                    (
+                        unstarted_row_id,
+                        "C0BKS0QT7FU",
+                        "unstarted legacy body",
+                        "pending",
+                        None,
+                        0,
+                        "[]",
+                        None,
+                    ),
+                    (
+                        partial_row_id,
+                        "C0BKS0QT7FU",
+                        "P" * 80_000,
+                        "pending",
+                        "legacy.first",
+                        1,
+                        '["legacy.first"]',
+                        None,
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+        fresh_row_id = transcript_log.insert_transcript(
+            content_hash="current-plan-fresh",
+            source="iCloud",
+            transcript="fresh Block Kit body",
+            ingest_state="routed",
+        )
+        self.assertIsNotNone(fresh_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)")
+            }
+            self.assertIn("delivery_plan_version", columns)
+            rows = {
+                int(row["transcript_row_id"]): dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT transcript_row_id, message_text, status, last_error,
+                           delivery_plan_version, provider_ts,
+                           next_chunk_index, chunk_provider_ts,
+                           next_attempt_at, sent_at
+                    FROM slack_deliveries
+                    ORDER BY transcript_row_id
+                    """
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        sent = rows[int(sent_row_id)]
+        self.assertEqual(sent["message_text"], "sent legacy body")
+        self.assertEqual(sent["status"], "sent")
+        self.assertEqual(sent["delivery_plan_version"], "legacy_top_level_v1")
+        self.assertEqual(sent["provider_ts"], "legacy.latest")
+        self.assertEqual(sent["next_chunk_index"], 2)
+        self.assertEqual(
+            sent["chunk_provider_ts"],
+            '["legacy.first", "legacy.latest"]',
+        )
+        self.assertEqual(sent["sent_at"], "2026-07-28 12:00:00")
+
+        unstarted = rows[int(unstarted_row_id)]
+        self.assertEqual(unstarted["status"], "pending")
+        self.assertEqual(unstarted["delivery_plan_version"], "block_kit_v2")
+        self.assertIsNone(unstarted["provider_ts"])
+        self.assertEqual(unstarted["next_chunk_index"], 0)
+        self.assertEqual(unstarted["chunk_provider_ts"], "[]")
+
+        partial = rows[int(partial_row_id)]
+        self.assertEqual(partial["message_text"], "P" * 80_000)
+        self.assertEqual(partial["status"], "failed")
+        self.assertEqual(partial["delivery_plan_version"], "legacy_top_level_v1")
+        self.assertEqual(
+            partial["last_error"],
+            "legacy_partial_reconciliation_required",
+        )
+        self.assertIsNone(partial["next_attempt_at"])
+        self.assertEqual(partial["provider_ts"], "legacy.first")
+        self.assertEqual(partial["next_chunk_index"], 1)
+        self.assertEqual(partial["chunk_provider_ts"], '["legacy.first"]')
+
+        fresh = rows[int(fresh_row_id)]
+        self.assertEqual(fresh["status"], "pending")
+        self.assertEqual(fresh["delivery_plan_version"], "block_kit_v2")
+        self.assertEqual(
+            {
+                int(row["transcript_row_id"])
+                for row in transcript_log.get_pending_slack_deliveries()
+            },
+            {int(unstarted_row_id), int(fresh_row_id)},
+        )
+
     def test_init_db_migrates_legacy_transcript_id_to_transcript_row_id(self) -> None:
         first_row_id = transcript_log.insert_transcript(
             content_hash="legacy-slack-schema-1",

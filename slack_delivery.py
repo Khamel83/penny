@@ -47,9 +47,11 @@ except ImportError:
 from transcript_log import (
     DEFAULT_SLACK_CHANNEL_ID,
     SLACK_API_ERROR_CODES,
+    SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
     get_pending_slack_deliveries,
     mark_slack_delivery_chunk_sent,
     mark_slack_delivery_failed,
+    mark_slack_delivery_reconciliation_required,
 )
 
 log = logging.getLogger(__name__)
@@ -261,7 +263,7 @@ def _post_to_slack(
     client_msg_id: str,
     *,
     thread_ts: str | None = None,
-) -> str | None:
+) -> str:
     token = _slack_bot_token()
     if not token:
         raise SlackConfigurationError
@@ -306,7 +308,9 @@ def _post_to_slack(
     if warning_error is not None:
         raise SlackAPIError(warning_error)
     provider_ts = data.get("ts")
-    return str(provider_ts) if provider_ts is not None else None
+    if not isinstance(provider_ts, str) or not provider_ts.strip():
+        raise SlackAPIError("provider_response_error")
+    return provider_ts
 
 
 def _record_delivery_failure(
@@ -336,6 +340,21 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
     for row in get_pending_slack_deliveries(limit=limit, routed_only=True):
         delivery_id = int(row["id"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
+        if row.get("delivery_plan_version") != SLACK_DELIVERY_PLAN_BLOCK_KIT_V2:
+            try:
+                mark_slack_delivery_reconciliation_required(delivery_id)
+            except Exception as exc:
+                log.error(
+                    "Failed to reconcile Slack delivery id=%s: %s",
+                    delivery_id,
+                    _classified_error("acknowledgement_error", exc),
+                )
+                break
+            log.warning(
+                "Slack delivery requires reconciliation id=%s",
+                delivery_id,
+            )
+            continue
         if str(row["channel_id"]) != DEFAULT_SLACK_CHANNEL_ID:
             _record_delivery_failure(
                 delivery_id,

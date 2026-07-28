@@ -198,6 +198,69 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(dict(delivery)["provider_ts"], "5406.001")
         self.assertEqual(dict(delivery)["chunk_provider_ts"], '["5406.001"]')
 
+    def test_plain_text_sections_preserve_boundary_crossing_markup_and_unicode(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        special_text = "&<> <@U123ABC> `code`\r\n\t😀e\u0301"
+        transcript = (
+            ("A" * 2_998)
+            + special_text
+            + ("B" * 2_998)
+            + special_text
+        )
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-boundary-markup-unicode",
+            source="iCloud",
+            transcript=transcript,
+            ingest_state="routed",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value = _SlackResponse(
+                {"ok": True, "ts": "boundary.001"}
+            )
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 1)
+        post_mock.assert_called_once()
+        payload = post_mock.call_args.kwargs["json"]
+        self.assertNotIn("thread_ts", payload)
+        sections = [
+            block["text"]["text"]
+            for block in payload["blocks"]
+            if block["type"] == "section"
+        ]
+        self.assertGreater(len(sections), 1)
+        self.assertTrue(
+            all(
+                block["text"]["type"] == "plain_text"
+                and block["text"]["emoji"] is False
+                for block in payload["blocks"]
+                if block["type"] == "section"
+            )
+        )
+        reconstructed = "".join(sections)
+        self.assertEqual(reconstructed, transcript)
+        self.assertEqual(
+            reconstructed.encode("utf-8"),
+            transcript.encode("utf-8"),
+        )
+        conn = transcript_log._get_conn()
+        try:
+            stored = conn.execute(
+                """
+                SELECT message_text
+                FROM slack_deliveries
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            ).fetchone()["message_text"]
+        finally:
+            conn.close()
+        self.assertEqual(stored, transcript)
+
     def test_process_pending_slack_waits_for_local_routing(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         row_id = transcript_log.insert_transcript(
@@ -250,6 +313,59 @@ class SlackDeliveryTests(unittest.TestCase):
                 routed_only=True,
             ),
             [],
+        )
+
+    def test_non_v2_pending_plan_fails_closed_without_posting(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="deliver-non-v2-plan",
+            source="iCloud",
+            transcript="must not reinterpret a legacy plan",
+            ingest_state="routed",
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE slack_deliveries
+                SET delivery_plan_version = 'legacy_top_level_v1'
+                WHERE transcript_row_id = ?
+                """,
+                (row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 0)
+        post_mock.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            state = dict(
+                conn.execute(
+                    """
+                    SELECT status, last_error, next_attempt_at,
+                           delivery_plan_version
+                    FROM slack_deliveries
+                    WHERE transcript_row_id = ?
+                    """,
+                    (row_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(
+            state,
+            {
+                "status": "failed",
+                "last_error": "legacy_partial_reconciliation_required",
+                "next_attempt_at": None,
+                "delivery_plan_version": "legacy_top_level_v1",
+            },
         )
 
     def test_process_pending_slack_deliveries_schedules_retryable_failure(self) -> None:
@@ -673,6 +789,177 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(state["attempt_count"], 1)
         self.assertEqual(state["next_chunk_index"], 0)
         self.assertEqual(state["last_error"], "message_truncated")
+
+    def test_invalid_parent_provider_ts_retries_same_client_msg_id(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        invalid_receipts = [
+            ("missing", {"ok": True}),
+            ("empty", {"ok": True, "ts": ""}),
+            ("non-string", {"ok": True, "ts": 123.456}),
+        ]
+
+        for index, (label, invalid_receipt) in enumerate(invalid_receipts):
+            with self.subTest(provider_ts=label):
+                row_id = transcript_log.insert_transcript(
+                    content_hash=f"invalid-parent-ts-{index}",
+                    source="iCloud",
+                    transcript=f"retry invalid parent receipt {label}",
+                    ingest_state="routed",
+                )
+                import slack_delivery
+
+                with patch.object(slack_delivery.requests, "post") as post_mock:
+                    post_mock.side_effect = [
+                        _SlackResponse(invalid_receipt),
+                        _SlackResponse({"ok": True, "ts": f"valid.parent.{index}"}),
+                    ]
+                    first_delivered = (
+                        slack_delivery.process_pending_slack_deliveries()
+                    )
+                    conn = transcript_log._get_conn()
+                    try:
+                        after_invalid = dict(
+                            conn.execute(
+                                """
+                                SELECT status, attempt_count, last_error,
+                                       provider_ts, next_chunk_index,
+                                       chunk_attempt_count, chunk_provider_ts
+                                FROM slack_deliveries
+                                WHERE transcript_row_id = ?
+                                """,
+                                (row_id,),
+                            ).fetchone()
+                        )
+                        conn.execute(
+                            """
+                            UPDATE slack_deliveries
+                            SET next_attempt_at = datetime('now', '-1 second')
+                            WHERE transcript_row_id = ?
+                            """,
+                            (row_id,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    second_delivered = (
+                        slack_delivery.process_pending_slack_deliveries()
+                    )
+
+                self.assertEqual(first_delivered, 0)
+                self.assertEqual(second_delivered, 1)
+                self.assertEqual(
+                    after_invalid,
+                    {
+                        "status": "pending",
+                        "attempt_count": 1,
+                        "last_error": "provider_response_error",
+                        "provider_ts": None,
+                        "next_chunk_index": 0,
+                        "chunk_attempt_count": 1,
+                        "chunk_provider_ts": "[]",
+                    },
+                )
+                self.assertEqual(post_mock.call_count, 2)
+                first_payload = post_mock.call_args_list[0].kwargs["json"]
+                second_payload = post_mock.call_args_list[1].kwargs["json"]
+                self.assertEqual(first_payload, second_payload)
+                self.assertEqual(
+                    first_payload["client_msg_id"],
+                    second_payload["client_msg_id"],
+                )
+
+    def test_invalid_continuation_provider_ts_retries_same_client_msg_id(
+        self,
+    ) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        invalid_receipts = [
+            ("missing", {"ok": True}),
+            ("empty", {"ok": True, "ts": ""}),
+            ("non-string", {"ok": True, "ts": 123.456}),
+        ]
+
+        for index, (label, invalid_receipt) in enumerate(invalid_receipts):
+            with self.subTest(provider_ts=label):
+                row_id = transcript_log.insert_transcript(
+                    content_hash=f"invalid-continuation-ts-{index}",
+                    source="iCloud",
+                    transcript="C" * ((3_000 * 49) + 1),
+                    ingest_state="routed",
+                )
+                import slack_delivery
+
+                with patch.object(slack_delivery.requests, "post") as post_mock:
+                    post_mock.side_effect = [
+                        _SlackResponse(
+                            {"ok": True, "ts": f"valid.parent.{index}"}
+                        ),
+                        _SlackResponse(invalid_receipt),
+                        _SlackResponse(
+                            {"ok": True, "ts": f"valid.continuation.{index}"}
+                        ),
+                    ]
+                    parent_delivered = (
+                        slack_delivery.process_pending_slack_deliveries()
+                    )
+                    invalid_delivered = (
+                        slack_delivery.process_pending_slack_deliveries()
+                    )
+                    conn = transcript_log._get_conn()
+                    try:
+                        after_invalid = dict(
+                            conn.execute(
+                                """
+                                SELECT status, attempt_count, last_error,
+                                       provider_ts, next_chunk_index,
+                                       chunk_attempt_count, chunk_provider_ts
+                                FROM slack_deliveries
+                                WHERE transcript_row_id = ?
+                                """,
+                                (row_id,),
+                            ).fetchone()
+                        )
+                        conn.execute(
+                            """
+                            UPDATE slack_deliveries
+                            SET next_attempt_at = datetime('now', '-1 second')
+                            WHERE transcript_row_id = ?
+                            """,
+                            (row_id,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    retry_delivered = (
+                        slack_delivery.process_pending_slack_deliveries()
+                    )
+
+                self.assertEqual(parent_delivered, 0)
+                self.assertEqual(invalid_delivered, 0)
+                self.assertEqual(retry_delivered, 1)
+                self.assertEqual(
+                    after_invalid,
+                    {
+                        "status": "pending",
+                        "attempt_count": 1,
+                        "last_error": "provider_response_error",
+                        "provider_ts": f"valid.parent.{index}",
+                        "next_chunk_index": 1,
+                        "chunk_attempt_count": 1,
+                        "chunk_provider_ts": f'["valid.parent.{index}"]',
+                    },
+                )
+                self.assertEqual(post_mock.call_count, 3)
+                invalid_payload = post_mock.call_args_list[1].kwargs["json"]
+                retry_payload = post_mock.call_args_list[2].kwargs["json"]
+                self.assertEqual(invalid_payload, retry_payload)
+                self.assertEqual(
+                    invalid_payload["client_msg_id"],
+                    retry_payload["client_msg_id"],
+                )
+                self.assertEqual(
+                    invalid_payload["thread_ts"],
+                    f"valid.parent.{index}",
+                )
 
     def test_wrong_stored_destination_fails_without_posting(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
