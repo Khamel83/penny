@@ -43,6 +43,7 @@ class ConfigTests(unittest.TestCase):
 
     def tearDown(self):
         config._config = None
+        os.environ.pop("MAYA_DELIVERY_TIMEOUT_SECONDS", None)
 
     def test_get_config_returns_config_with_expected_fields(self):
         cfg = config.get_config()
@@ -103,6 +104,21 @@ class ConfigTests(unittest.TestCase):
         # Clean up
         os.environ.pop("MAYA_TRANSCRIPT_URL", None)
         os.environ.pop("MAYA_INGEST_TOKEN", None)
+
+    def test_maya_delivery_timeout_is_configurable_and_bounded(self):
+        for raw_value, expected in (
+            ("7.5", 7.5),
+            ("0", 1.0),
+            ("300", 30.0),
+            ("not-a-number", 10.0),
+        ):
+            with self.subTest(raw_value=raw_value):
+                os.environ["MAYA_DELIVERY_TIMEOUT_SECONDS"] = raw_value
+                config._config = None
+                self.assertEqual(
+                    config.get_config().maya.delivery_timeout_seconds,
+                    expected,
+                )
 
 
 if __name__ == "__main__":

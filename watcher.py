@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +21,7 @@ from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
 from transcript_quality import transcribe_with_quality
 from transcript_log import (
+    get_maya_delivery_health,
     get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
@@ -228,9 +229,21 @@ def update_health_check() -> None:
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
     slack_health = get_slack_delivery_health()
+    maya_health = get_maya_delivery_health()
     cloud_health = _cloud_recording_snapshot()
     slack_health_error = int(slack_health.get("health_error", 0))
-    watcher_ok = 0 if slack_health_error else 1
+    maya_health_error = int(maya_health.get("health_error", 0))
+    maya_configured = int(
+        bool(cfg.maya.transcript_url.strip() and cfg.maya.ingest_token.strip())
+    )
+    watcher_ok = int(
+        not slack_health_error
+        and int(slack_health.get("failed_count", 0)) == 0
+        and int(slack_health.get("quality_failure_failed_count", 0)) == 0
+        and not maya_health_error
+        and maya_configured
+        and int(maya_health.get("failed_count", 0)) == 0
+    )
     HEALTH_FILE.write_text(
         (
             f"{now}|db_records:{cloud_health['record_count']}|"
@@ -244,7 +257,21 @@ def update_health_check() -> None:
             f"voice_memo_failed:{vm_health['failed_count']}|"
             f"slack_pending:{slack_health['pending_count']}|"
             f"slack_failed:{slack_health['failed_count']}|"
-            f"slack_health_error:{slack_health_error}\n"
+            f"slack_health_error:{slack_health_error}|"
+            f"quality_failure_slack_pending:"
+            f"{slack_health.get('quality_failure_pending_count', 0)}|"
+            f"quality_failure_slack_failed:"
+            f"{slack_health.get('quality_failure_failed_count', 0)}|"
+            f"maya_configured:{maya_configured}|"
+            f"maya_pending:{maya_health['pending_count']}|"
+            f"maya_due:{maya_health['due_count']}|"
+            f"maya_failed:{maya_health['failed_count']}|"
+            f"maya_oldest_due_age_seconds:"
+            f"{maya_health['oldest_due_age_seconds']}|"
+            f"maya_query_ok:{int(maya_health.get('query_ok', not maya_health_error))}|"
+            f"maya_health_error:{maya_health_error}|"
+            f"quality_needs_review:"
+            f"{maya_health['quality_needs_review_count']}\n"
         ),
         encoding="utf-8",
     )
@@ -327,6 +354,23 @@ def get_recordings_by_pk(recording_pks: List[int]) -> Dict[int, Dict[str, Any]]:
             conn.close()
 
 
+def _recording_timestamp_utc(recording: Dict[str, Any]) -> str | None:
+    """Normalize Voice Memos' Foundation ZDATE or a persisted UTC value."""
+    persisted = recording.get("recorded_at")
+    if persisted:
+        parsed = datetime.fromisoformat(str(persisted).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    zdate = recording.get("ZDATE")
+    if zdate is None:
+        return None
+    reference_date = datetime(2001, 1, 1, tzinfo=timezone.utc)
+    recorded_at = reference_date + timedelta(seconds=float(zdate))
+    return recorded_at.isoformat().replace("+00:00", "Z")
+
+
 def _safe_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -397,6 +441,7 @@ def _process_audio_file(
     *,
     duration_seconds: float | None = None,
     recording_pk: int | None = None,
+    recorded_at: str | None = None,
 ) -> bool:
     if file_hash is None:
         file_hash = get_file_hash(audio_path)
@@ -415,6 +460,7 @@ def _process_audio_file(
             audio_path=str(audio_path),
             duration_seconds=duration_seconds,
             ingest_state="skipped_too_large",
+            recorded_at=recorded_at,
             file_seen_at=datetime.now().isoformat(),
             enqueue_slack=False,
         )
@@ -446,6 +492,10 @@ def _process_audio_file(
     transcript = transcription.text
 
     if not transcription.quality.passed:
+        quality_detail = transcription.quality_detail or (
+            f"attempt_{transcription.attempts}="
+            f"{transcription.quality.reason or 'unknown_quality_failure'}"
+        )
         log.warning(
             "Transcript needs review for %s (reason=%s)",
             audio_path.name,
@@ -458,9 +508,12 @@ def _process_audio_file(
             audio_path=str(audio_path),
             duration_seconds=duration_seconds,
             ingest_state="needs_review",
+            recorded_at=recorded_at,
             file_seen_at=file_seen_at,
             transcription_started_at=transcription_started_at,
             transcription_completed_at=transcription_completed_at,
+            quality_status="needs_review",
+            quality_detail=quality_detail,
             enqueue_slack=False,
         )
         if row_id is not None and recording_pk is not None:
@@ -480,9 +533,11 @@ def _process_audio_file(
         audio_path=str(audio_path),
         duration_seconds=duration_seconds,
         ingest_state="transcribed",
+        recorded_at=recorded_at,
         file_seen_at=file_seen_at,
         transcription_started_at=transcription_started_at,
         transcription_completed_at=transcription_completed_at,
+        maya_delivery_eligible=recorded_at is not None,
     )
     if row_id is not None:
         if recording_pk is not None:
@@ -513,11 +568,13 @@ def process_recording(recording: Dict[str, Any]) -> bool:
         if recording.get("ZDURATION") is not None
         else None
     )
+    recorded_at = _recording_timestamp_utc(recording)
     upsert_voice_memo_recording(
         pk,
         label=label,
         raw_path=raw_path,
         duration_seconds=duration_seconds,
+        recorded_at=recorded_at,
     )
     log.info("Processing %s (PK=%s)", label, pk)
 
@@ -537,6 +594,7 @@ def process_recording(recording: Dict[str, Any]) -> bool:
             audio_path,
             duration_seconds=duration_seconds,
             recording_pk=pk,
+            recorded_at=recorded_at,
         )
         return True
     except Exception as e:
@@ -619,6 +677,7 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
                 if recording.get("ZDURATION") is not None
                 else None
             ),
+            recorded_at=_recording_timestamp_utc(recording),
         )
         max_registered_pk = max(max_registered_pk, pk)
         process_recording(recording)
@@ -652,7 +711,7 @@ def _process_slack_outbox() -> None:
 
 def _process_maya_outbox() -> None:
     try:
-        delivered = process_pending_maya_deliveries(limit=20)
+        delivered = process_pending_maya_deliveries(limit=1)
         if delivered:
             log.info("Delivered %s transcript(s) to Maya", delivered)
     except Exception as e:
@@ -678,6 +737,7 @@ def _retry_waiting_for_files(limit: int) -> None:
                     if recording.get("ZDURATION") is not None
                     else None
                 ),
+                recorded_at=_recording_timestamp_utc(recording),
             )
         else:
             recording = {
@@ -685,6 +745,7 @@ def _retry_waiting_for_files(limit: int) -> None:
                 "ZCUSTOMLABEL": row.get("label"),
                 "ZPATH": row.get("raw_path"),
                 "ZDURATION": row.get("duration_seconds"),
+                "recorded_at": row.get("recorded_at"),
             }
         process_recording(
             recording
@@ -718,8 +779,8 @@ def _process_ingest_pass() -> None:
     _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     _retry_pending_routes(limit=5)
-    _process_maya_outbox()
     _process_slack_outbox()
+    _process_maya_outbox()
 
 
 # ===== Main =====

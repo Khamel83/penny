@@ -123,6 +123,10 @@ def upload():
 
         transcription = transcribe(temp_path)
         if not transcription.quality.passed:
+            quality_detail = transcription.quality_detail or (
+                f"attempt_{transcription.attempts}="
+                f"{transcription.quality.reason or 'unknown_quality_failure'}"
+            )
             log.warning(
                 "Upload transcript needs review (reason=%s)",
                 transcription.quality.reason,
@@ -133,6 +137,8 @@ def upload():
                 transcript=transcription.text,
                 ingest_state="needs_review",
                 error_message=transcription.quality.reason,
+                quality_status="needs_review",
+                quality_detail=quality_detail,
                 enqueue_slack=False,
             )
             return jsonify({"error": "Transcript needs review"}), 422

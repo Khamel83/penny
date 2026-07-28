@@ -74,7 +74,7 @@ ssh macmini "launchctl list | grep penny"
 
 # Check health
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0|quality_failure_slack_pending:X|quality_failure_slack_failed:X|maya_configured:1|maya_pending:X|maya_due:X|maya_failed:X|maya_oldest_due_age_seconds:X|maya_query_ok:1|maya_health_error:0|quality_needs_review:X
 
 # Check transcript database
 ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT status, COUNT(*) FROM transcripts GROUP BY status;'"

@@ -200,6 +200,17 @@ def check_launchd_templates() -> None:
         raise SystemExit(
             "FAIL: watcher Slack destination must be exactly C0BKS0QT7FU"
         )
+    if (
+        watcher_environment.get("PENNY_MAYA_LEDGER_CHANNEL_ID")
+        != "YOUR_MAYA_LEDGER_CHANNEL_ID_HERE"
+    ):
+        raise SystemExit(
+            "FAIL: watcher must require a dedicated Maya ledger channel"
+        )
+    if watcher_environment.get("MAYA_DELIVERY_TIMEOUT_SECONDS") != "10":
+        raise SystemExit(
+            "FAIL: watcher Maya delivery timeout must default to 10 seconds"
+        )
     print(f"  OK: validated {len(template_paths)} launchd template(s)", flush=True)
 
 

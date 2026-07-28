@@ -36,3 +36,7 @@ transcript_url = ""
 # Bearer token for Maya ingest auth. NEVER set here — use env var
 # MAYA_INGEST_TOKEN (must equal Maya's MAYA_INGEST_TOKEN).
 ingest_token = ""
+
+# Bounds each Maya attempt so its outage cannot starve the Slack outbox.
+# Overridden by MAYA_DELIVERY_TIMEOUT_SECONDS and clamped to 1..30 seconds.
+delivery_timeout_seconds = 10

@@ -139,6 +139,139 @@ class SlackDeliveryTests(unittest.TestCase):
             conn.close()
         self.assertEqual(dict(delivery)["provider_ts"], "123.456")
 
+    def test_quality_failure_posts_metadata_once_to_dedicated_ledger_channel(
+        self,
+    ) -> None:
+        transcript = "SENSITIVE BODY THAT MUST NOT BE POSTED"
+        with patch.dict(
+            os.environ,
+            {
+                "PENNY_SLACK_BOT_TOKEN": "xoxb-test",
+                "PENNY_MAYA_LEDGER_CHANNEL_ID": "C-MAYA-LEDGER",
+            },
+            clear=False,
+        ):
+            transcript_log.insert_transcript(
+                content_hash="quality-ledger-once",
+                source="iCloud",
+                transcript=transcript,
+                ingest_state="needs_review",
+                quality_status="needs_review",
+                quality_detail=(
+                    "attempt_1=consecutive_token_repetition;"
+                    "attempt_2=control_token"
+                ),
+                enqueue_slack=False,
+            )
+            import slack_delivery
+
+            with patch.object(
+                slack_delivery.requests,
+                "post",
+                return_value=_SlackResponse(
+                    {"ok": True, "ts": "quality.001"}
+                ),
+            ) as post_mock:
+                first = slack_delivery.process_pending_slack()
+                second = slack_delivery.process_pending_slack()
+
+        self.assertEqual((first, second), (1, 0))
+        post_mock.assert_called_once()
+        payload = post_mock.call_args.kwargs["json"]
+        self.assertEqual(payload["channel"], "C-MAYA-LEDGER")
+        self.assertNotIn(transcript, str(payload))
+        self.assertIn("quality review required", payload["text"].lower())
+        self.assertEqual(
+            str(uuid.UUID(payload["client_msg_id"])),
+            payload["client_msg_id"],
+        )
+
+    def test_quality_failure_retry_reuses_stable_client_message_id(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PENNY_SLACK_BOT_TOKEN": "xoxb-test",
+                "PENNY_MAYA_LEDGER_CHANNEL_ID": "C-MAYA-LEDGER",
+            },
+            clear=False,
+        ):
+            transcript_log.insert_transcript(
+                content_hash="quality-ledger-retry",
+                source="iCloud",
+                transcript="do not include this body",
+                ingest_state="needs_review",
+                quality_status="needs_review",
+                quality_detail="attempt_1=control_token;attempt_2=empty_output",
+                enqueue_slack=False,
+            )
+            import slack_delivery
+
+            with patch.object(
+                slack_delivery.requests,
+                "post",
+                side_effect=[
+                    _SlackResponse({"ok": False, "error": "internal_error"}),
+                    _SlackResponse({"ok": True, "ts": "quality.002"}),
+                ],
+            ) as post_mock:
+                self.assertEqual(slack_delivery.process_pending_slack(), 0)
+                conn = transcript_log._get_conn()
+                try:
+                    conn.execute(
+                        "UPDATE quality_failure_slack_deliveries "
+                        "SET next_attempt_at = datetime('now', '-1 second')"
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                self.assertEqual(slack_delivery.process_pending_slack(), 1)
+
+        self.assertEqual(post_mock.call_count, 2)
+        first_payload = post_mock.call_args_list[0].kwargs["json"]
+        second_payload = post_mock.call_args_list[1].kwargs["json"]
+        self.assertEqual(
+            first_payload["client_msg_id"],
+            second_payload["client_msg_id"],
+        )
+
+    def test_missing_ledger_channel_never_redirects_quality_failure(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="quality-ledger-no-channel",
+            source="iCloud",
+            transcript="never redirect this",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="attempt_1=control_token;attempt_2=empty_output",
+            enqueue_slack=False,
+        )
+        import slack_delivery
+
+        with (
+            patch.dict(
+                os.environ,
+                {"PENNY_SLACK_BOT_TOKEN": "xoxb-test"},
+                clear=False,
+            ),
+            patch.object(slack_delivery.requests, "post") as post_mock,
+        ):
+            os.environ.pop("PENNY_MAYA_LEDGER_CHANNEL_ID", None)
+            delivered = slack_delivery.process_pending_slack()
+
+        self.assertEqual(delivered, 0)
+        post_mock.assert_not_called()
+        pending = transcript_log.get_pending_quality_failure_deliveries()
+        self.assertEqual(pending, [])
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, last_error "
+                "FROM quality_failure_slack_deliveries"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(dict(row)["status"], "pending")
+        self.assertEqual(dict(row)["last_error"], "configuration_error")
+
     def test_5406_character_transcript_uses_one_block_kit_parent(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         transcript = ("word " * 1081) + "!"
@@ -261,36 +394,63 @@ class SlackDeliveryTests(unittest.TestCase):
             conn.close()
         self.assertEqual(stored, transcript)
 
-    def test_process_pending_slack_waits_for_local_routing(self) -> None:
+    def test_process_pending_slack_ignores_pending_local_routing(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         row_id = transcript_log.insert_transcript(
             content_hash="deliver-after-routing",
             source="iCloud",
-            transcript="route before provider delivery",
+            transcript="Slack is independent from pending Apple routing.",
             ingest_state="transcribed",
         )
         import slack_delivery
 
         with patch.object(slack_delivery.requests, "post") as post_mock:
-            before_routing = slack_delivery.process_pending_slack_deliveries()
-            transcript_log.update_transcript_stages(row_id, ingest_state="routed")
             post_mock.return_value = _SlackResponse(
                 {"ok": True, "ts": "123.456"}
             )
-            after_routing = slack_delivery.process_pending_slack_deliveries()
+            delivered = slack_delivery.process_pending_slack_deliveries()
 
-        self.assertEqual(before_routing, 0)
-        self.assertEqual(after_routing, 1)
+        self.assertEqual(delivered, 1)
         post_mock.assert_called_once()
+        self.assertEqual(
+            transcript_log.get_transcript(int(row_id))["ingest_state"],
+            "transcribed",
+        )
 
-    def test_process_pending_slack_safely_defers_legacy_null_routing_state(
+    def test_process_pending_slack_ignores_failed_apple_routing_state(
         self,
     ) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         row_id = transcript_log.insert_transcript(
-            content_hash="deliver-legacy-null-state",
+            content_hash="deliver-after-apple-failure",
             source="iCloud",
-            transcript="legacy pending delivery",
+            transcript="Apple failure cannot suppress the Penny parent.",
+            ingest_state="failed",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post_mock:
+            post_mock.return_value = _SlackResponse(
+                {"ok": True, "ts": "apple-failed.001"}
+            )
+            delivered = slack_delivery.process_pending_slack_deliveries()
+
+        self.assertEqual(delivered, 1)
+        post_mock.assert_called_once()
+        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+        self.assertEqual(
+            transcript_log.get_transcript(int(row_id))["ingest_state"],
+            "failed",
+        )
+
+    def test_generic_slack_token_is_never_used(self) -> None:
+        os.environ.pop("PENNY_SLACK_BOT_TOKEN", None)
+        os.environ["SLACK_BOT_TOKEN"] = "xoxb-wrong-workload"
+        transcript_log.insert_transcript(
+            content_hash="dedicated-token-only",
+            source="iCloud",
+            transcript="This must wait for Penny's dedicated token.",
+            ingest_state="routed",
         )
         import slack_delivery
 
@@ -300,20 +460,10 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(delivered, 0)
         post_mock.assert_not_called()
         self.assertEqual(
-            len(
-                transcript_log.get_pending_slack_deliveries(
-                    transcript_id=row_id,
-                )
-            ),
+            transcript_log.get_slack_delivery_health()["pending_count"],
             1,
         )
-        self.assertEqual(
-            transcript_log.get_pending_slack_deliveries(
-                transcript_id=row_id,
-                routed_only=True,
-            ),
-            [],
-        )
+        os.environ.pop("SLACK_BOT_TOKEN", None)
 
     def test_non_v2_pending_plan_fails_closed_without_posting(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"

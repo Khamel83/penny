@@ -78,5 +78,8 @@ def test_transcription_stops_after_two_bad_results_and_needs_review(monkeypatch)
 
     assert result.quality.passed is False
     assert result.quality.reason == "needs_review"
+    assert result.quality_detail == (
+        "attempt_1=consecutive_token_repetition;attempt_2=control_token"
+    )
     assert result.attempts == 2
     assert transcribe.call_count == 2

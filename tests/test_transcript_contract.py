@@ -217,10 +217,18 @@ class TranscriptContractTests(unittest.TestCase):
         core.cfg.maya.transcript_url = self.original_maya_url
         core.cfg.maya.ingest_token = self.original_maya_token
 
+    def _insert_maya_eligible(self, **kwargs: object) -> int | None:
+        kwargs.setdefault("ingest_state", "transcribed")
+        kwargs.setdefault("recorded_at", "2026-07-28T12:34:56Z")
+        kwargs.setdefault("quality_status", "passed")
+        kwargs.setdefault("maya_delivery_eligible", True)
+        kwargs.setdefault("enqueue_slack", False)
+        return transcript_log.insert_transcript(**kwargs)
+
     def test_checked_maya_schema_uses_full_json_schema_and_format_validation(
         self,
     ) -> None:
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="json-schema-validation-audio-hash",
             source="iCloud",
             transcript="Validate this envelope with Draft 2020-12.",
@@ -257,7 +265,7 @@ class TranscriptContractTests(unittest.TestCase):
     ) -> None:
         maya_repo = Path(os.environ["MAYA_REPO_PATH"]).resolve()
         schema, provenance = _load_checked_maya_submission_artifact()
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="actual-maya-model-valid-audio-hash",
             source="iCloud",
             transcript="Maya validates this real Penny envelope.",
@@ -303,7 +311,7 @@ class TranscriptContractTests(unittest.TestCase):
     )
     def test_actual_maya_model_rejects_negative_duration(self) -> None:
         maya_repo = Path(os.environ["MAYA_REPO_PATH"]).resolve()
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="actual-maya-negative-duration-audio-hash",
             source="iCloud",
             transcript="Negative duration must fail Maya model validation.",
@@ -329,7 +337,7 @@ class TranscriptContractTests(unittest.TestCase):
     ) -> None:
         transcript = "Persist this exact v2 transcript."
         audio_path = "/tmp/penny-v2-test.m4a"
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="audio-sha256-for-v2-test",
             source="iCloud",
             transcript=transcript,
@@ -337,7 +345,9 @@ class TranscriptContractTests(unittest.TestCase):
             duration_seconds=42.5,
             ingest_state="transcribed",
             discovered_at="2026-07-28T12:34:56Z",
+            recorded_at="2026-07-28T12:34:56Z",
             quality_status="passed",
+            maya_delivery_eligible=True,
         )
         self.assertIsNotNone(row_id)
         transcript_log.upsert_voice_memo_recording(
@@ -426,7 +436,7 @@ class TranscriptContractTests(unittest.TestCase):
             source="iCloud",
             transcript="This must remain under review.",
             ingest_state="needs_review",
-            quality_status="passed",
+            quality_status="needs_review",
             enqueue_slack=False,
         )
         self.assertIsNotNone(maya_origin_row_id)
@@ -440,19 +450,20 @@ class TranscriptContractTests(unittest.TestCase):
     def test_maya_v2_envelope_normalizes_persisted_capture_time_to_iso8601_utc(
         self,
     ) -> None:
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="captured-at-audio-hash",
             source="iCloud",
             transcript="Use the SQLite capture timestamp.",
+            recorded_at="2026-07-28T05:34:56-07:00",
             quality_status="passed",
         )
         self.assertIsNotNone(row_id)
 
         envelope = transcript_log.build_maya_v2_envelope(int(row_id))
 
-        self.assertRegex(
-            str(envelope["captured_at"]),
-            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$",
+        self.assertEqual(
+            envelope["captured_at"],
+            "2026-07-28T12:34:56Z",
         )
 
     def test_maya_delivery_worker_posts_authenticated_v2_and_accepts_duplicate_receipt(
@@ -461,7 +472,7 @@ class TranscriptContractTests(unittest.TestCase):
         import maya_delivery
 
         transcript = "Deliver this persisted transcript to Maya exactly once."
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="maya-worker-contract-hash",
             source="iCloud",
             transcript=transcript,
@@ -486,6 +497,12 @@ class TranscriptContractTests(unittest.TestCase):
             ),
             patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
             patch.object(
+                maya_delivery.cfg.maya,
+                "delivery_timeout_seconds",
+                7.5,
+                create=True,
+            ),
+            patch.object(
                 maya_delivery.requests,
                 "post",
                 return_value=response,
@@ -505,8 +522,7 @@ class TranscriptContractTests(unittest.TestCase):
                 "Content-Type": "application/json",
             },
         )
-        self.assertGreater(posted["timeout"], 0)
-        self.assertLessEqual(posted["timeout"], 30)
+        self.assertEqual(posted["timeout"], 7.5)
         stored = transcript_log.get_transcript(int(row_id))
         self.assertEqual(stored["maya_delivery_status"], "sent")
         self.assertEqual(stored["maya_drop_id"], "drop-penny-v2-worker")
@@ -517,7 +533,7 @@ class TranscriptContractTests(unittest.TestCase):
         import maya_delivery
 
         transcript = "Retry these exact UTF-8 bytes: café.\nSecond line."
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="maya-worker-retry-hash",
             source="Shortcut",
             transcript=transcript,
@@ -585,7 +601,7 @@ class TranscriptContractTests(unittest.TestCase):
     ) -> None:
         import maya_delivery
 
-        row_id = transcript_log.insert_transcript(
+        row_id = self._insert_maya_eligible(
             content_hash="maya-local-receipt-write-hash",
             source="iCloud",
             transcript="Replay after a local receipt write failure.",
@@ -655,14 +671,14 @@ class TranscriptContractTests(unittest.TestCase):
     ) -> None:
         import maya_delivery
 
-        first_id = transcript_log.insert_transcript(
+        first_id = self._insert_maya_eligible(
             content_hash="maya-fair-first-hash",
             source="iCloud",
             transcript="The first delivery times out.",
             quality_status="passed",
             enqueue_slack=False,
         )
-        second_id = transcript_log.insert_transcript(
+        second_id = self._insert_maya_eligible(
             content_hash="maya-fair-second-hash",
             source="iCloud",
             transcript="The second delivery must still be attempted.",
@@ -715,7 +731,7 @@ class TranscriptContractTests(unittest.TestCase):
     ) -> None:
         import maya_delivery
 
-        eligible_id = transcript_log.insert_transcript(
+        eligible_id = self._insert_maya_eligible(
             content_hash="maya-worker-conflict-hash",
             source="iCloud",
             transcript="Reject a receipt for a different transcript.",
@@ -758,7 +774,7 @@ class TranscriptContractTests(unittest.TestCase):
         review = transcript_log.get_transcript(int(review_id))
         self.assertEqual(eligible["maya_delivery_status"], "failed")
         self.assertIsNone(eligible["maya_drop_id"])
-        self.assertEqual(review["maya_delivery_status"], "pending")
+        self.assertEqual(review["maya_delivery_status"], "ineligible")
 
     def test_empty_normalized_transcript_stays_failed_and_not_slack_eligible(
         self,
@@ -769,6 +785,9 @@ class TranscriptContractTests(unittest.TestCase):
             source="iCloud",
             transcript=transcript,
             ingest_state="transcribed",
+            quality_status="needs_review",
+            quality_detail="empty_after_normalization",
+            enqueue_slack=False,
         )
 
         with (
@@ -788,17 +807,8 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(failed_row["status"], "failed")
         self.assertEqual(failed_row["ingest_state"], "failed")
         self.assertEqual(
-            len(
-                transcript_log.get_pending_slack_deliveries(
-                    transcript_id=row_id,
-                )
-            ),
-            1,
-        )
-        self.assertEqual(
             transcript_log.get_pending_slack_deliveries(
                 transcript_id=row_id,
-                routed_only=True,
             ),
             [],
         )
@@ -809,7 +819,7 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(delivered, 0)
         slack_post.assert_not_called()
 
-    def test_local_mark_routed_failure_stays_failed_and_not_slack_eligible(
+    def test_local_mark_routed_failure_does_not_suppress_slack(
         self,
     ) -> None:
         transcript = "A long note that should be saved locally."
@@ -852,18 +862,23 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(failed_row["status"], "failed")
         self.assertEqual(failed_row["ingest_state"], "failed")
         self.assertEqual(
-            transcript_log.get_pending_slack_deliveries(
-                transcript_id=row_id,
-                routed_only=True,
+            len(
+                transcript_log.get_pending_slack_deliveries(
+                    transcript_id=row_id,
+                )
             ),
-            [],
+            1,
         )
 
-        with patch.object(slack_delivery.requests, "post") as slack_post:
+        with patch.object(
+            slack_delivery.requests,
+            "post",
+            return_value=_SlackResponse({"ok": True, "ts": "171717.100"}),
+        ) as slack_post:
             delivered = slack_delivery.process_pending_slack_deliveries()
 
-        self.assertEqual(delivered, 0)
-        slack_post.assert_not_called()
+        self.assertEqual(delivered, 1)
+        slack_post.assert_called_once()
 
     def test_unavailable_persisted_body_fails_closed_before_maya_or_local_routing(
         self,
@@ -913,11 +928,12 @@ class TranscriptContractTests(unittest.TestCase):
                 self.assertIsNone(failed_row["routing_result"])
                 self.assertIsNone(failed_row["routing_progress"])
                 self.assertEqual(
-                    transcript_log.get_pending_slack_deliveries(
-                        transcript_id=row_id,
-                        routed_only=True,
+                    len(
+                        transcript_log.get_pending_slack_deliveries(
+                            transcript_id=row_id,
+                        )
                     ),
-                    [],
+                    1,
                 )
 
     def test_icloud_transcript_contract_preserves_exact_body_across_maya_and_slack_retry(

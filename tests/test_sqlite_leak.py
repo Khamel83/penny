@@ -132,6 +132,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             label="Late path",
             raw_path="late.m4a",
             duration_seconds=12.5,
+            recorded_at="2001-01-01T00:00:00Z",
         )
         process_mock.assert_called_once_with(fresh)
 

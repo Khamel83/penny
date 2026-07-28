@@ -46,9 +46,14 @@ except ImportError:
 
 from transcript_log import (
     DEFAULT_SLACK_CHANNEL_ID,
+    QUALITY_FAILURE_CONTENT_KIND,
+    QUALITY_FAILURE_DESTINATION,
     SLACK_API_ERROR_CODES,
     SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
+    get_pending_quality_failure_deliveries,
     get_pending_slack_deliveries,
+    mark_quality_failure_delivery_failed,
+    mark_quality_failure_delivery_sent,
     mark_slack_delivery_chunk_sent,
     mark_slack_delivery_failed,
     mark_slack_delivery_reconciliation_required,
@@ -97,9 +102,7 @@ class SlackConfigurationError(RuntimeError):
 
 
 def _slack_bot_token() -> str:
-    return os.environ.get("PENNY_SLACK_BOT_TOKEN") or os.environ.get(
-        "SLACK_BOT_TOKEN", ""
-    )
+    return os.environ.get("PENNY_SLACK_BOT_TOKEN", "")
 
 
 def _delivery_client_msg_id(delivery_id: int, chunk_index: int = 0) -> str:
@@ -112,6 +115,10 @@ def _delivery_client_msg_id(delivery_id: int, chunk_index: int = 0) -> str:
             identity,
         )
     )
+
+
+def _quality_failure_client_msg_id(idempotency_key: str) -> str:
+    return str(uuid.uuid5(SLACK_DELIVERY_NAMESPACE, idempotency_key))
 
 
 def _safe_exception_class(exc: Exception) -> str:
@@ -337,7 +344,7 @@ def _record_delivery_failure(
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
     attempted_posts = 0
-    for row in get_pending_slack_deliveries(limit=limit, routed_only=True):
+    for row in get_pending_slack_deliveries(limit=limit):
         delivery_id = int(row["id"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
         if row.get("delivery_plan_version") != SLACK_DELIVERY_PLAN_BLOCK_KIT_V2:
@@ -432,5 +439,73 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
     return delivered
 
 
+def process_pending_quality_failure_deliveries(limit: int = 20) -> int:
+    """Post body-free operational metadata to the configured Maya ledger."""
+    delivered = 0
+    for row in get_pending_quality_failure_deliveries(limit=limit):
+        delivery_id = int(row["id"])
+        attempt_count = int(row.get("attempt_count") or 0)
+        safe_error: str | None = None
+        retry_after = _fallback_retry_after(attempt_count)
+        channel_id = os.environ.get("PENNY_MAYA_LEDGER_CHANNEL_ID", "").strip()
+        if (
+            row.get("content_kind") != QUALITY_FAILURE_CONTENT_KIND
+            or row.get("destination") != QUALITY_FAILURE_DESTINATION
+        ):
+            safe_error = "destination_mismatch"
+        elif not channel_id:
+            safe_error = "configuration_error"
+
+        if safe_error is None:
+            message = _transcript_post(
+                "Penny quality failure",
+                [str(row["message_text"])],
+            )
+            try:
+                provider_ts = _post_to_slack(
+                    channel_id,
+                    message,
+                    _quality_failure_client_msg_id(str(row["idempotency_key"])),
+                )
+            except SlackAPIError as exc:
+                safe_error = exc.safe_error
+                retry_after = (
+                    exc.retry_after_seconds
+                    or _fallback_retry_after(attempt_count)
+                )
+            except SlackConfigurationError:
+                safe_error = "configuration_error"
+            except Exception as exc:
+                safe_error = _classified_error("provider_error", exc)
+            else:
+                try:
+                    mark_quality_failure_delivery_sent(
+                        delivery_id,
+                        provider_ts,
+                    )
+                except Exception:
+                    safe_error = "acknowledgement_error:Exception"
+                else:
+                    delivered += 1
+
+        if safe_error is not None:
+            try:
+                mark_quality_failure_delivery_failed(
+                    delivery_id,
+                    safe_error,
+                    retry_after_seconds=retry_after,
+                )
+            except Exception as exc:
+                log.error(
+                    "Failed to record quality-failure delivery id=%s: %s",
+                    delivery_id,
+                    _classified_error("acknowledgement_error", exc),
+                )
+            break
+    return delivered
+
+
 def process_pending_slack(limit: int = 20) -> int:
-    return process_pending_slack_deliveries(limit=limit)
+    transcript_deliveries = process_pending_slack_deliveries(limit=limit)
+    quality_deliveries = process_pending_quality_failure_deliveries(limit=limit)
+    return transcript_deliveries + quality_deliveries

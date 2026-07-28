@@ -13,6 +13,7 @@ TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 MAX_CONSECUTIVE_TOKEN_REPETITION = 3
 SUFFIX_TOKEN_WINDOW = 20
 LOW_DIVERSITY_SUFFIX_MAX_UNIQUE_TOKENS = 2
+MAX_QUALITY_DETAIL_CHARACTERS = 255
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class TranscriptionResult:
     text: str
     quality: QualityResult
     attempts: int
+    quality_detail: str | None = None
 
 
 PRIMARY_TRANSCRIBE_OPTIONS = {
@@ -86,6 +88,7 @@ def transcribe_with_quality(
         model = get_config().voice_memos.whisper_model
 
     selected_text = ""
+    failure_reasons: list[str] = []
     for attempts, options in enumerate(
         (PRIMARY_TRANSCRIBE_OPTIONS, FALLBACK_TRANSCRIBE_OPTIONS), start=1
     ):
@@ -98,9 +101,15 @@ def transcribe_with_quality(
         quality = evaluate_transcript(selected_text)
         if quality.passed:
             return TranscriptionResult(selected_text, quality, attempts)
+        failure_reasons.append(quality.reason or "unknown_quality_failure")
 
+    quality_detail = ";".join(
+        f"attempt_{index}={reason}"
+        for index, reason in enumerate(failure_reasons, start=1)
+    )[:MAX_QUALITY_DETAIL_CHARACTERS]
     return TranscriptionResult(
         selected_text,
         QualityResult(False, "needs_review"),
         attempts,
+        quality_detail,
     )

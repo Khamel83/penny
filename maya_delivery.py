@@ -22,7 +22,6 @@ from transcript_log import (
 log = logging.getLogger(__name__)
 cfg = get_config()
 
-MAYA_DELIVERY_TIMEOUT_SECONDS = 10
 MAYA_RETRY_BASE_SECONDS = 30
 MAYA_RETRY_MAX_SECONDS = 1800
 _TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
@@ -163,7 +162,7 @@ def process_pending_maya_deliveries(limit: int = 20) -> int:
                     "Authorization": f"Bearer {maya_token}",
                     "Content-Type": "application/json",
                 },
-                timeout=MAYA_DELIVERY_TIMEOUT_SECONDS,
+                timeout=cfg.maya.delivery_timeout_seconds,
             )
         except requests.RequestException as exc:
             log.warning(

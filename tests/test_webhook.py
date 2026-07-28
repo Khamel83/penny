@@ -69,8 +69,12 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
         "transcribe",
         lambda _: TranscriptionResult(
             rejected_text,
-            QualityResult(False, "consecutive_token_repetition"),
+            QualityResult(False, "needs_review"),
             2,
+            (
+                "attempt_1=consecutive_token_repetition;"
+                "attempt_2=control_token"
+            ),
         ),
     )
     route_mock = MagicMock()
@@ -88,8 +92,16 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
     assert row["transcript"] == rejected_text
     stored = transcript_log.get_transcript(row["id"])
     assert stored["ingest_state"] == "needs_review"
-    assert stored["error_message"] == "consecutive_token_repetition"
+    assert stored["error_message"] == "needs_review"
+    assert stored["quality_detail"] == (
+        "attempt_1=consecutive_token_repetition;attempt_2=control_token"
+    )
     assert transcript_log.get_pending_slack_deliveries(transcript_id=row["id"]) == []
+    operational = transcript_log.get_pending_quality_failure_deliveries()
+    assert len(operational) == 1
+    assert operational[0]["content_kind"] == "transcript_quality_failure"
+    assert operational[0]["destination"] == "maya-ledger"
+    assert rejected_text not in operational[0]["message_text"]
     route_mock.assert_not_called()
 
 
