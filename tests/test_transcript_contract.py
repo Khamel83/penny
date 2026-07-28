@@ -282,14 +282,20 @@ class TranscriptContractTests(unittest.TestCase):
             hashlib.sha256(maya_source.read_bytes()).hexdigest(),
             provenance["maya_source_sha256"],
         )
-        maya_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        generated_source = subprocess.run(
+            [
+                "git",
+                "show",
+                f"{provenance['maya_commit']}:{provenance['maya_source']}",
+            ],
             cwd=maya_repo,
-            text=True,
             capture_output=True,
             check=True,
-        ).stdout.strip()
-        self.assertEqual(maya_head, provenance["maya_commit"])
+        ).stdout
+        self.assertEqual(
+            hashlib.sha256(generated_source).hexdigest(),
+            provenance["maya_source_sha256"],
+        )
 
     @unittest.skipUnless(
         os.environ.get("MAYA_REPO_PATH"),
