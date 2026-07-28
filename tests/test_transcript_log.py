@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -311,6 +312,105 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(sent["maya_delivery_status"], "sent")
         self.assertEqual(sent["maya_drop_id"], "drop-penny-v2-123")
         self.assertIsNone(sent["maya_delivery_error"])
+
+    def test_pending_slack_delivery_excludes_row_that_later_fails_quality(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-quality-dequeue-hash",
+            source="iCloud",
+            transcript="Do not publish a body that later fails quality.",
+            quality_status="passed",
+        )
+        self.assertIsNotNone(row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET quality_status = 'needs_review' WHERE id = ?",
+                (row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+
+    def test_concurrent_conflicting_maya_receipts_preserve_one_drop_id(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-conflicting-receipt-hash",
+            source="iCloud",
+            transcript="Only one durable Maya receipt may win.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        select_gate = threading.Barrier(2)
+        real_get_conn = transcript_log._get_conn
+
+        class GateInitialReceiptRead:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+
+            def execute(self, sql: str, parameters: object = ()) -> object:
+                if sql.strip() == "SELECT maya_drop_id FROM transcripts WHERE id = ?":
+                    try:
+                        select_gate.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                return self.connection.execute(sql, parameters)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.connection, name)
+
+        outcomes: list[object] = []
+        outcomes_lock = threading.Lock()
+
+        def acknowledge(drop_id: str) -> None:
+            try:
+                transcript_log.mark_maya_delivery_sent(int(row_id), drop_id)
+            except Exception as exc:
+                outcome: object = exc
+            else:
+                outcome = drop_id
+            with outcomes_lock:
+                outcomes.append(outcome)
+
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=lambda: GateInitialReceiptRead(real_get_conn()),
+        ):
+            first = threading.Thread(target=acknowledge, args=("drop-race-a",))
+            second = threading.Thread(target=acknowledge, args=("drop-race-b",))
+            first.start()
+            second.start()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(len([outcome for outcome in outcomes if isinstance(outcome, str)]), 1)
+        self.assertEqual(len([outcome for outcome in outcomes if isinstance(outcome, ValueError)]), 1)
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertIn(stored["maya_drop_id"], {"drop-race-a", "drop-race-b"})
+
+    def test_maya_delivery_failure_does_not_overwrite_sent_receipt(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-sent-monotonic-hash",
+            source="iCloud",
+            transcript="A durable acknowledgement is terminal.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-terminal")
+
+        transcript_log.mark_maya_delivery_failed(int(row_id), "delivery_error")
+
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-terminal")
+        self.assertIsNone(stored["maya_delivery_error"])
 
     def test_canonical_processed_file_migration_persists_exact_utf8_hash(self) -> None:
         processed_file = Path(self.db_dir) / "legacy_processed.txt"

@@ -666,6 +666,7 @@ def get_pending_slack_deliveries(
         conn = _get_conn()
         clauses = [
             "deliveries.status = 'pending'",
+            "transcripts.quality_status = 'passed'",
             (
                 "(deliveries.next_attempt_at IS NULL "
                 "OR deliveries.next_attempt_at <= datetime('now'))"
@@ -874,6 +875,7 @@ def build_maya_v2_envelope(transcript_row_id: int) -> dict[str, object]:
                    transcripts.duration_seconds, transcripts.discovered_at,
                    transcripts.file_seen_at, transcripts.created_at,
                    transcripts.transcript_sha256, transcripts.quality_status,
+                   transcripts.ingest_state,
                    (
                        SELECT recording_pk
                        FROM voice_memo_ingest
@@ -891,6 +893,10 @@ def build_maya_v2_envelope(transcript_row_id: int) -> dict[str, object]:
             raise LookupError("Transcript row does not exist")
         if row["quality_status"] != "passed":
             raise ValueError("Only passed transcripts can be delivered to Maya")
+        if row["ingest_state"] == "needs_review":
+            raise ValueError("Only passed transcripts can be delivered to Maya")
+        if str(row["source"]).lower().startswith("maya:"):
+            raise ValueError("Maya-originated transcripts cannot be delivered to Maya")
 
         transcript = str(row["transcript"])
         transcript_sha256 = hashlib.sha256(transcript.encode("utf-8")).hexdigest()
@@ -910,7 +916,7 @@ def build_maya_v2_envelope(transcript_row_id: int) -> dict[str, object]:
             "duration_seconds": row["duration_seconds"],
             "audio_provenance": {
                 "content_hash": str(row["content_hash"]),
-                "audio_path": row["audio_path"],
+                "audio_path": None,
                 "recording_pk": row["recording_pk"],
             },
             "source_spans": [],
@@ -955,15 +961,7 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
     conn = None
     try:
         conn = _get_conn()
-        current = conn.execute(
-            "SELECT maya_drop_id FROM transcripts WHERE id = ?",
-            (transcript_row_id,),
-        ).fetchone()
-        if current is None:
-            raise LookupError("Transcript row does not exist")
-        if current["maya_drop_id"] not in (None, drop_id):
-            raise ValueError("Maya Drop ID conflicts with the durable receipt")
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE transcripts
             SET maya_delivery_status = 'sent',
@@ -971,9 +969,24 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
                 maya_delivery_error = NULL,
                 updated_at = datetime('now')
             WHERE id = ?
+              AND (
+                    (maya_delivery_status IN ('pending', 'failed')
+                     AND maya_drop_id IS NULL)
+                    OR (maya_delivery_status = 'sent' AND maya_drop_id = ?)
+                  )
             """,
-            (drop_id, transcript_row_id),
+            (drop_id, transcript_row_id, drop_id),
         )
+        if cursor.rowcount == 0:
+            current = conn.execute(
+                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
+                (transcript_row_id,),
+            ).fetchone()
+            if current is None:
+                raise LookupError("Transcript row does not exist")
+            if current["maya_drop_id"] not in (None, drop_id):
+                raise ValueError("Maya Drop ID conflicts with the durable receipt")
+            raise ValueError("Maya receipt cannot transition the current delivery state")
         conn.commit()
     except Exception as e:
         log.error(
@@ -999,11 +1012,21 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
                 maya_delivery_error = ?,
                 updated_at = datetime('now')
             WHERE id = ?
+              AND maya_delivery_status != 'sent'
+              AND maya_drop_id IS NULL
             """,
             (_safe_delivery_error(error_message), transcript_row_id),
         )
         if cursor.rowcount == 0:
-            raise LookupError("Transcript row does not exist")
+            current = conn.execute(
+                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
+                (transcript_row_id,),
+            ).fetchone()
+            if current is None:
+                raise LookupError("Transcript row does not exist")
+            if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
+                return
+            raise ValueError("Maya failure cannot transition the current delivery state")
         conn.commit()
     except Exception as e:
         log.error(

@@ -157,7 +157,7 @@ class TranscriptContractTests(unittest.TestCase):
             envelope["audio_provenance"],
             {
                 "content_hash": "audio-sha256-for-v2-test",
-                "audio_path": audio_path,
+                "audio_path": None,
                 "recording_pk": 9876,
             },
         )
@@ -166,6 +166,30 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(pending_ids, {row_id})
         self.assertNotIn(maya_source_row_id, pending_ids)
         self.assertNotIn(review_row_id, pending_ids)
+
+    def test_maya_v2_envelope_rejects_maya_origin_and_review_rows(self) -> None:
+        maya_origin_row_id = transcript_log.insert_transcript(
+            content_hash="maya-origin-envelope-hash",
+            source="maya:reminder",
+            transcript="This must never be returned to Maya.",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        review_row_id = transcript_log.insert_transcript(
+            content_hash="review-envelope-hash",
+            source="iCloud",
+            transcript="This must remain under review.",
+            ingest_state="needs_review",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(maya_origin_row_id)
+        self.assertIsNotNone(review_row_id)
+
+        with self.assertRaisesRegex(ValueError, "Maya-originated"):
+            transcript_log.build_maya_v2_envelope(int(maya_origin_row_id))
+        with self.assertRaisesRegex(ValueError, "Only passed"):
+            transcript_log.build_maya_v2_envelope(int(review_row_id))
 
     def test_maya_v2_envelope_normalizes_persisted_capture_time_to_iso8601_utc(
         self,
