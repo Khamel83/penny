@@ -30,6 +30,7 @@ logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
 import watcher  # noqa: E402
+from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 
 class WatcherTests(unittest.TestCase):
@@ -72,7 +73,13 @@ class WatcherTests(unittest.TestCase):
 
         with (
             patch.object(watcher, "get_transcript_by_hash", return_value=None),
-            patch.object(watcher, "transcribe", return_value="route this transcript"),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "route this transcript", QualityResult(True), 1
+                ),
+            ),
             patch.object(watcher, "insert_transcript", return_value=42),
             patch.object(
                 watcher,
@@ -100,40 +107,40 @@ class WatcherTests(unittest.TestCase):
         stage_mock.assert_not_called()
         slack_mock.assert_not_called()
 
-    def test_empty_transcription_remains_failed_and_not_slack_eligible(self) -> None:
-        audio_path = Path(self.db_dir) / "empty-transcription.m4a"
+    def test_low_quality_transcription_is_retained_for_review_without_routing(self) -> None:
+        audio_path = Path(self.db_dir) / "low-quality-transcription.m4a"
         audio_path.write_bytes(b"audio")
 
         with (
-            patch.object(watcher, "transcribe", return_value="SE<|hr|><|hr|><|hr|>"),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "empty transcript after normalization",
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "A valid memo first. " + "Vous " * 20,
+                    QualityResult(False, "needs_review"),
+                    2,
+                ),
             ),
+            patch.object(watcher, "classify_and_route") as route_mock,
         ):
-            watcher._process_audio_file(
+            processed = watcher._process_audio_file(
                 audio_path,
-                file_hash="empty-transcription-hash",
+                file_hash="low-quality-transcription-hash",
             )
 
-        failed_row = transcript_log.get_transcript_by_hash(
-            "empty-transcription-hash"
+        self.assertTrue(processed)
+        route_mock.assert_not_called()
+        review_row = transcript_log.get_transcript_by_hash(
+            "low-quality-transcription-hash"
         )
-        self.assertEqual(failed_row["status"], "failed")
-        stored_row = transcript_log.get_transcript(failed_row["id"])
-        self.assertEqual(stored_row["ingest_state"], "failed")
         self.assertEqual(
-            len(
-                transcript_log.get_pending_slack_deliveries(
-                    transcript_id=failed_row["id"],
-                )
-            ),
-            1,
+            review_row["transcript"], "A valid memo first. " + "Vous " * 20
         )
+        stored_row = transcript_log.get_transcript(review_row["id"])
+        self.assertEqual(stored_row["ingest_state"], "needs_review")
         self.assertEqual(
             transcript_log.get_pending_slack_deliveries(
-                transcript_id=failed_row["id"],
-                routed_only=True,
+                transcript_id=review_row["id"],
             ),
             [],
         )
@@ -161,6 +168,27 @@ class WatcherTests(unittest.TestCase):
             watcher._retry_pending_routes(limit=1)
 
         stage_mock.assert_not_called()
+
+    def test_retry_pending_routes_skips_quality_review_rows(self) -> None:
+        review_row = {
+            "id": 42,
+            "source": "iCloud",
+            "transcript": "unreviewed transcript",
+            "duration_seconds": None,
+        }
+
+        with (
+            patch.object(watcher, "get_pending", return_value=[review_row]),
+            patch.object(
+                watcher,
+                "get_transcript",
+                return_value={"ingest_state": "needs_review"},
+            ),
+            patch.object(watcher, "classify_and_route") as route_mock,
+        ):
+            watcher._retry_pending_routes(limit=1)
+
+        route_mock.assert_not_called()
 
     def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
         events: list[str] = []

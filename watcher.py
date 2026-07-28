@@ -18,8 +18,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from slack_delivery import process_pending_slack
+from transcript_quality import transcribe_with_quality
 from transcript_log import (
     get_slack_delivery_health,
+    get_transcript,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
@@ -265,20 +267,6 @@ def set_last_seen_pk(pk: int) -> None:
     STATE_FILE.write_text(str(pk), encoding="utf-8")
 
 
-# ===== Transcription =====
-
-
-def transcribe(path: Path) -> str:
-    import mlx_whisper
-
-    log.info("Transcribing: %s", path)
-    result = mlx_whisper.transcribe(
-        str(path),
-        path_or_hf_repo=cfg.voice_memos.whisper_model,
-    )
-    return str(result.get("text", "")).strip()
-
-
 # ===== Database polling =====
 
 
@@ -450,8 +438,40 @@ def _process_audio_file(
 
     file_seen_at = datetime.now().isoformat()
     transcription_started_at = datetime.now().isoformat()
-    transcript = transcribe(audio_path)
+    transcription = transcribe_with_quality(
+        audio_path,
+        model=cfg.voice_memos.whisper_model,
+    )
     transcription_completed_at = datetime.now().isoformat()
+    transcript = transcription.text
+
+    if not transcription.quality.passed:
+        log.warning(
+            "Transcript needs review for %s (reason=%s)",
+            audio_path.name,
+            transcription.quality.reason,
+        )
+        row_id = insert_transcript(
+            content_hash=file_hash,
+            source="iCloud",
+            transcript=transcript,
+            audio_path=str(audio_path),
+            duration_seconds=duration_seconds,
+            ingest_state="needs_review",
+            file_seen_at=file_seen_at,
+            transcription_started_at=transcription_started_at,
+            transcription_completed_at=transcription_completed_at,
+            enqueue_slack=False,
+        )
+        if row_id is not None and recording_pk is not None:
+            link_voice_memo_transcript(
+                recording_pk,
+                transcript_row_id=row_id,
+                content_hash=file_hash,
+                audio_path=str(audio_path),
+            )
+            mark_voice_memo_failed(recording_pk, "transcript needs review")
+        return True
 
     row_id = insert_transcript(
         content_hash=file_hash,
@@ -664,6 +684,10 @@ def _retry_waiting_for_files(limit: int) -> None:
 def _retry_pending_routes(limit: int) -> None:
     pending = get_pending(limit=limit)
     for row in pending:
+        current = get_transcript(row["id"])
+        if current and current.get("ingest_state") == "needs_review":
+            log.warning("Skipping transcript id=%s pending quality review", row["id"])
+            continue
         log.info(
             "Retrying pending transcript id=%s (source=%s)",
             row["id"],

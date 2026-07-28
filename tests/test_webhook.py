@@ -30,6 +30,7 @@ os.environ.setdefault(
 # Import the Flask app — must import server module which imports config at module level
 import importlib
 import webhook.server as server_module  # noqa: E402
+from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 app = server_module.app
 app.config["TESTING"] = True
@@ -58,7 +59,10 @@ class HealthTests(unittest.TestCase):
 
 class UploadTests(unittest.TestCase):
     @patch("webhook.server.is_already_logged", return_value=False)
-    @patch("webhook.server.transcribe", return_value="test transcript")
+    @patch(
+        "webhook.server.transcribe",
+        return_value=TranscriptionResult("test transcript", QualityResult(True), 1),
+    )
     @patch("webhook.server.insert_transcript", return_value=1)
     @patch("webhook.server.classify_and_route", return_value={"items": [], "skip": True})
     def test_upload_success(self, mock_route, mock_insert, mock_transcribe, mock_logged):
@@ -70,6 +74,29 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+
+    @patch("webhook.server.is_already_logged", return_value=False)
+    @patch(
+        "webhook.server.transcribe",
+        return_value=TranscriptionResult(
+            "A valid memo first. " + "Vous " * 20,
+            QualityResult(False, "needs_review"),
+            2,
+        ),
+    )
+    @patch("webhook.server.insert_transcript")
+    @patch("webhook.server.classify_and_route")
+    def test_upload_low_quality_transcript_requires_review_before_publication(
+        self, mock_route, mock_insert, mock_transcribe, mock_logged
+    ):
+        with app.test_client() as client:
+            data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
+            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.get_json(), {"error": "Transcript needs review"})
+        mock_insert.assert_not_called()
+        mock_route.assert_not_called()
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_upload_duplicate_returns_ok(self, mock_logged):
