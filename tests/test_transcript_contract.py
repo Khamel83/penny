@@ -6,12 +6,16 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -70,15 +74,20 @@ _MAYA_SUBMISSION_SCHEMA_PATH = (
 )
 
 
-def _load_checked_maya_submission_schema() -> dict[str, object]:
-    artifact = json.loads(_MAYA_SUBMISSION_SCHEMA_PATH.read_text(encoding="utf-8"))
-    provenance = artifact.pop("x-generated-from")
-    canonical_bytes = json.dumps(
-        artifact,
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def _load_checked_maya_submission_artifact(
+) -> tuple[dict[str, object], dict[str, str]]:
+    artifact = json.loads(_MAYA_SUBMISSION_SCHEMA_PATH.read_text(encoding="utf-8"))
+    provenance = artifact.pop("x-generated-from")
+    canonical_bytes = _canonical_json_bytes(artifact)
     assert provenance == {
         "generator": (
             "app.integrations.penny.contracts."
@@ -91,104 +100,63 @@ def _load_checked_maya_submission_schema() -> dict[str, object]:
     }
     assert re.fullmatch(r"[0-9a-f]{40}", provenance["maya_commit"])
     assert re.fullmatch(r"[0-9a-f]{64}", provenance["maya_source_sha256"])
-    maya_repo = Path(
-        os.environ.get("MAYA_REPO_ROOT", str(ROOT.parents[1] / "maya"))
-    )
-    maya_source = maya_repo / provenance["maya_source"]
-    if maya_source.is_file():
-        assert (
-            hashlib.sha256(maya_source.read_bytes()).hexdigest()
-            == provenance["maya_source_sha256"]
-        ), "Maya contract source drifted; regenerate the checked schema fixture"
-    return artifact
+    Draft202012Validator.check_schema(artifact)
+    return artifact, provenance
 
 
-def _assert_json_schema(
-    value: object,
-    schema: dict[str, object],
-    root_schema: dict[str, object],
+def _validate_against_checked_maya_schema(value: object) -> None:
+    schema, _ = _load_checked_maya_submission_artifact()
+    Draft202012Validator(
+        schema,
+        format_checker=FormatChecker(),
+    ).validate(value)
+
+
+_MAYA_MODEL_PROBE = """
+import json
+import sys
+
+from app.integrations.penny.contracts import PennyTranscriptSubmission
+
+request = json.load(sys.stdin)
+result = {
+    "schema": PennyTranscriptSubmission.model_json_schema(),
+}
+if "envelope" in request:
+    try:
+        PennyTranscriptSubmission.model_validate(request["envelope"])
+    except Exception as exc:
+        result["valid"] = False
+        result["validation_error"] = str(exc)
+    else:
+        result["valid"] = True
+print(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+"""
+
+
+def _execute_actual_maya_model(
+    maya_repo: Path,
     *,
-    path: str = "$",
-) -> None:
-    if "$ref" in schema:
-        reference = str(schema["$ref"])
-        assert reference.startswith("#/")
-        resolved: object = root_schema
-        for component in reference[2:].split("/"):
-            assert isinstance(resolved, dict)
-            resolved = resolved[component]
-        assert isinstance(resolved, dict)
-        _assert_json_schema(value, resolved, root_schema, path=path)
-        return
-
-    if "anyOf" in schema:
-        errors = []
-        for candidate in schema["anyOf"]:
-            try:
-                _assert_json_schema(value, candidate, root_schema, path=path)
-            except AssertionError as exc:
-                errors.append(str(exc))
-            else:
-                return
-        raise AssertionError(f"{path} did not match anyOf: {errors}")
-
-    if "const" in schema:
-        assert value == schema["const"], f"{path} has the wrong constant"
-
-    expected_type = schema.get("type")
-    if expected_type == "object":
-        assert isinstance(value, dict), f"{path} must be an object"
-        required = set(schema.get("required", []))
-        assert required.issubset(value), f"{path} is missing {required - set(value)}"
-        properties = schema.get("properties", {})
-        assert isinstance(properties, dict)
-        extra_keys = set(value) - set(properties)
-        additional = schema.get("additionalProperties", True)
-        if additional is False:
-            assert not extra_keys, f"{path} has unexpected fields {extra_keys}"
-        elif isinstance(additional, dict):
-            for key in extra_keys:
-                _assert_json_schema(
-                    value[key],
-                    additional,
-                    root_schema,
-                    path=f"{path}.{key}",
-                )
-        for key, property_schema in properties.items():
-            if key in value:
-                _assert_json_schema(
-                    value[key],
-                    property_schema,
-                    root_schema,
-                    path=f"{path}.{key}",
-                )
-    elif expected_type == "array":
-        assert isinstance(value, list), f"{path} must be an array"
-        item_schema = schema.get("items")
-        if isinstance(item_schema, dict):
-            for index, item in enumerate(value):
-                _assert_json_schema(
-                    item,
-                    item_schema,
-                    root_schema,
-                    path=f"{path}[{index}]",
-                )
-    elif expected_type == "string":
-        assert isinstance(value, str), f"{path} must be a string"
-        assert len(value) >= int(schema.get("minLength", 0))
-        if "maxLength" in schema:
-            assert len(value) <= int(schema["maxLength"])
-        if "pattern" in schema:
-            assert re.search(str(schema["pattern"]), value)
-        if schema.get("format") == "date-time":
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            assert parsed.tzinfo is not None, f"{path} must include a timezone"
-    elif expected_type == "integer":
-        assert isinstance(value, int) and not isinstance(value, bool)
-    elif expected_type == "number":
-        assert isinstance(value, (int, float)) and not isinstance(value, bool)
-    elif expected_type == "null":
-        assert value is None, f"{path} must be null"
+    envelope: dict[str, object] | None = None,
+) -> dict[str, object]:
+    maya_python = maya_repo / ".venv" / "bin" / "python"
+    if not maya_python.is_file():
+        raise AssertionError(f"Maya virtualenv Python not found: {maya_python}")
+    request = {} if envelope is None else {"envelope": envelope}
+    completed = subprocess.run(
+        [str(maya_python), "-c", _MAYA_MODEL_PROBE],
+        cwd=maya_repo,
+        input=json.dumps(request),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "Maya model probe failed "
+            f"(exit {completed.returncode}): {completed.stderr.strip()}"
+        )
+    return json.loads(completed.stdout)
 
 
 def _maya_receipt(
@@ -241,6 +209,107 @@ class TranscriptContractTests(unittest.TestCase):
         core.cfg.maya.transcript_url = self.original_maya_url
         core.cfg.maya.ingest_token = self.original_maya_token
 
+    def test_checked_maya_schema_uses_full_json_schema_and_format_validation(
+        self,
+    ) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="json-schema-validation-audio-hash",
+            source="iCloud",
+            transcript="Validate this envelope with Draft 2020-12.",
+            discovered_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+
+        _validate_against_checked_maya_schema(envelope)
+
+        malformed_timestamp = deepcopy(envelope)
+        malformed_timestamp["captured_at"] = "not-an-rfc3339-timestamp"
+        with self.assertRaises(ValidationError):
+            _validate_against_checked_maya_schema(malformed_timestamp)
+
+        unexpected_field = deepcopy(envelope)
+        unexpected_field["penny_only"] = True
+        with self.assertRaises(ValidationError):
+            _validate_against_checked_maya_schema(unexpected_field)
+
+        malformed_hash = deepcopy(envelope)
+        malformed_hash["transcript_sha256"] = "not-a-sha256"
+        with self.assertRaises(ValidationError):
+            _validate_against_checked_maya_schema(malformed_hash)
+
+    @unittest.skipUnless(
+        os.environ.get("MAYA_REPO_PATH"),
+        "set MAYA_REPO_PATH to run the cross-repo Maya contract integration",
+    )
+    def test_actual_maya_model_schema_matches_fixture_and_accepts_penny_envelope(
+        self,
+    ) -> None:
+        maya_repo = Path(os.environ["MAYA_REPO_PATH"]).resolve()
+        schema, provenance = _load_checked_maya_submission_artifact()
+        row_id = transcript_log.insert_transcript(
+            content_hash="actual-maya-model-valid-audio-hash",
+            source="iCloud",
+            transcript="Maya validates this real Penny envelope.",
+            duration_seconds=8.25,
+            discovered_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+
+        actual = _execute_actual_maya_model(maya_repo, envelope=envelope)
+
+        self.assertEqual(actual["schema"], schema)
+        self.assertEqual(
+            _canonical_json_bytes(actual["schema"]),
+            _canonical_json_bytes(schema),
+        )
+        self.assertTrue(actual["valid"])
+        maya_source = maya_repo / provenance["maya_source"]
+        self.assertEqual(
+            hashlib.sha256(maya_source.read_bytes()).hexdigest(),
+            provenance["maya_source_sha256"],
+        )
+        maya_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=maya_repo,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(maya_head, provenance["maya_commit"])
+
+    @unittest.skipUnless(
+        os.environ.get("MAYA_REPO_PATH"),
+        "set MAYA_REPO_PATH to run the cross-repo Maya contract integration",
+    )
+    def test_actual_maya_model_rejects_negative_duration(self) -> None:
+        maya_repo = Path(os.environ["MAYA_REPO_PATH"]).resolve()
+        row_id = transcript_log.insert_transcript(
+            content_hash="actual-maya-negative-duration-audio-hash",
+            source="iCloud",
+            transcript="Negative duration must fail Maya model validation.",
+            duration_seconds=4.0,
+            discovered_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        envelope["duration_seconds"] = -0.01
+
+        actual = _execute_actual_maya_model(maya_repo, envelope=envelope)
+
+        self.assertFalse(actual["valid"])
+        self.assertIn(
+            "duration_seconds must be non-negative",
+            actual["validation_error"],
+        )
+
     def test_maya_v2_envelope_is_persisted_and_pending_query_excludes_ineligible_rows(
         self,
     ) -> None:
@@ -286,8 +355,7 @@ class TranscriptContractTests(unittest.TestCase):
         )
 
         envelope = transcript_log.build_maya_v2_envelope(int(row_id))
-        schema = _load_checked_maya_submission_schema()
-        _assert_json_schema(envelope, schema, schema)
+        _validate_against_checked_maya_schema(envelope)
         pending_ids = {
             delivery["id"] for delivery in transcript_log.get_pending_maya_deliveries()
         }
@@ -414,8 +482,7 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(delivered, 1)
         posted = maya_post.call_args.kwargs
         posted_body = json.loads(posted["data"].decode("utf-8"))
-        schema = _load_checked_maya_submission_schema()
-        _assert_json_schema(posted_body, schema, schema)
+        _validate_against_checked_maya_schema(posted_body)
         self.assertEqual(posted_body, envelope)
         self.assertEqual(
             posted["headers"],

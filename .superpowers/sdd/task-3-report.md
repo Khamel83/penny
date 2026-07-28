@@ -195,3 +195,101 @@ delivery worker.
   eligible rows.
 - The known earlier `watcher.transcribe` seam remains separately tracked and
   unchanged.
+
+## Remaining contract-test finding
+
+### Scope
+
+- Fix base SHA: `f728c90de516211cf5c2b857aad1c1960a4bda87`
+- Commit subject: `test: validate Penny envelopes with Maya's real contract`
+- Changed dependency file: `requirements.txt`
+- Changed test file: `tests/test_transcript_contract.py`
+- The checked generated schema artifact is unchanged because a fresh call to
+  Maya's actual `PennyTranscriptSubmission.model_json_schema()` matches it
+  exactly.
+
+### RED evidence
+
+1. `MAYA_REPO_PATH=/Volumes/2TB_SSD/GitHub/maya
+   /Users/macmini/penny/venv/bin/python -m pytest
+   tests/test_transcript_contract.py -q`
+   → collection failed with `ModuleNotFoundError: No module named
+   'jsonschema'`.
+2. After installing bare `jsonschema`, the same command
+   → `1 failed, 14 passed, 2 subtests passed`; the malformed
+   `captured_at` regression was not rejected because the RFC 3339 format
+   checker is supplied by jsonschema's `format` extra.
+
+### GREEN evidence
+
+- Cross-repo contract/model check:
+  `MAYA_REPO_PATH=/Volumes/2TB_SSD/GitHub/maya
+  /Users/macmini/penny/venv/bin/python -m pytest
+  tests/test_transcript_contract.py -q`
+  → `15 passed, 2 subtests passed in 0.57s`
+- Deterministic normal fixture/jsonschema check:
+  `env -u MAYA_REPO_PATH /Users/macmini/penny/venv/bin/python -m pytest
+  tests/test_transcript_contract.py -q`
+  → `13 passed, 2 skipped, 2 subtests passed in 0.21s`
+- Task 3-focused suite with cross-repo integration:
+  `MAYA_REPO_PATH=/Volumes/2TB_SSD/GitHub/maya
+  /Users/macmini/penny/venv/bin/python -m pytest
+  tests/test_transcript_contract.py tests/test_transcript_log.py
+  tests/test_core_and_classifier.py tests/test_webhook.py
+  tests/test_watcher.py -q`
+  → `132 passed, 2 subtests passed in 0.97s`
+- Broader suite:
+  `/Users/macmini/penny/venv/bin/python -m pytest -q -k 'not
+  test_process_audio_file_links_already_logged_voice_memo'`
+  → `186 passed, 2 skipped, 1 deselected, 2 subtests passed in 0.72s`
+- `/Users/macmini/penny/venv/bin/python -m py_compile
+  tests/test_transcript_contract.py` → pass
+- `git diff --check` → pass
+
+The unfiltered suite is `186 passed, 1 failed, 2 skipped, 2 subtests passed`.
+The only failure remains the separately tracked pre-existing
+`tests/test_sqlite_leak.py::SQLiteConnectionLeakTests::
+test_process_audio_file_links_already_logged_voice_memo` patch of the absent
+`watcher.transcribe` seam.
+
+### Contract validation and drift check
+
+- The handwritten schema walker was removed completely.
+- Normal tests always run `Draft202012Validator.check_schema()` and full
+  Draft 2020-12 instance validation with `FormatChecker` against the checked
+  generated artifact. Regressions cover malformed RFC 3339 capture times,
+  forbidden extra fields, and invalid SHA-256 values.
+- `jsonschema[format]>=4.25.1,<5.0.0` is now an explicit Penny dependency so
+  format checks are deterministic rather than silently advisory.
+- The opt-in integration helper launches Maya's own virtualenv, imports
+  `app.integrations.penny.contracts.PennyTranscriptSubmission`, executes
+  `model_json_schema()` and `model_validate()`, and returns only generated
+  results. No Maya Pydantic implementation is copied or vendored.
+- The integration test compares the actual schema to the fixture both as a
+  Python structure and as canonical JSON bytes, checks Maya commit and source
+  SHA-256 provenance, and validates a produced Penny envelope with Maya's
+  actual model.
+- The negative-duration regression executes Maya's actual model and verifies
+  `duration_seconds=-0.01` is rejected.
+
+### Self-review
+
+#### Standards
+
+No repository-specific Python standards file was found. Manual review against
+the existing test style and smell baseline found no actionable issue. The
+subprocess boundary is intentional: Penny does not otherwise depend on
+Pydantic, while Maya's own virtualenv provides the exact runtime model under
+test.
+
+#### Spec
+
+The checked schema remains a literal generated artifact with explicit
+provenance. Maya currently implements non-negative duration in a Pydantic
+`model_validator`, so that semantic rule is not emitted by
+`model_json_schema()` and cannot honestly be added to an exact generated
+fixture. Full JSON Schema validation enforces every emitted constraint; the
+separate actual-model integration check enforces non-negative duration and all
+other Pydantic semantic validators. Moving Maya's constraint to
+`Field(ge=0)` would make `minimum: 0` available to fixture-only CI, but that
+cross-repo production change is outside this Penny contract-test fix.
