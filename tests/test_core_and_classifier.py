@@ -652,6 +652,25 @@ class CorePipelineTests(unittest.TestCase):
 
         assert calls["maya"] == 0
 
+    def test_maya_origin_always_disallows_legacy_maya_routing(self):
+        with (
+            patch.object(core, "_route_to_maya") as route_to_maya,
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "add_note", return_value=True) as add_note,
+        ):
+            result = core.classify_and_route(
+                "Keep this Maya-originated transcript local.",
+                source="maya:icloud",
+            )
+
+        route_to_maya.assert_not_called()
+        add_note.assert_called_once_with(
+            "Keep this Maya-originated transcript local.",
+            folder_name="Penny",
+            source="maya:icloud",
+        )
+        self.assertEqual(result["reason"], "long_note")
+
 
 class ClassifierFallbackTests(unittest.TestCase):
     def test_normalize_transcript_strips_whisper_tokens(self) -> None:

@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,6 +31,9 @@ logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
 import watcher  # noqa: E402
+import core  # noqa: E402
+import maya_delivery  # noqa: E402
+from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 
 class WatcherTests(unittest.TestCase):
@@ -72,13 +76,19 @@ class WatcherTests(unittest.TestCase):
 
         with (
             patch.object(watcher, "get_transcript_by_hash", return_value=None),
-            patch.object(watcher, "transcribe", return_value="route this transcript"),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "route this transcript", QualityResult(True), 1
+                ),
+            ),
             patch.object(watcher, "insert_transcript", return_value=42),
             patch.object(
                 watcher,
                 "classify_and_route",
                 side_effect=lambda *args, **kwargs: events.append("route"),
-            ),
+            ) as route_mock,
             patch.object(
                 watcher,
                 "update_transcript_stages",
@@ -97,46 +107,120 @@ class WatcherTests(unittest.TestCase):
 
         self.assertTrue(processed)
         self.assertEqual(events, ["route"])
+        self.assertIs(route_mock.call_args.kwargs["allow_maya"], False)
         stage_mock.assert_not_called()
         slack_mock.assert_not_called()
 
-    def test_empty_transcription_remains_failed_and_not_slack_eligible(self) -> None:
-        audio_path = Path(self.db_dir) / "empty-transcription.m4a"
+    def test_low_quality_transcription_is_retained_for_review_without_routing(self) -> None:
+        audio_path = Path(self.db_dir) / "low-quality-transcription.m4a"
         audio_path.write_bytes(b"audio")
 
         with (
-            patch.object(watcher, "transcribe", return_value="SE<|hr|><|hr|><|hr|>"),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "empty transcript after normalization",
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "A valid memo first. " + "Vous " * 20,
+                    QualityResult(False, "needs_review"),
+                    2,
+                    (
+                        "attempt_1=consecutive_token_repetition;"
+                        "attempt_2=low_diversity_suffix"
+                    ),
+                ),
             ),
+            patch.object(watcher, "classify_and_route") as route_mock,
         ):
-            watcher._process_audio_file(
+            processed = watcher._process_audio_file(
                 audio_path,
-                file_hash="empty-transcription-hash",
+                file_hash="low-quality-transcription-hash",
             )
 
-        failed_row = transcript_log.get_transcript_by_hash(
-            "empty-transcription-hash"
+        self.assertTrue(processed)
+        route_mock.assert_not_called()
+        review_row = transcript_log.get_transcript_by_hash(
+            "low-quality-transcription-hash"
         )
-        self.assertEqual(failed_row["status"], "failed")
-        stored_row = transcript_log.get_transcript(failed_row["id"])
-        self.assertEqual(stored_row["ingest_state"], "failed")
         self.assertEqual(
-            len(
-                transcript_log.get_pending_slack_deliveries(
-                    transcript_id=failed_row["id"],
-                )
+            review_row["transcript"], "A valid memo first. " + "Vous " * 20
+        )
+        stored_row = transcript_log.get_transcript(review_row["id"])
+        self.assertEqual(stored_row["ingest_state"], "needs_review")
+        self.assertEqual(
+            stored_row["quality_detail"],
+            (
+                "attempt_1=consecutive_token_repetition;"
+                "attempt_2=low_diversity_suffix"
             ),
-            1,
         )
         self.assertEqual(
             transcript_log.get_pending_slack_deliveries(
-                transcript_id=failed_row["id"],
-                routed_only=True,
+                transcript_id=review_row["id"],
             ),
             [],
         )
+        operational = transcript_log.get_pending_quality_failure_deliveries()
+        self.assertEqual(len(operational), 1)
+        self.assertNotIn(stored_row["transcript"], operational[0]["message_text"])
+
+    def test_backlogged_recording_uses_zdate_as_maya_capture_time(self) -> None:
+        audio_path = Path(self.db_dir) / "backlogged-recording.m4a"
+        audio_path.write_bytes(b"audio")
+        recorded_at = datetime(2026, 7, 20, 12, 34, 56, tzinfo=timezone.utc)
+        reference_date = datetime(2001, 1, 1, tzinfo=timezone.utc)
+        zdate = (recorded_at - reference_date).total_seconds()
+
+        with (
+            patch.object(
+                watcher,
+                "_find_audio_path_for_recording",
+                return_value=audio_path,
+            ),
+            patch.object(
+                watcher,
+                "get_file_hash",
+                return_value="backlogged-recording-hash",
+            ),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "This memo was recorded eight days before processing.",
+                    QualityResult(True),
+                    1,
+                ),
+            ),
+            patch.object(watcher, "classify_and_route"),
+        ):
+            processed = watcher.process_recording(
+                {
+                    "Z_PK": 501,
+                    "ZCUSTOMLABEL": "Backlogged memo",
+                    "ZDATE": zdate,
+                    "ZDURATION": 12.5,
+                    "ZPATH": "backlogged-recording.m4a",
+                }
+            )
+
+        self.assertTrue(processed)
+        row = transcript_log.get_transcript_by_hash("backlogged-recording-hash")
+        self.assertEqual(row["recorded_at"], "2026-07-20T12:34:56Z")
+        self.assertEqual(row["maya_delivery_eligible"], 1)
+        self.assertNotEqual(row["recorded_at"], row["file_seen_at"])
+        envelope = transcript_log.build_maya_v2_envelope(int(row["id"]))
+        self.assertEqual(envelope["captured_at"], "2026-07-20T12:34:56Z")
+        conn = transcript_log._get_conn()
+        try:
+            ledger = conn.execute(
+                """
+                SELECT recorded_at
+                FROM voice_memo_ingest
+                WHERE recording_pk = 501
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(ledger["recorded_at"], "2026-07-20T12:34:56Z")
 
     def test_retry_pending_routes_does_not_promote_state_after_core_returns(
         self,
@@ -162,7 +246,85 @@ class WatcherTests(unittest.TestCase):
 
         stage_mock.assert_not_called()
 
-    def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
+    def test_retry_pending_routes_does_not_let_review_rows_consume_limit(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="quality-review-hash",
+            source="iCloud",
+            transcript="unreviewed transcript",
+            ingest_state="needs_review",
+            enqueue_slack=False,
+        )
+        eligible_id = transcript_log.insert_transcript(
+            content_hash="eligible-route-hash",
+            source="iCloud",
+            transcript="route this eligible transcript",
+            ingest_state="transcribed",
+            enqueue_slack=False,
+        )
+
+        with (
+            patch.object(watcher, "classify_and_route") as route_mock,
+        ):
+            watcher._retry_pending_routes(limit=1)
+
+        route_mock.assert_called_once_with(
+            "route this eligible transcript",
+            source="iCloud",
+            row_id=eligible_id,
+            duration_seconds=None,
+            allow_maya=False,
+        )
+
+    def test_maya_origin_retry_uses_persisted_source_and_never_reenters_maya(
+        self,
+    ) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-origin-retry-hash",
+            source="maya:icloud",
+            transcript="Keep this Maya-originated retry local.",
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        observed_kwargs: dict[str, object] = {}
+        original_classify_and_route = watcher.classify_and_route
+
+        def observe_route(*args, **kwargs):
+            observed_kwargs.update(kwargs)
+            return original_classify_and_route(*args, **kwargs)
+
+        with (
+            patch.object(
+                watcher,
+                "classify_and_route",
+                side_effect=observe_route,
+            ),
+            patch.object(core.cfg.maya, "transcript_url", "http://maya.test/ingest/transcript"),
+            patch.object(core.cfg.maya, "ingest_token", "test-token"),
+            patch.object(core, "_route_to_maya") as legacy_maya,
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "add_note", return_value=True) as add_note,
+            patch.object(maya_delivery.cfg.maya, "transcript_url", "http://maya.test/ingest/transcript"),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(maya_delivery.requests, "post") as v2_maya,
+        ):
+            watcher._retry_pending_routes(limit=1)
+            delivered = maya_delivery.process_pending_maya_deliveries()
+
+        self.assertEqual(observed_kwargs["source"], "maya:icloud")
+        self.assertIs(observed_kwargs["allow_maya"], False)
+        legacy_maya.assert_not_called()
+        v2_maya.assert_not_called()
+        self.assertEqual(delivered, 0)
+        add_note.assert_called_once_with(
+            "Keep this Maya-originated retry local.",
+            folder_name="Penny",
+            source="maya:icloud",
+        )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["routed_to"], "note in Penny")
+
+    def test_ingest_pass_gives_slack_an_opportunity_before_maya(self) -> None:
         events: list[str] = []
 
         with (
@@ -192,10 +354,17 @@ class WatcherTests(unittest.TestCase):
                 "_process_slack_outbox",
                 side_effect=lambda: events.append("slack"),
             ) as slack_mock,
+            patch.object(
+                watcher,
+                "_process_maya_outbox",
+                side_effect=lambda: events.append("maya"),
+                create=True,
+            ) as maya_mock,
         ):
             watcher._process_ingest_pass()
 
-        self.assertEqual(events, ["db", "waiting", "disk", "routes", "slack"])
+        self.assertEqual(events, ["db", "waiting", "disk", "routes", "slack", "maya"])
+        maya_mock.assert_called_once_with()
         slack_mock.assert_called_once_with()
 
     def test_slack_outbox_helper_requests_one_delivery(self) -> None:
@@ -203,6 +372,45 @@ class WatcherTests(unittest.TestCase):
             watcher._process_slack_outbox()
 
         process_mock.assert_called_once_with(limit=1)
+
+    def test_maya_outbox_helper_requests_one_delivery(self) -> None:
+        with patch.object(
+            watcher,
+            "process_pending_maya_deliveries",
+            return_value=0,
+            create=True,
+        ) as process_mock:
+            watcher._process_maya_outbox()
+
+        process_mock.assert_called_once_with(limit=1)
+
+    def test_each_ingest_pass_reaches_slack_before_a_maya_outage(self) -> None:
+        events: list[str] = []
+
+        with (
+            patch.object(watcher, "get_new_recordings", return_value=[]),
+            patch.object(watcher, "_process_db_batch"),
+            patch.object(watcher, "_retry_waiting_for_files"),
+            patch.object(watcher, "_process_disk_backlog"),
+            patch.object(watcher, "_retry_pending_routes"),
+            patch.object(
+                watcher,
+                "_process_slack_outbox",
+                side_effect=lambda: events.append("slack"),
+            ),
+            patch.object(
+                watcher,
+                "_process_maya_outbox",
+                side_effect=lambda: events.append("maya-timeout"),
+            ),
+        ):
+            watcher._process_ingest_pass()
+            watcher._process_ingest_pass()
+
+        self.assertEqual(
+            events,
+            ["slack", "maya-timeout", "slack", "maya-timeout"],
+        )
 
     def test_voicememos_sync_is_refreshed_even_when_process_is_running(self) -> None:
         calls: list[list[str]] = []
@@ -310,6 +518,124 @@ class WatcherTests(unittest.TestCase):
         health = health_path.read_text(encoding="utf-8")
         self.assertIn("|watcher_ok:0|", health)
         self.assertIn("|slack_health_error:1", health)
+
+    def test_health_check_reports_bounded_maya_and_quality_state_without_secrets(
+        self,
+    ) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        secret = "maya-secret-value-that-must-not-appear"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True,
+                    "record_count": 12,
+                    "latest_pk": 123,
+                    "latest_date": None,
+                    "wal_exists": True,
+                    "wal_age_seconds": 3,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 123,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "sent_count": 1,
+                    "failed_count": 0,
+                    "quality_failure_pending_count": 1,
+                    "quality_failure_failed_count": 0,
+                    "health_error": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 3,
+                    "due_count": 2,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 91,
+                    "quality_needs_review_count": 4,
+                    "health_error": 0,
+                },
+                create=True,
+            ),
+            patch.object(watcher.cfg.maya, "transcript_url", "http://maya/ingest"),
+            patch.object(watcher.cfg.maya, "ingest_token", secret),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:1|", health)
+        self.assertIn("|maya_configured:1|", health)
+        self.assertIn("|maya_pending:3|maya_due:2|maya_failed:0|", health)
+        self.assertIn("|maya_oldest_due_age_seconds:91|", health)
+        self.assertIn("|maya_health_error:0|quality_needs_review:4", health)
+        self.assertIn("|quality_failure_slack_pending:1|", health)
+        self.assertIn("|quality_failure_slack_failed:0|", health)
+        self.assertNotIn(secret, health)
+
+    def test_maya_query_failure_forces_watcher_unhealthy(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=False),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(watcher, "_cloud_recording_snapshot", return_value={
+                "db_ok": True,
+                "record_count": 0,
+                "latest_pk": 0,
+                "latest_date": None,
+                "wal_exists": False,
+                "wal_age_seconds": -1,
+            }),
+            patch.object(watcher, "get_voice_memo_health", return_value={
+                "latest_recording_pk": 0,
+                "awaiting_file_count": 0,
+                "failed_count": 0,
+            }),
+            patch.object(watcher, "get_slack_delivery_health", return_value={
+                "pending_count": 0,
+                "sent_count": 0,
+                "failed_count": 0,
+                "health_error": 0,
+            }),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "due_count": 0,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 0,
+                    "quality_needs_review_count": 0,
+                    "health_error": 1,
+                },
+                create=True,
+            ),
+            patch.object(watcher.cfg.maya, "transcript_url", "http://maya/ingest"),
+            patch.object(watcher.cfg.maya, "ingest_token", "configured"),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|maya_health_error:1|", health)
 
 
 if __name__ == "__main__":

@@ -71,6 +71,7 @@ class NotificationsConfig:
 class MayaConfig:
     transcript_url: str = ""
     ingest_token: str = ""
+    delivery_timeout_seconds: float = 10.0
 
 
 @dataclass
@@ -112,6 +113,16 @@ def get_config() -> Config:
 
     # Env vars win so the ingest token stays out of the repo-managed toml.
     maya_section = raw.get("maya", {})
+    raw_maya_timeout = os.environ.get(
+        "MAYA_DELIVERY_TIMEOUT_SECONDS",
+        str(maya_section.get("delivery_timeout_seconds", 10.0)),
+    )
+    try:
+        maya_timeout = float(raw_maya_timeout)
+    except (TypeError, ValueError):
+        maya_timeout = 10.0
+    maya_timeout = max(1.0, min(maya_timeout, 30.0))
+
     maya = MayaConfig(
         transcript_url=os.environ.get(
             "MAYA_TRANSCRIPT_URL", maya_section.get("transcript_url", "")
@@ -119,6 +130,7 @@ def get_config() -> Config:
         ingest_token=os.environ.get(
             "MAYA_INGEST_TOKEN", maya_section.get("ingest_token", "")
         ),
+        delivery_timeout_seconds=maya_timeout,
     )
 
     _config = Config(

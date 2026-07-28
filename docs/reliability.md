@@ -19,7 +19,7 @@ ssh macmini "launchctl list | grep penny"
 The watcher writes to `~/.penny/health.txt` every 5 minutes:
 ```bash
 ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0
+# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0|quality_failure_slack_pending:X|quality_failure_slack_failed:X|maya_configured:1|maya_pending:X|maya_due:X|maya_failed:X|maya_oldest_due_age_seconds:X|maya_query_ok:1|maya_health_error:0|quality_needs_review:X
 ```
 
 Fields:
@@ -37,6 +37,17 @@ Fields:
 - `slack_pending` — Slack deliveries waiting for their first send or next retry window
 - `slack_failed` — Slack deliveries that exhausted the retry policy and need review
 - `slack_health_error` — `1` when Slack outbox health could not be read; this also forces `watcher_ok:0`
+- `quality_failure_slack_pending` / `quality_failure_slack_failed` — metadata-only `#maya-ledger` receipts waiting or terminally failed
+- `maya_configured` — `1` only when both the Maya URL and dedicated ingest token are present; values are never written
+- `maya_pending` / `maya_due` / `maya_failed` — explicitly eligible v2 rows in backoff, currently due, or terminally failed
+- `maya_oldest_due_age_seconds` — bounded age of the oldest currently due Maya row
+- `maya_query_ok` / `maya_health_error` — bounded query status; a query error forces `watcher_ok:0`
+- `quality_needs_review` — quarantined transcripts awaiting operator review
+
+`watcher_ok` is `0` when Maya is unconfigured, an outbox query fails, or a
+Slack, quality-receipt, or Maya delivery is terminally failed. Ordinary
+backoff-pending and due rows, plus `quality_needs_review`, remain separately
+visible and informational.
 
 ### 3. Dependency Checks on Startup
 
@@ -94,16 +105,20 @@ Eligible iCloud transcripts also create one durable `slack_deliveries` outbox ro
 - each outbox pass attempts at most one Slack chunk, leaving later chunks durably pending so ingestion and poll-loop draining remain bounded
 - the complete original transcript remains in `message_text`; concatenating acknowledged chunks reproduces it exactly
 - terminal `failed` rows stay visible in health output instead of retrying forever
-- Slack transcript delivery is independent from `config.toml`'s Telegram toggle; the watcher uses `PENNY_SLACK_BOT_TOKEN` and always targets channel ID `C0BKS0QT7FU`
+- Slack transcript delivery is independent from Telegram, Maya, and local Apple routing state; passed canonical outbox rows are dequeued even while Notes/Reminders routing is pending or failed
+- the watcher gives Slack its own opportunity before Maya on every pass; Maya is capped to one due row with a configured timeout clamped to 1–30 seconds
+- the watcher uses only `PENNY_SLACK_BOT_TOKEN` and always targets transcript channel ID `C0BKS0QT7FU`; generic `SLACK_BOT_TOKEN` is never consulted
 - `PENNY_SLACK_CHANNEL_ID` in the tracked watcher template is a pinned runtime invariant, not a configurable destination; alternate `PENNY_SLACK_CHANNEL_ID` or generic `SLACK_CHANNEL_ID` values cannot redirect new delivery
+- a second deterministic quality-gate failure stores both bounded attempt reasons and creates one idempotent, body-free `transcript_quality_failure` outbox row for the dedicated `PENNY_MAYA_LEDGER_CHANNEL_ID`
 - Slack mentions, push notifications, badges, and channel notification preferences are external Slack settings, not Penny repository settings
 
-Maya routing is a separate evidence stream from both transcript receipt and Slack delivery:
-- Penny sends the full persisted transcript body, original `source`, optional `duration_seconds`, and stable `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
+Maya delivery is a separate evidence stream from transcript receipt, Slack, and Apple routing:
+- only explicit, newly inserted, quality-passed canonical captures with a real recording timestamp become Maya-pending; additive migration defaults all historical/unclassified placeholders to ineligible
+- pending selection fails closed against `maya:*`, skipped/empty/migrated, `needs_review`, superseded, and non-explicit rows
+- Penny sends the exact persisted transcript body, stable SHA-256 identity, normalized Voice Memo recording timestamp, and `client_ref = penny:<transcript_row_id>` to `MAYA_TRANSCRIPT_URL`
 - Penny reads the Maya bearer token only from `MAYA_INGEST_TOKEN` at runtime and does not persist or print it
-- `routing_progress.maya_route` records whether Maya was `attempting`, `accepted`, `rejected`, or `failed`
-- only a validated Maya acceptance response marks the transcript as routed to `maya`; non-200, malformed 200, timeout, and transport failures fall back to local routing with the rejection/failure details preserved in local state
-- for a newly ingested recording, Maya or local routing completes before the watcher attempts its Slack outbox copy
+- only a validated, identity-matching durable receipt marks the Maya outbox row sent; transport failure remains independently retryable
+- sent Maya and Slack rows are monotonic and cannot be reopened by a late failure
 
 ### 6. Periodic Backup
 
@@ -162,9 +177,10 @@ ssh macmini "launchctl kickstart -k gui/$(id -u)/com.penny.watcher"
 
 When validating one transcript end-to-end, collect evidence in this order:
 
-1. Penny receipt: transcript row in `transcripts.db` proves Penny received and persisted it locally.
-2. Maya acceptance or rejection: `routing_progress.maya_route` shows the latest Maya attempt, using `client_ref = penny:<transcript_id>`.
-3. Slack acceptance or rejection: `slack_deliveries` shows whether the verbatim Slack copy was acknowledged, retried, or terminally failed.
+1. Penny receipt: the transcript row proves Penny received and persisted it locally.
+2. Maya acceptance or rejection: `maya_delivery_status`, `maya_drop_id`, attempt count, bounded error, and next-attempt time show the independent v2 state for `client_ref = penny:<transcript_id>`.
+3. Slack acceptance or rejection: `slack_deliveries` shows whether the verbatim `#penny` copy was acknowledged, retried, or terminally failed.
+4. Quality quarantine: `quality_status`, `quality_detail`, and `quality_failure_slack_deliveries` show why the body was withheld and whether its metadata-only ledger receipt was acknowledged.
 
 These categories are intentionally independent. A Maya rejection is not a missing Penny receipt, and a Slack failure is not proof that Maya or local routing failed.
 
@@ -173,8 +189,9 @@ These categories are intentionally independent. A Maya rejection is not a missin
 When someone asks "are notifications enabled?", answer with the exact layer:
 
 1. Telegram: `config.toml` `[notifications].telegram_enabled`. `false` disables Telegram sends without removing the code path or credentials.
-2. Slack transcript mirroring: watcher runtime env `PENNY_SLACK_BOT_TOKEN` enables posting. The destination is pinned to channel ID `C0BKS0QT7FU`; it is not selected from the environment.
-3. Slack user/channel notification behavior: external Slack preference. Penny does not store or infer this setting, and Telegram state must never be used as a proxy for it.
+2. Slack transcript mirroring: watcher runtime env `PENNY_SLACK_BOT_TOKEN` enables posting. No generic token fallback exists. The destination is pinned to channel ID `C0BKS0QT7FU`; it is not selected from the environment.
+3. Quality-failure operations: `PENNY_MAYA_LEDGER_CHANNEL_ID` selects the dedicated metadata-only ledger destination. This path uses the same dedicated Penny token and never includes transcript text.
+4. Slack user/channel notification behavior: external Slack preference. Penny does not store or infer this setting, and Telegram state must never be used as a proxy for it.
 
 ### Live Slack verification sequence for operators
 
@@ -200,7 +217,9 @@ ssh macmini "cat ~/.penny/health.txt"
 Expected result:
 
 - `watcher_ok:1`
-- `slack_pending:`, `slack_failed:`, and `slack_health_error:0` fields are present
+- Slack, quality-failure, Maya, and quality-review counters are present
+- `slack_health_error:0`, `maya_query_ok:1`, and `maya_health_error:0`
+- `maya_configured:1`
 - no unexpected growth in `slack_failed`
 
 3. Check Slack runtime wiring without printing the token:

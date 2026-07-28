@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "PennySourceSpan": {
+      "additionalProperties": false,
+      "properties": {
+        "end_char": {
+          "title": "End Char",
+          "type": "integer"
+        },
+        "end_ms": {
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "quoted_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Quoted Sha256",
+          "type": "string"
+        },
+        "span_id": {
+          "title": "Span Id",
+          "type": "string"
+        },
+        "start_char": {
+          "title": "Start Char",
+          "type": "integer"
+        },
+        "start_ms": {
+          "title": "Start Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "span_id",
+        "start_char",
+        "end_char",
+        "start_ms",
+        "end_ms",
+        "quoted_sha256",
+        "kind"
+      ],
+      "title": "PennySourceSpan",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "audio_provenance": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Audio Provenance",
+      "type": "object"
+    },
+    "captured_at": {
+      "format": "date-time",
+      "title": "Captured At",
+      "type": "string"
+    },
+    "client_ref": {
+      "title": "Client Ref",
+      "type": "string"
+    },
+    "duration_seconds": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Duration Seconds"
+    },
+    "schema_version": {
+      "const": "penny-maya.v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "source_spans": {
+      "items": {
+        "$ref": "#/$defs/PennySourceSpan"
+      },
+      "title": "Source Spans",
+      "type": "array"
+    },
+    "transcript": {
+      "title": "Transcript",
+      "type": "string"
+    },
+    "transcript_id": {
+      "title": "Transcript Id",
+      "type": "string"
+    },
+    "transcript_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Transcript Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "transcript_id",
+    "transcript_sha256",
+    "transcript",
+    "source",
+    "captured_at",
+    "audio_provenance",
+    "source_spans",
+    "client_ref"
+  ],
+  "title": "PennyTranscriptSubmission",
+  "type": "object",
+  "x-generated-from": {
+    "generator": "app.integrations.penny.contracts.PennyTranscriptSubmission.model_json_schema",
+    "maya_commit": "a8af56f0ef57848832d9ba0f0f4b923c7f1a3918",
+    "maya_source": "app/integrations/penny/contracts.py",
+    "maya_source_sha256": "042c55c7133a46d831e798fc38061d33b202500ae99001c42e45ba7764e942e5",
+    "schema_sha256": "f23a15776806318844659c81f3008e0bb9766cf467ce2b10f63cff1cc53a7d8d"
+  }
+}

@@ -30,6 +30,7 @@ os.environ.setdefault(
 # Import the Flask app — must import server module which imports config at module level
 import importlib
 import webhook.server as server_module  # noqa: E402
+from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 app = server_module.app
 app.config["TESTING"] = True
@@ -56,9 +57,60 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(data["service"], "penny-webhook")
 
 
+def test_upload_low_quality_transcript_is_durable_and_not_published(client, monkeypatch):
+    import transcript_log
+    import webhook.server as server
+
+    rejected_text = "A valid memo first. " + "Vous " * 20
+    monkeypatch.setattr(server, "get_file_hash", lambda _: "review-upload-hash")
+    monkeypatch.setattr(server, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(
+        server,
+        "transcribe",
+        lambda _: TranscriptionResult(
+            rejected_text,
+            QualityResult(False, "needs_review"),
+            2,
+            (
+                "attempt_1=consecutive_token_repetition;"
+                "attempt_2=control_token"
+            ),
+        ),
+    )
+    route_mock = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route_mock)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"fake audio data"), "test.m4a")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 422
+    assert response.get_json() == {"error": "Transcript needs review"}
+    row = transcript_log.get_transcript_by_hash("review-upload-hash")
+    assert row["transcript"] == rejected_text
+    stored = transcript_log.get_transcript(row["id"])
+    assert stored["ingest_state"] == "needs_review"
+    assert stored["error_message"] == "needs_review"
+    assert stored["quality_detail"] == (
+        "attempt_1=consecutive_token_repetition;attempt_2=control_token"
+    )
+    assert transcript_log.get_pending_slack_deliveries(transcript_id=row["id"]) == []
+    operational = transcript_log.get_pending_quality_failure_deliveries()
+    assert len(operational) == 1
+    assert operational[0]["content_kind"] == "transcript_quality_failure"
+    assert operational[0]["destination"] == "maya-ledger"
+    assert rejected_text not in operational[0]["message_text"]
+    route_mock.assert_not_called()
+
+
 class UploadTests(unittest.TestCase):
     @patch("webhook.server.is_already_logged", return_value=False)
-    @patch("webhook.server.transcribe", return_value="test transcript")
+    @patch(
+        "webhook.server.transcribe",
+        return_value=TranscriptionResult("test transcript", QualityResult(True), 1),
+    )
     @patch("webhook.server.insert_transcript", return_value=1)
     @patch("webhook.server.classify_and_route", return_value={"items": [], "skip": True})
     def test_upload_success(self, mock_route, mock_insert, mock_transcribe, mock_logged):
@@ -70,6 +122,7 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+            self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_upload_duplicate_returns_ok(self, mock_logged):
@@ -119,6 +172,7 @@ class IngestTests(unittest.TestCase):
             mock_route.assert_called_once()
             mock_insert.assert_called_once()
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+            self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
     def test_ingest_missing_json_returns_400(self):
         with app.test_client() as client:

@@ -132,6 +132,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             label="Late path",
             raw_path="late.m4a",
             duration_seconds=12.5,
+            recorded_at="2001-01-01T00:00:00Z",
         )
         process_mock.assert_called_once_with(fresh)
 
@@ -152,7 +153,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             ) as file_seen_mock, patch.object(
                 watcher, "link_voice_memo_transcript"
             ) as link_mock, patch.object(
-                watcher, "transcribe"
+                watcher, "transcribe_with_quality"
             ) as transcribe_mock:
                 result = watcher._process_audio_file(audio_path, recording_pk=7)
 

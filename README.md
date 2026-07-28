@@ -135,12 +135,13 @@ ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
 
 ### Notification policy
 
-Penny has three separate notification controls. They are intentionally independent:
+Penny has four separate notification controls. They are intentionally independent:
 
 | Concern | Controlled by | In repo? | Default / current intent |
 | --- | --- | --- | --- |
 | Telegram alerts from Penny | `config.toml` → `[notifications].telegram_enabled` | Yes | Disabled (`false`) unless explicitly re-enabled |
 | Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN`; destination is pinned in code/template | Yes | Enabled when the Slack token is present; only channel ID `C0BKS0QT7FU` is allowed |
+| Metadata-only quality-failure receipts | `PENNY_SLACK_BOT_TOKEN` + `PENNY_MAYA_LEDGER_CHANNEL_ID` | Yes | One durable, idempotent receipt per quarantined transcript; never includes transcript text |
 | Whether Slack sends a mention, badge, push, or other notification to people in that channel | Slack workspace/channel/user settings | No | External preference; verify in Slack, never infer from Penny's Telegram setting |
 
 Do not add a Penny config setting for Slack mention behavior. Penny only decides whether to mirror the transcript into Slack; Slack decides how that post notifies people.
@@ -229,15 +230,19 @@ pip install -r requirements.txt
 | `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
 | `PENNY_SLACK_BOT_TOKEN` | Slack bot token used by the watcher to post every voice memo transcript |
 | `PENNY_SLACK_CHANNEL_ID` | Pinned watcher-template invariant `C0BKS0QT7FU`; alternate values cannot redirect delivery |
+| `PENNY_MAYA_LEDGER_CHANNEL_ID` | Dedicated destination for body-free Penny quality-failure metadata |
 | `MAYA_TRANSCRIPT_URL` | Maya `/ingest/transcript` endpoint used for Penny transcript routing when enabled |
 | `MAYA_INGEST_TOKEN` | Bearer token for Maya transcript ingest; read from runtime env and never persisted in repo config |
+| `MAYA_DELIVERY_TIMEOUT_SECONDS` | Per-pass Maya request timeout, clamped to 1–30 seconds (default 10) |
 
 Plist templates with placeholders: `launchd/*.plist.template`
 
 Important separation:
 
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` matter only when `telegram_enabled = true`.
-- `PENNY_SLACK_BOT_TOKEN` enables Slack transcript mirroring regardless of the Telegram toggle; the destination is fixed to `C0BKS0QT7FU`.
+- `PENNY_SLACK_BOT_TOKEN` is the only accepted Slack credential. Penny never falls back to a generic `SLACK_BOT_TOKEN`.
+- Transcript mirroring is independent of Telegram, Apple routing, and Maya delivery state; the transcript destination is fixed to `C0BKS0QT7FU`.
+- `PENNY_MAYA_LEDGER_CHANNEL_ID` is a separate required destination for quarantined-transcript metadata. The quarantined transcript body is not copied into that outbox.
 - Slack-side mention or notification behavior is configured in Slack itself, not in this repository.
 
 Hermes notifications are best-effort. Penny signs each payload with

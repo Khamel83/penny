@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import logging
 import multiprocessing
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -153,6 +155,446 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["channel_id"], "C0BKS0QT7FU")
 
+    def test_canonical_migration_adds_safe_columns_without_replacing_legacy_rows(
+        self,
+    ) -> None:
+        self.db_path.unlink()
+        legacy_transcript = "Legacy transcript remains readable."
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute(
+                """
+                CREATE TABLE transcripts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_hash TEXT NOT NULL UNIQUE,
+                    source TEXT NOT NULL,
+                    transcript TEXT NOT NULL,
+                    audio_path TEXT,
+                    duration_seconds REAL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    ingest_state TEXT,
+                    routing_result TEXT,
+                    routing_progress TEXT,
+                    error_message TEXT,
+                    discovered_at TEXT,
+                    file_seen_at TEXT,
+                    transcription_started_at TEXT,
+                    transcription_completed_at TEXT,
+                    routing_started_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    last_error_at TEXT,
+                    routed_at TEXT,
+                    routed_to TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO transcripts (
+                    content_hash, source, transcript, ingest_state, discovered_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-content-hash",
+                    "iCloud",
+                    legacy_transcript,
+                    "transcribed",
+                    "2026-07-28T12:00:00Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(transcripts)")
+            }
+            row = dict(
+                conn.execute(
+                    """
+                    SELECT content_hash, transcript, quality_status, quality_detail,
+                           transcript_sha256, maya_delivery_status, maya_drop_id,
+                           maya_delivery_eligible, recorded_at,
+                           superseded_by_transcript_row_id
+                    FROM transcripts
+                    WHERE content_hash = ?
+                    """,
+                    ("legacy-content-hash",),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+        self.assertTrue(
+            {
+                "quality_status",
+                "quality_detail",
+                "transcript_sha256",
+                "maya_delivery_status",
+                "maya_drop_id",
+                "maya_delivery_attempt_count",
+                "maya_next_attempt_at",
+                "maya_delivery_eligible",
+                "recorded_at",
+                "superseded_by_transcript_row_id",
+            }.issubset(columns)
+        )
+        self.assertEqual(row["content_hash"], "legacy-content-hash")
+        self.assertEqual(row["transcript"], legacy_transcript)
+        self.assertEqual(row["quality_status"], "pending")
+        self.assertIsNone(row["quality_detail"])
+        self.assertEqual(
+            row["transcript_sha256"],
+            hashlib.sha256(legacy_transcript.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(row["maya_delivery_status"], "ineligible")
+        self.assertEqual(row["maya_delivery_eligible"], 0)
+        self.assertIsNone(row["recorded_at"])
+        self.assertIsNone(row["maya_drop_id"])
+        self.assertIsNone(row["superseded_by_transcript_row_id"])
+        self.assertEqual(transcript_log.get_pending_maya_deliveries(), [])
+
+    def test_maya_due_query_and_builder_fail_closed_for_noncanonical_rows(
+        self,
+    ) -> None:
+        captured_at = "2026-07-28T12:34:56Z"
+        canonical_id = transcript_log.insert_transcript(
+            content_hash="maya-explicit-canonical",
+            source="iCloud",
+            transcript="Only this explicit canonical capture is Maya-due.",
+            ingest_state="transcribed",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        skipped_id = transcript_log.insert_transcript(
+            content_hash="maya-skipped-placeholder",
+            source="iCloud",
+            transcript="(skipped: file too large)",
+            ingest_state="skipped_too_large",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        migrated_id = transcript_log.insert_transcript(
+            content_hash="maya-migrated-placeholder",
+            source="iCloud",
+            transcript="(migrated — original transcript not preserved)",
+            ingest_state="transcribed",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        empty_id = transcript_log.insert_transcript(
+            content_hash="maya-empty-body",
+            source="iCloud",
+            transcript="   ",
+            ingest_state="transcribed",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        review_id = transcript_log.insert_transcript(
+            content_hash="maya-review-body",
+            source="iCloud",
+            transcript="This remains under review.",
+            ingest_state="needs_review",
+            recorded_at=captured_at,
+            quality_status="needs_review",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        maya_origin_id = transcript_log.insert_transcript(
+            content_hash="maya-origin-body",
+            source="maya:icloud",
+            transcript="This originated in Maya.",
+            ingest_state="transcribed",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        superseded_id = transcript_log.insert_transcript(
+            content_hash="maya-superseded-body",
+            source="iCloud",
+            transcript="This canonical row was later superseded.",
+            ingest_state="transcribed",
+            recorded_at=captured_at,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        self.assertTrue(
+            all(
+                row_id is not None
+                for row_id in (
+                    canonical_id,
+                    skipped_id,
+                    migrated_id,
+                    empty_id,
+                    review_id,
+                    maya_origin_id,
+                    superseded_id,
+                )
+            )
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE transcripts
+                SET superseded_by_transcript_row_id = ?
+                WHERE id = ?
+                """,
+                (canonical_id, superseded_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        due = transcript_log.get_pending_maya_deliveries()
+
+        self.assertEqual([row["id"] for row in due], [canonical_id])
+        self.assertEqual(
+            transcript_log.build_maya_v2_envelope(int(canonical_id))["captured_at"],
+            captured_at,
+        )
+        for row_id in (
+            skipped_id,
+            migrated_id,
+            empty_id,
+            review_id,
+            maya_origin_id,
+            superseded_id,
+        ):
+            with self.subTest(row_id=row_id):
+                with self.assertRaises(ValueError):
+                    transcript_log.build_maya_v2_envelope(int(row_id))
+
+    def test_canonical_insert_uses_exact_utf8_hash_and_queues_only_passed_quality(
+        self,
+    ) -> None:
+        passed_text = "Caf\u00e9 notes stay byte-exact."
+        passed_row_id = transcript_log.insert_transcript(
+            content_hash="canonical-passed-audio-hash",
+            source="iCloud",
+            transcript=passed_text,
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+        )
+        review_row_id = transcript_log.insert_transcript(
+            content_hash="canonical-review-audio-hash",
+            source="iCloud",
+            transcript="This requires human review.",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="control_token",
+        )
+
+        self.assertIsNotNone(passed_row_id)
+        self.assertIsNotNone(review_row_id)
+        passed = transcript_log.get_transcript(int(passed_row_id))
+        review = transcript_log.get_transcript(int(review_row_id))
+        self.assertEqual(
+            passed["transcript_sha256"],
+            hashlib.sha256(passed_text.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(passed["quality_status"], "passed")
+        self.assertIsNone(passed["quality_detail"])
+        self.assertEqual(review["quality_status"], "needs_review")
+        self.assertEqual(review["quality_detail"], "control_token")
+        self.assertEqual(passed["maya_delivery_eligible"], 1)
+        self.assertEqual(passed["maya_delivery_status"], "pending")
+        self.assertEqual(review["maya_delivery_eligible"], 0)
+        self.assertEqual(review["maya_delivery_status"], "ineligible")
+        self.assertEqual(
+            [delivery["transcript_row_id"] for delivery in transcript_log.get_pending_slack_deliveries()],
+            [passed_row_id],
+        )
+
+    def test_maya_delivery_receipts_and_failures_persist_independent_state(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-delivery-state-audio-hash",
+            source="iCloud",
+            transcript="Persist delivery acknowledgement state.",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+        )
+        self.assertIsNotNone(row_id)
+
+        transcript_log.mark_maya_delivery_failed(
+            int(row_id),
+            "raw provider response must not be persisted",
+        )
+        failed = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(failed["maya_delivery_status"], "failed")
+        self.assertEqual(failed["maya_delivery_error"], "delivery_error")
+        self.assertIsNone(failed["maya_drop_id"])
+
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
+        sent = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(sent["maya_delivery_status"], "sent")
+        self.assertEqual(sent["maya_drop_id"], "drop-penny-v2-123")
+        self.assertIsNone(sent["maya_delivery_error"])
+
+    def test_pending_slack_delivery_excludes_row_that_later_fails_quality(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-quality-dequeue-hash",
+            source="iCloud",
+            transcript="Do not publish a body that later fails quality.",
+            quality_status="passed",
+        )
+        self.assertIsNotNone(row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET quality_status = 'needs_review' WHERE id = ?",
+                (row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+
+    def test_concurrent_conflicting_maya_receipts_preserve_one_drop_id(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-conflicting-receipt-hash",
+            source="iCloud",
+            transcript="Only one durable Maya receipt may win.",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        select_gate = threading.Barrier(2)
+        real_get_conn = transcript_log._get_conn
+
+        class GateInitialReceiptRead:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+
+            def execute(self, sql: str, parameters: object = ()) -> object:
+                if sql.strip() == "SELECT maya_drop_id FROM transcripts WHERE id = ?":
+                    try:
+                        select_gate.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                return self.connection.execute(sql, parameters)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.connection, name)
+
+        outcomes: list[object] = []
+        outcomes_lock = threading.Lock()
+
+        def acknowledge(drop_id: str) -> None:
+            try:
+                transcript_log.mark_maya_delivery_sent(int(row_id), drop_id)
+            except Exception as exc:
+                outcome: object = exc
+            else:
+                outcome = drop_id
+            with outcomes_lock:
+                outcomes.append(outcome)
+
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=lambda: GateInitialReceiptRead(real_get_conn()),
+        ):
+            first = threading.Thread(target=acknowledge, args=("drop-race-a",))
+            second = threading.Thread(target=acknowledge, args=("drop-race-b",))
+            first.start()
+            second.start()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(len([outcome for outcome in outcomes if isinstance(outcome, str)]), 1)
+        self.assertEqual(len([outcome for outcome in outcomes if isinstance(outcome, ValueError)]), 1)
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertIn(stored["maya_drop_id"], {"drop-race-a", "drop-race-b"})
+
+    def test_maya_delivery_failure_does_not_overwrite_sent_receipt(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-sent-monotonic-hash",
+            source="iCloud",
+            transcript="A durable acknowledgement is terminal.",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T12:34:56Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(row_id)
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-terminal")
+
+        transcript_log.mark_maya_delivery_failed(int(row_id), "delivery_error")
+
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-terminal")
+        self.assertIsNone(stored["maya_delivery_error"])
+
+    def test_canonical_processed_file_migration_persists_exact_utf8_hash(self) -> None:
+        processed_file = Path(self.db_dir) / "legacy_processed.txt"
+        processed_file.write_text("legacy-processed-hash\n", encoding="utf-8")
+
+        with patch.object(
+            transcript_log,
+            "_MIGRATION_SOURCES",
+            [(processed_file, "iCloud")],
+        ):
+            conn = transcript_log._get_conn()
+            try:
+                migrated = transcript_log._migrate_processed_files(conn)
+                conn.commit()
+            finally:
+                conn.close()
+
+        self.assertEqual(migrated, 1)
+        conn = transcript_log._get_conn()
+        try:
+            stored_sha256 = conn.execute(
+                "SELECT transcript_sha256 FROM transcripts WHERE content_hash = ?",
+                ("legacy-processed-hash",),
+            ).fetchone()["transcript_sha256"]
+        finally:
+            conn.close()
+        self.assertEqual(
+            stored_sha256,
+            hashlib.sha256(
+                "(migrated \u2014 original transcript not preserved)".encode("utf-8")
+            ).hexdigest(),
+        )
+        migrated_row = transcript_log.get_transcript_by_hash(
+            "legacy-processed-hash"
+        )
+        self.assertEqual(migrated_row["maya_delivery_status"], "ineligible")
+        self.assertEqual(migrated_row["maya_delivery_eligible"], 0)
+        self.assertEqual(transcript_log.get_pending_maya_deliveries(), [])
+
     def test_init_db_migrates_retryable_legacy_failures_and_wrong_destinations(
         self,
     ) -> None:
@@ -242,6 +684,178 @@ class TranscriptLogTests(unittest.TestCase):
         )
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["message_text"], "retryable legacy body")
+
+    def test_init_db_versions_legacy_plans_without_reinterpreting_partial_progress(
+        self,
+    ) -> None:
+        sent_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-sent",
+            source="iCloud",
+            transcript="sent legacy body",
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        unstarted_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-unstarted",
+            source="iCloud",
+            transcript="unstarted legacy body",
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        partial_row_id = transcript_log.insert_transcript(
+            content_hash="legacy-plan-partial",
+            source="iCloud",
+            transcript="P" * 80_000,
+            ingest_state="routed",
+            enqueue_slack=False,
+        )
+        self.assertIsNotNone(sent_row_id)
+        self.assertIsNotNone(unstarted_row_id)
+        self.assertIsNotNone(partial_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE slack_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE slack_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_row_id INTEGER NOT NULL UNIQUE,
+                    channel_id TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    provider_ts TEXT,
+                    next_chunk_index INTEGER NOT NULL DEFAULT 0,
+                    chunk_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    chunk_provider_ts TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT,
+                    FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+                )
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO slack_deliveries (
+                    transcript_row_id, channel_id, message_text, status,
+                    provider_ts, next_chunk_index, chunk_provider_ts, sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        sent_row_id,
+                        "C0BKS0QT7FU",
+                        "sent legacy body",
+                        "sent",
+                        "legacy.latest",
+                        2,
+                        '["legacy.first", "legacy.latest"]',
+                        "2026-07-28 12:00:00",
+                    ),
+                    (
+                        unstarted_row_id,
+                        "C0BKS0QT7FU",
+                        "unstarted legacy body",
+                        "pending",
+                        None,
+                        0,
+                        "[]",
+                        None,
+                    ),
+                    (
+                        partial_row_id,
+                        "C0BKS0QT7FU",
+                        "P" * 80_000,
+                        "pending",
+                        "legacy.first",
+                        1,
+                        '["legacy.first"]',
+                        None,
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+        fresh_row_id = transcript_log.insert_transcript(
+            content_hash="current-plan-fresh",
+            source="iCloud",
+            transcript="fresh Block Kit body",
+            ingest_state="routed",
+        )
+        self.assertIsNotNone(fresh_row_id)
+
+        conn = transcript_log._get_conn()
+        try:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(slack_deliveries)")
+            }
+            self.assertIn("delivery_plan_version", columns)
+            rows = {
+                int(row["transcript_row_id"]): dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT transcript_row_id, message_text, status, last_error,
+                           delivery_plan_version, provider_ts,
+                           next_chunk_index, chunk_provider_ts,
+                           next_attempt_at, sent_at
+                    FROM slack_deliveries
+                    ORDER BY transcript_row_id
+                    """
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        sent = rows[int(sent_row_id)]
+        self.assertEqual(sent["message_text"], "sent legacy body")
+        self.assertEqual(sent["status"], "sent")
+        self.assertEqual(sent["delivery_plan_version"], "legacy_top_level_v1")
+        self.assertEqual(sent["provider_ts"], "legacy.latest")
+        self.assertEqual(sent["next_chunk_index"], 2)
+        self.assertEqual(
+            sent["chunk_provider_ts"],
+            '["legacy.first", "legacy.latest"]',
+        )
+        self.assertEqual(sent["sent_at"], "2026-07-28 12:00:00")
+
+        unstarted = rows[int(unstarted_row_id)]
+        self.assertEqual(unstarted["status"], "pending")
+        self.assertEqual(unstarted["delivery_plan_version"], "block_kit_v2")
+        self.assertIsNone(unstarted["provider_ts"])
+        self.assertEqual(unstarted["next_chunk_index"], 0)
+        self.assertEqual(unstarted["chunk_provider_ts"], "[]")
+
+        partial = rows[int(partial_row_id)]
+        self.assertEqual(partial["message_text"], "P" * 80_000)
+        self.assertEqual(partial["status"], "failed")
+        self.assertEqual(partial["delivery_plan_version"], "legacy_top_level_v1")
+        self.assertEqual(
+            partial["last_error"],
+            "legacy_partial_reconciliation_required",
+        )
+        self.assertIsNone(partial["next_attempt_at"])
+        self.assertEqual(partial["provider_ts"], "legacy.first")
+        self.assertEqual(partial["next_chunk_index"], 1)
+        self.assertEqual(partial["chunk_provider_ts"], '["legacy.first"]')
+
+        fresh = rows[int(fresh_row_id)]
+        self.assertEqual(fresh["status"], "pending")
+        self.assertEqual(fresh["delivery_plan_version"], "block_kit_v2")
+        self.assertEqual(
+            {
+                int(row["transcript_row_id"])
+                for row in transcript_log.get_pending_slack_deliveries()
+            },
+            {int(unstarted_row_id), int(fresh_row_id)},
+        )
 
     def test_init_db_migrates_legacy_transcript_id_to_transcript_row_id(self) -> None:
         first_row_id = transcript_log.insert_transcript(
@@ -741,6 +1355,44 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["transcript_row_id"], row_id)
 
+    def test_quality_failure_outbox_is_body_free_durable_and_idempotent(self) -> None:
+        transcript = "PRIVATE TRANSCRIPT BODY MUST NEVER ENTER THE LEDGER RECEIPT"
+        row_id = transcript_log.insert_transcript(
+            content_hash="quality-failure-stable-hash",
+            source="iCloud",
+            transcript=transcript,
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail=(
+                "attempt_1=consecutive_token_repetition;"
+                "attempt_2=control_token"
+            ),
+            enqueue_slack=False,
+        )
+        transcript_log.init_db()
+
+        pending = transcript_log.get_pending_quality_failure_deliveries()
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transcript_row_id"], row_id)
+        self.assertEqual(
+            pending[0]["idempotency_key"],
+            "penny:quality-failure:quality-failure-stable-hash",
+        )
+        self.assertEqual(
+            pending[0]["content_kind"],
+            "transcript_quality_failure",
+        )
+        self.assertEqual(pending[0]["destination"], "maya-ledger")
+        self.assertNotIn(transcript, pending[0]["message_text"])
+        self.assertIn(
+            "attempt_2=control_token",
+            pending[0]["message_text"],
+        )
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["quality_failure_pending_count"], 1)
+        self.assertEqual(health["quality_failure_failed_count"], 0)
+
     def test_mark_slack_delivery_sent_persists_provider_timestamp(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="provider-ts",
@@ -768,6 +1420,205 @@ class TranscriptLogTests(unittest.TestCase):
             conn.close()
         self.assertEqual(dict(row)["status"], "sent")
         self.assertEqual(dict(row)["provider_ts"], "123.456")
+
+    def test_late_failure_cannot_reopen_completed_parent_or_final_continuation(
+        self,
+    ) -> None:
+        parent_row_id = transcript_log.insert_transcript(
+            content_hash="slack-parent-terminal",
+            source="iCloud",
+            transcript="One parent is terminal after its receipt.",
+        )
+        parent_delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=parent_row_id
+        )[0]["id"]
+        transcript_log.mark_slack_delivery_chunk_sent(
+            parent_delivery_id,
+            chunk_index=0,
+            chunk_count=1,
+            provider_ts="parent.terminal",
+        )
+
+        continuation_row_id = transcript_log.insert_transcript(
+            content_hash="slack-continuation-terminal",
+            source="iCloud",
+            transcript="An extreme message's final continuation is also terminal.",
+        )
+        continuation_delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=continuation_row_id
+        )[0]["id"]
+        transcript_log.mark_slack_delivery_chunk_sent(
+            continuation_delivery_id,
+            chunk_index=0,
+            chunk_count=2,
+            provider_ts="parent.extreme",
+        )
+        transcript_log.mark_slack_delivery_chunk_sent(
+            continuation_delivery_id,
+            chunk_index=1,
+            chunk_count=2,
+            provider_ts="continuation.final",
+        )
+
+        transcript_log.mark_slack_delivery_failed(
+            parent_delivery_id,
+            "delivery_error",
+        )
+        transcript_log.mark_slack_delivery_failed(
+            continuation_delivery_id,
+            "delivery_error",
+        )
+
+        conn = transcript_log._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, status, attempt_count, chunk_attempt_count,
+                       last_error, provider_ts, next_chunk_index
+                FROM slack_deliveries
+                WHERE id IN (?, ?)
+                ORDER BY id
+                """,
+                (parent_delivery_id, continuation_delivery_id),
+            ).fetchall()
+        finally:
+            conn.close()
+        parent, continuation = [dict(row) for row in rows]
+        self.assertEqual(
+            parent,
+            {
+                "id": parent_delivery_id,
+                "status": "sent",
+                "attempt_count": 0,
+                "chunk_attempt_count": 0,
+                "last_error": None,
+                "provider_ts": "parent.terminal",
+                "next_chunk_index": 1,
+            },
+        )
+        self.assertEqual(
+            continuation,
+            {
+                "id": continuation_delivery_id,
+                "status": "sent",
+                "attempt_count": 0,
+                "chunk_attempt_count": 0,
+                "last_error": None,
+                "provider_ts": "parent.extreme",
+                "next_chunk_index": 2,
+            },
+        )
+
+    def test_sent_and_failure_race_cannot_reopen_slack_delivery(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-sent-failure-race",
+            source="iCloud",
+            transcript="The provider receipt wins over a concurrent late failure.",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=row_id
+        )[0]["id"]
+        update_barrier = threading.Barrier(2)
+        sent_committed = threading.Event()
+        real_get_conn = transcript_log._get_conn
+
+        class OrderedRaceConnection:
+            def __init__(
+                self,
+                connection: sqlite3.Connection,
+                role: str,
+            ) -> None:
+                self.connection = connection
+                self.role = role
+
+            def execute(self, sql: str, parameters: object = ()) -> object:
+                if sql.lstrip().startswith("UPDATE slack_deliveries"):
+                    update_barrier.wait(timeout=5)
+                    if self.role == "failure":
+                        self.assert_sent_committed()
+                return self.connection.execute(sql, parameters)
+
+            def assert_sent_committed(self) -> None:
+                if not sent_committed.wait(timeout=5):
+                    raise AssertionError("sent transition did not commit")
+
+            def commit(self) -> None:
+                self.connection.commit()
+                if self.role == "sent":
+                    sent_committed.set()
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.connection, name)
+
+        errors: list[Exception] = []
+        errors_lock = threading.Lock()
+
+        def run_sent() -> None:
+            try:
+                transcript_log.mark_slack_delivery_chunk_sent(
+                    delivery_id,
+                    chunk_index=0,
+                    chunk_count=1,
+                    provider_ts="race.sent",
+                )
+            except Exception as exc:
+                with errors_lock:
+                    errors.append(exc)
+
+        def run_failure() -> None:
+            try:
+                transcript_log.mark_slack_delivery_failed(
+                    delivery_id,
+                    "delivery_error",
+                )
+            except Exception as exc:
+                with errors_lock:
+                    errors.append(exc)
+
+        def get_race_connection() -> OrderedRaceConnection:
+            role = "failure" if threading.current_thread().name == "failure" else "sent"
+            return OrderedRaceConnection(real_get_conn(), role)
+
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=get_race_connection,
+        ):
+            sent_thread = threading.Thread(target=run_sent, name="sent")
+            failure_thread = threading.Thread(target=run_failure, name="failure")
+            sent_thread.start()
+            failure_thread.start()
+            sent_thread.join(timeout=5)
+            failure_thread.join(timeout=5)
+
+        self.assertFalse(sent_thread.is_alive())
+        self.assertFalse(failure_thread.is_alive())
+        self.assertEqual(errors, [])
+        conn = transcript_log._get_conn()
+        try:
+            stored = dict(
+                conn.execute(
+                    """
+                    SELECT status, provider_ts, attempt_count,
+                           chunk_attempt_count, last_error
+                    FROM slack_deliveries
+                    WHERE id = ?
+                    """,
+                    (delivery_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(
+            stored,
+            {
+                "status": "sent",
+                "provider_ts": "race.sent",
+                "attempt_count": 0,
+                "chunk_attempt_count": 0,
+                "last_error": None,
+            },
+        )
 
     def test_mark_slack_delivery_failed_schedules_retry_and_hides_until_due(self) -> None:
         row_id = transcript_log.insert_transcript(
@@ -853,6 +1704,96 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["sent_count"], 0)
         self.assertEqual(health["failed_count"], 0)
         self.assertEqual(health["health_error"], 1)
+
+    def test_maya_delivery_health_reports_due_backoff_failed_and_quality_counts(
+        self,
+    ) -> None:
+        due_id = transcript_log.insert_transcript(
+            content_hash="maya-health-due",
+            source="iCloud",
+            transcript="due now",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T10:00:00Z",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        backoff_id = transcript_log.insert_transcript(
+            content_hash="maya-health-backoff",
+            source="iCloud",
+            transcript="retry later",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T10:01:00Z",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        failed_id = transcript_log.insert_transcript(
+            content_hash="maya-health-failed",
+            source="iCloud",
+            transcript="failed permanently",
+            ingest_state="transcribed",
+            recorded_at="2026-07-28T10:02:00Z",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        transcript_log.insert_transcript(
+            content_hash="maya-health-review",
+            source="iCloud",
+            transcript="review this",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="attempt_1=repetition;attempt_2=control_token",
+            enqueue_slack=False,
+        )
+        transcript_log.mark_maya_delivery_retryable(
+            int(backoff_id),
+            "delivery_error",
+            retry_after_seconds=120,
+        )
+        transcript_log.mark_maya_delivery_failed(
+            int(failed_id),
+            "provider_error",
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET created_at = datetime('now', '-120 seconds') "
+                "WHERE id = ?",
+                (due_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        health = transcript_log.get_maya_delivery_health()
+
+        self.assertEqual(health["pending_count"], 2)
+        self.assertEqual(health["due_count"], 1)
+        self.assertEqual(health["failed_count"], 1)
+        self.assertGreaterEqual(health["oldest_due_age_seconds"], 119)
+        self.assertLessEqual(health["oldest_due_age_seconds"], 180)
+        self.assertEqual(health["quality_needs_review_count"], 1)
+        self.assertEqual(health["health_error"], 0)
+
+    def test_maya_delivery_health_surfaces_query_failure(self) -> None:
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=sqlite3.OperationalError("secret database detail"),
+        ):
+            health = transcript_log.get_maya_delivery_health()
+
+        self.assertEqual(
+            health,
+            {
+                "pending_count": 0,
+                "due_count": 0,
+                "failed_count": 0,
+                "oldest_due_age_seconds": 0,
+                "quality_needs_review_count": 0,
+                "query_ok": 0,
+                "health_error": 1,
+            },
+        )
 
     def test_mark_slack_delivery_sent_raises_write_failure(self) -> None:
         conn = Mock()

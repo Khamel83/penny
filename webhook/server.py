@@ -25,6 +25,7 @@ from core import (
     get_file_hash,
     classify_and_route,
 )
+from transcript_quality import TranscriptionResult, transcribe_with_quality
 from transcript_log import init_db, insert_transcript, is_already_logged
 
 cfg = get_config()
@@ -36,8 +37,7 @@ MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
 # ===== Transcription =====
 
-def transcribe(path):
-    import mlx_whisper
+def transcribe(path: Path) -> TranscriptionResult:
     import subprocess as _sp
 
     # Normalize to 16kHz mono WAV before Whisper to handle CAF, AMR, and other
@@ -55,11 +55,10 @@ def transcribe(path):
 
     log.info("Transcribing: %s", transcribe_path)
     try:
-        result = mlx_whisper.transcribe(
-            str(transcribe_path),
-            path_or_hf_repo=cfg.voice_memos.whisper_model,
+        return transcribe_with_quality(
+            transcribe_path,
+            model=cfg.voice_memos.whisper_model,
         )
-        return result["text"].strip()
     finally:
         if wav_path.exists():
             wav_path.unlink(missing_ok=True)
@@ -122,7 +121,29 @@ def upload():
             log.info("Already logged this file")
             return jsonify({"status": "ok", "message": "already processed"})
 
-        transcript = transcribe(temp_path)
+        transcription = transcribe(temp_path)
+        if not transcription.quality.passed:
+            quality_detail = transcription.quality_detail or (
+                f"attempt_{transcription.attempts}="
+                f"{transcription.quality.reason or 'unknown_quality_failure'}"
+            )
+            log.warning(
+                "Upload transcript needs review (reason=%s)",
+                transcription.quality.reason,
+            )
+            insert_transcript(
+                content_hash=file_hash,
+                source="Shortcut",
+                transcript=transcription.text,
+                ingest_state="needs_review",
+                error_message=transcription.quality.reason,
+                quality_status="needs_review",
+                quality_detail=quality_detail,
+                enqueue_slack=False,
+            )
+            return jsonify({"error": "Transcript needs review"}), 422
+
+        transcript = transcription.text
         log.info("Transcript: %s...", transcript[:100])
 
         row_id = insert_transcript(
@@ -132,7 +153,12 @@ def upload():
             enqueue_slack=False,
         )
         if row_id is not None:
-            result = classify_and_route(transcript, source="Shortcut", row_id=row_id)
+            result = classify_and_route(
+                transcript,
+                source="Shortcut",
+                row_id=row_id,
+                allow_maya=False,
+            )
         else:
             result = {"skip": True, "reason": "duplicate"}
 
@@ -183,7 +209,12 @@ def ingest():
             enqueue_slack=False,
         )
         if row_id is not None:
-            result = classify_and_route(text, source=source, row_id=row_id)
+            result = classify_and_route(
+                text,
+                source=source,
+                row_id=row_id,
+                allow_maya=False,
+            )
         else:
             result = {"skip": True, "reason": "duplicate"}
     except Exception as e:
