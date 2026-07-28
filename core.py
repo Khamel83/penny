@@ -511,6 +511,7 @@ def classify_and_route(
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
     progress = _load_routing_progress(row_id)
+    allow_maya = allow_maya and not source.lower().startswith("maya:")
 
     if not transcript:
         if row_id is not None:
@@ -527,10 +528,9 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
-    # Route through Maya if configured. Transport/response failures fall back to
-    # local routing; persisted-body failures are terminal for the durable row.
-    # allow_maya=False is set by the /deliver endpoint, which receives transcripts
-    # FROM Maya — re-sending them would loop forever.
+    # Retain the v1 Maya route for noncanonical callers. Persisted capture paths
+    # pass allow_maya=False and use the independent durable v2 worker instead.
+    # Maya-originated content is always local to prevent a delivery loop.
     if allow_maya:
         try:
             if _route_to_maya(transcript, source, row_id, duration_seconds):

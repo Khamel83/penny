@@ -147,7 +147,12 @@ def upload():
             enqueue_slack=False,
         )
         if row_id is not None:
-            result = classify_and_route(transcript, source="Shortcut", row_id=row_id)
+            result = classify_and_route(
+                transcript,
+                source="Shortcut",
+                row_id=row_id,
+                allow_maya=False,
+            )
         else:
             result = {"skip": True, "reason": "duplicate"}
 
@@ -198,7 +203,12 @@ def ingest():
             enqueue_slack=False,
         )
         if row_id is not None:
-            result = classify_and_route(text, source=source, row_id=row_id)
+            result = classify_and_route(
+                text,
+                source=source,
+                row_id=row_id,
+                allow_maya=False,
+            )
         else:
             result = {"skip": True, "reason": "duplicate"}
     except Exception as e:

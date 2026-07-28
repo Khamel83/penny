@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,6 +44,65 @@ class _SlackResponse:
 
     def json(self) -> dict[str, object]:
         return self._payload
+
+
+class _MayaResponse:
+    def __init__(
+        self,
+        payload: dict[str, object],
+        *,
+        status_code: int = 200,
+    ) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+def _assert_valid_maya_submission(body: dict[str, object]) -> None:
+    """Mirror Maya's PennyTranscriptSubmission boundary without adding Pydantic."""
+    assert set(body) == {
+        "schema_version",
+        "transcript_id",
+        "transcript_sha256",
+        "transcript",
+        "source",
+        "captured_at",
+        "duration_seconds",
+        "audio_provenance",
+        "source_spans",
+        "client_ref",
+    }
+    assert body["schema_version"] == "penny-maya.v2"
+    assert isinstance(body["transcript_id"], str)
+    assert isinstance(body["transcript"], str) and body["transcript"].strip()
+    assert body["transcript_sha256"] == hashlib.sha256(
+        body["transcript"].encode("utf-8")
+    ).hexdigest()
+    assert body["client_ref"] == f"penny:{body['transcript_id']}"
+    assert isinstance(body["source"], str)
+    datetime.fromisoformat(str(body["captured_at"]).replace("Z", "+00:00"))
+    assert body["duration_seconds"] is None or body["duration_seconds"] >= 0
+    assert isinstance(body["audio_provenance"], dict)
+    assert isinstance(body["source_spans"], list)
+
+
+def _maya_receipt(
+    envelope: dict[str, object],
+    *,
+    drop_id: str,
+    duplicate: bool,
+) -> dict[str, object]:
+    return {
+        "schema_version": "penny-maya.v2",
+        "transcript_id": envelope["transcript_id"],
+        "transcript_sha256": envelope["transcript_sha256"],
+        "drop_id": drop_id,
+        "durable_acknowledged_at": "2026-07-28T19:15:00Z",
+        "duplicate": duplicate,
+    }
 
 
 class TranscriptContractTests(unittest.TestCase):
@@ -208,6 +268,166 @@ class TranscriptContractTests(unittest.TestCase):
             str(envelope["captured_at"]),
             r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$",
         )
+
+    def test_maya_delivery_worker_posts_authenticated_v2_and_accepts_duplicate_receipt(
+        self,
+    ) -> None:
+        import maya_delivery
+
+        transcript = "Deliver this persisted transcript to Maya exactly once."
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-worker-contract-hash",
+            source="iCloud",
+            transcript=transcript,
+            duration_seconds=9.5,
+            discovered_at="2026-07-28T18:00:00Z",
+            quality_status="passed",
+        )
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        response = _MayaResponse(
+            _maya_receipt(
+                envelope,
+                drop_id="drop-penny-v2-worker",
+                duplicate=True,
+            )
+        )
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya:8200/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(
+                maya_delivery.requests,
+                "post",
+                return_value=response,
+            ) as maya_post,
+        ):
+            delivered = maya_delivery.process_pending_maya_deliveries()
+
+        self.assertEqual(delivered, 1)
+        posted = maya_post.call_args.kwargs
+        posted_body = json.loads(posted["data"].decode("utf-8"))
+        _assert_valid_maya_submission(posted_body)
+        self.assertEqual(posted_body, envelope)
+        self.assertEqual(
+            posted["headers"],
+            {
+                "Authorization": "Bearer test-token",
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertGreater(posted["timeout"], 0)
+        self.assertLessEqual(posted["timeout"], 30)
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-penny-v2-worker")
+
+    def test_maya_transport_retry_is_identity_stable_and_never_falls_back_to_notes(
+        self,
+    ) -> None:
+        import maya_delivery
+
+        transcript = "Retry these exact UTF-8 bytes: café.\nSecond line."
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-worker-retry-hash",
+            source="Shortcut",
+            transcript=transcript,
+            discovered_at="2026-07-28T18:01:00Z",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        accepted = _MayaResponse(
+            _maya_receipt(
+                envelope,
+                drop_id="drop-penny-v2-retry",
+                duplicate=False,
+            )
+        )
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya:8200/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(
+                maya_delivery.requests,
+                "post",
+                side_effect=[
+                    maya_delivery.requests.Timeout("simulated timeout"),
+                    accepted,
+                ],
+            ) as maya_post,
+            patch.object(core, "add_note") as add_note,
+        ):
+            first_delivered = maya_delivery.process_pending_maya_deliveries()
+            after_timeout = transcript_log.get_transcript(int(row_id))
+            second_delivered = maya_delivery.process_pending_maya_deliveries()
+
+        self.assertEqual(first_delivered, 0)
+        self.assertEqual(after_timeout["maya_delivery_status"], "pending")
+        self.assertEqual(second_delivered, 1)
+        self.assertEqual(maya_post.call_count, 2)
+        first_body = maya_post.call_args_list[0].kwargs["data"]
+        second_body = maya_post.call_args_list[1].kwargs["data"]
+        self.assertEqual(first_body, second_body)
+        self.assertEqual(json.loads(first_body.decode("utf-8")), envelope)
+        add_note.assert_not_called()
+
+    def test_maya_delivery_worker_fails_closed_on_conflicting_receipt_and_skips_review(
+        self,
+    ) -> None:
+        import maya_delivery
+
+        eligible_id = transcript_log.insert_transcript(
+            content_hash="maya-worker-conflict-hash",
+            source="iCloud",
+            transcript="Reject a receipt for a different transcript.",
+            quality_status="passed",
+        )
+        review_id = transcript_log.insert_transcript(
+            content_hash="maya-worker-review-hash",
+            source="iCloud",
+            transcript="Keep this transcript under human review.",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            enqueue_slack=False,
+        )
+        envelope = transcript_log.build_maya_v2_envelope(int(eligible_id))
+        conflicting = _maya_receipt(
+            envelope,
+            drop_id="drop-conflicting-receipt",
+            duplicate=False,
+        )
+        conflicting["transcript_id"] = "different-transcript"
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya:8200/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(
+                maya_delivery.requests,
+                "post",
+                return_value=_MayaResponse(conflicting),
+            ) as maya_post,
+        ):
+            delivered = maya_delivery.process_pending_maya_deliveries()
+
+        self.assertEqual(delivered, 0)
+        self.assertEqual(maya_post.call_count, 1)
+        eligible = transcript_log.get_transcript(int(eligible_id))
+        review = transcript_log.get_transcript(int(review_id))
+        self.assertEqual(eligible["maya_delivery_status"], "failed")
+        self.assertIsNone(eligible["maya_drop_id"])
+        self.assertEqual(review["maya_delivery_status"], "pending")
 
     def test_empty_normalized_transcript_stays_failed_and_not_slack_eligible(
         self,

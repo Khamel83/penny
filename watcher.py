@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
+from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
 from transcript_quality import transcribe_with_quality
 from transcript_log import (
@@ -496,6 +497,7 @@ def _process_audio_file(
             source="iCloud",
             row_id=row_id,
             duration_seconds=duration_seconds,
+            allow_maya=False,
         )
         if recording_pk is not None:
             mark_voice_memo_routed(recording_pk)
@@ -648,6 +650,15 @@ def _process_slack_outbox() -> None:
         log.error("Slack outbox processing failed: %s", e, exc_info=True)
 
 
+def _process_maya_outbox() -> None:
+    try:
+        delivered = process_pending_maya_deliveries(limit=1)
+        if delivered:
+            log.info("Delivered %s transcript(s) to Maya", delivered)
+    except Exception as e:
+        log.error("Maya outbox processing failed: %s", e, exc_info=True)
+
+
 def _retry_waiting_for_files(limit: int) -> None:
     waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
     if not waiting:
@@ -694,6 +705,7 @@ def _retry_pending_routes(limit: int) -> None:
                 source=row["source"],
                 row_id=row["id"],
                 duration_seconds=row.get("duration_seconds"),
+                allow_maya=False,
             )
             if row["source"] == "iCloud":
                 mark_voice_memo_routed_for_transcript(row["id"])
@@ -706,6 +718,7 @@ def _process_ingest_pass() -> None:
     _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     _retry_pending_routes(limit=5)
+    _process_maya_outbox()
     _process_slack_outbox()
 
 

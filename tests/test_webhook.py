@@ -110,6 +110,7 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+            self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_upload_duplicate_returns_ok(self, mock_logged):
@@ -159,6 +160,7 @@ class IngestTests(unittest.TestCase):
             mock_route.assert_called_once()
             mock_insert.assert_called_once()
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+            self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
     def test_ingest_missing_json_returns_400(self):
         with app.test_client() as client:

@@ -30,6 +30,8 @@ logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
 import watcher  # noqa: E402
+import core  # noqa: E402
+import maya_delivery  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 
@@ -85,7 +87,7 @@ class WatcherTests(unittest.TestCase):
                 watcher,
                 "classify_and_route",
                 side_effect=lambda *args, **kwargs: events.append("route"),
-            ),
+            ) as route_mock,
             patch.object(
                 watcher,
                 "update_transcript_stages",
@@ -104,6 +106,7 @@ class WatcherTests(unittest.TestCase):
 
         self.assertTrue(processed)
         self.assertEqual(events, ["route"])
+        self.assertIs(route_mock.call_args.kwargs["allow_maya"], False)
         stage_mock.assert_not_called()
         slack_mock.assert_not_called()
 
@@ -195,7 +198,57 @@ class WatcherTests(unittest.TestCase):
             source="iCloud",
             row_id=eligible_id,
             duration_seconds=None,
+            allow_maya=False,
         )
+
+    def test_maya_origin_retry_uses_persisted_source_and_never_reenters_maya(
+        self,
+    ) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-origin-retry-hash",
+            source="maya:icloud",
+            transcript="Keep this Maya-originated retry local.",
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=False,
+        )
+        observed_kwargs: dict[str, object] = {}
+        original_classify_and_route = watcher.classify_and_route
+
+        def observe_route(*args, **kwargs):
+            observed_kwargs.update(kwargs)
+            return original_classify_and_route(*args, **kwargs)
+
+        with (
+            patch.object(
+                watcher,
+                "classify_and_route",
+                side_effect=observe_route,
+            ),
+            patch.object(core.cfg.maya, "transcript_url", "http://maya.test/ingest/transcript"),
+            patch.object(core.cfg.maya, "ingest_token", "test-token"),
+            patch.object(core, "_route_to_maya") as legacy_maya,
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "add_note", return_value=True) as add_note,
+            patch.object(maya_delivery.cfg.maya, "transcript_url", "http://maya.test/ingest/transcript"),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(maya_delivery.requests, "post") as v2_maya,
+        ):
+            watcher._retry_pending_routes(limit=1)
+            delivered = maya_delivery.process_pending_maya_deliveries()
+
+        self.assertEqual(observed_kwargs["source"], "maya:icloud")
+        self.assertIs(observed_kwargs["allow_maya"], False)
+        legacy_maya.assert_not_called()
+        v2_maya.assert_not_called()
+        self.assertEqual(delivered, 0)
+        add_note.assert_called_once_with(
+            "Keep this Maya-originated retry local.",
+            folder_name="Penny",
+            source="maya:icloud",
+        )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["routed_to"], "note in Penny")
 
     def test_ingest_pass_drains_one_slack_chunk_after_all_local_work(self) -> None:
         events: list[str] = []
@@ -227,15 +280,33 @@ class WatcherTests(unittest.TestCase):
                 "_process_slack_outbox",
                 side_effect=lambda: events.append("slack"),
             ) as slack_mock,
+            patch.object(
+                watcher,
+                "_process_maya_outbox",
+                side_effect=lambda: events.append("maya"),
+                create=True,
+            ) as maya_mock,
         ):
             watcher._process_ingest_pass()
 
-        self.assertEqual(events, ["db", "waiting", "disk", "routes", "slack"])
+        self.assertEqual(events, ["db", "waiting", "disk", "routes", "maya", "slack"])
+        maya_mock.assert_called_once_with()
         slack_mock.assert_called_once_with()
 
     def test_slack_outbox_helper_requests_one_delivery(self) -> None:
         with patch.object(watcher, "process_pending_slack", return_value=0) as process_mock:
             watcher._process_slack_outbox()
+
+        process_mock.assert_called_once_with(limit=1)
+
+    def test_maya_outbox_helper_requests_one_delivery(self) -> None:
+        with patch.object(
+            watcher,
+            "process_pending_maya_deliveries",
+            return_value=0,
+            create=True,
+        ) as process_mock:
+            watcher._process_maya_outbox()
 
         process_mock.assert_called_once_with(limit=1)
 
