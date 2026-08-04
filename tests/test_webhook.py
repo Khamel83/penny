@@ -285,5 +285,248 @@ def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
     route_called.assert_not_called()
 
 
+ACTION_PAYLOADS = [
+    ("POST", "/actions/reminder", {"title": "Call dentist", "list": "Inbox"}),
+    ("POST", "/actions/note", {"title": "Meeting", "folder": "Penny"}),
+    ("GET", "/actions/reminders/state?list=Inbox", None),
+]
+
+
+@pytest.mark.parametrize("method,path,payload", ACTION_PAYLOADS)
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-secret"])
+def test_action_routes_reject_missing_or_incorrect_bearer(
+    client, monkeypatch, method, path, payload, authorization
+):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    headers = {} if authorization is None else {"Authorization": authorization}
+
+    response = client.open(path, method=method, json=payload, headers=headers)
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "unauthorized"}
+
+
+@pytest.mark.parametrize("method,path,payload", ACTION_PAYLOADS)
+def test_action_routes_reject_requests_when_secret_is_unset(
+    client, monkeypatch, method, path, payload
+):
+    monkeypatch.delenv("PENNY_WEBHOOK_SECRET", raising=False)
+
+    response = client.open(path, method=method, json=payload)
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "unauthorized"}
+
+
+def test_create_reminder_returns_provider_id_and_external_id(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    captured = {}
+
+    def _fake_add_reminder(title, list_name, **kwargs):
+        captured["title"] = title
+        captured["list_name"] = list_name
+        captured.update(kwargs)
+        return "x-apple-reminder://created"
+
+    monkeypatch.setattr(server, "add_reminder", _fake_add_reminder)
+
+    response = client.post(
+        "/actions/reminder",
+        json={
+            "title": "Call dentist",
+            "list": "Inbox",
+            "notes": "https://example.test",
+            "external_id": "maya-123",
+        },
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "created",
+        "provider_id": "x-apple-reminder://created",
+        "external_id": "maya-123",
+    }
+    # Maya's lists must be self-provisioning: a missing list is created, never
+    # silently diverted into Penny's Inbox fallback.
+    assert captured["create_if_missing"] is True
+    assert captured["fallback_list"] == "Inbox"
+
+
+@pytest.mark.parametrize(
+    "payload,field",
+    [
+        ({"list": "Inbox"}, "title"),
+        ({"title": "Call dentist"}, "list"),
+    ],
+)
+def test_create_reminder_validates_required_fields(client, monkeypatch, payload, field):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+
+    response = client.post("/actions/reminder", json=payload, headers=_auth())
+
+    assert response.status_code == 422
+    assert response.get_json() == {
+        "error": f"{field} is required and must be non-empty"
+    }
+
+
+def test_create_reminder_returns_502_when_apple_script_fails(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    monkeypatch.setattr(server, "add_reminder", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/actions/reminder",
+        json={"title": "Call dentist", "list": "Inbox"},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "applescript_failed"}
+
+
+def test_create_note_returns_provider_id(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    monkeypatch.setattr(
+        server,
+        "add_note",
+        lambda text, folder_name="Penny", source="", title=None:
+        "x-coredata://created/ICNote/p823",
+    )
+
+    response = client.post(
+        "/actions/note",
+        json={
+            "title": "Meeting",
+            "folder": "Penny",
+            "body": "First line\nhttps://example.test",
+        },
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "created",
+        "provider_id": "x-coredata://created/ICNote/p823",
+    }
+
+
+def test_create_note_validates_required_folder(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+
+    response = client.post(
+        "/actions/note", json={"title": "Meeting"}, headers=_auth()
+    )
+
+    assert response.status_code == 422
+    assert response.get_json() == {
+        "error": "folder is required and must be non-empty"
+    }
+
+
+def test_read_reminders_state_returns_populated_list(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    reminders = [
+        {
+            "provider_id": "x-apple-reminder://one",
+            "title": "Call dentist",
+            "completed": False,
+            "completion_date": None,
+            "notes": "https://example.test",
+        }
+    ]
+    monkeypatch.setattr(server, "read_reminders", lambda list_name: reminders)
+
+    response = client.get(
+        "/actions/reminders/state?list=Inbox", headers=_auth()
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"list": "Inbox", "reminders": reminders}
+
+
+def test_read_reminders_state_requires_list_param(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+
+    response = client.get("/actions/reminders/state", headers=_auth())
+
+    assert response.status_code == 422
+    assert response.get_json() == {
+        "error": "list is required and must be non-empty"
+    }
+
+
+def test_read_reminders_state_returns_404_for_unknown_list(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    monkeypatch.setattr(server, "read_reminders", lambda list_name: None)
+
+    response = client.get(
+        "/actions/reminders/state?list=Missing", headers=_auth()
+    )
+
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "list_not_found"}
+
+
+def test_read_reminders_state_returns_502_on_apple_script_failure(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    monkeypatch.setattr(
+        server, "read_reminders", lambda list_name: (_ for _ in ()).throw(RuntimeError("failed"))
+    )
+
+    response = client.get(
+        "/actions/reminders/state?list=Inbox", headers=_auth()
+    )
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "applescript_failed"}
+
+
+def test_action_routes_never_call_classify_and_route(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    import webhook.server as server
+
+    route_mock = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route_mock)
+    monkeypatch.setattr(
+        server, "add_reminder", lambda *args, **kwargs: "x-apple-reminder://created"
+    )
+    monkeypatch.setattr(
+        server, "add_note", lambda *args, **kwargs: "x-coredata://created/ICNote/p823"
+    )
+    monkeypatch.setattr(server, "read_reminders", lambda list_name: [])
+
+    reminder_response = client.post(
+        "/actions/reminder",
+        json={"title": "Call dentist", "list": "Inbox"},
+        headers=_auth(),
+    )
+    note_response = client.post(
+        "/actions/note",
+        json={"title": "Meeting", "folder": "Penny"},
+        headers=_auth(),
+    )
+    state_response = client.get(
+        "/actions/reminders/state?list=Inbox", headers=_auth()
+    )
+
+    assert reminder_response.status_code == 200
+    assert note_response.status_code == 200
+    assert state_response.status_code == 200
+    route_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

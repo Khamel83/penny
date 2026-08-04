@@ -27,6 +27,7 @@ from core import (
 )
 from transcript_quality import TranscriptionResult, transcribe_with_quality
 from transcript_log import init_db, insert_transcript, is_already_logged
+from reminders import add_note, add_reminder, read_reminders
 
 cfg = get_config()
 log = setup_logging("webhook")
@@ -279,6 +280,113 @@ def deliver():
         return jsonify({"error": f"routing failed: {e}"}), 500
 
     return jsonify({"status": "delivered", "id": row_id})
+
+
+@app.route("/actions/reminder", methods=["POST"])
+def create_action_reminder():
+    """Create one exact reminder for an authenticated Maya action."""
+    secret = os.environ.get("PENNY_WEBHOOK_SECRET", "")
+    provided = request.headers.get("Authorization", "")
+    if not secret or provided != f"Bearer {secret}":
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {}
+    title_value = body.get("title")
+    list_value = body.get("list")
+    title = title_value.strip() if isinstance(title_value, str) else ""
+    list_name = list_value.strip() if isinstance(list_value, str) else ""
+    if not title:
+        return jsonify({"error": "title is required and must be non-empty"}), 422
+    if not list_name:
+        return jsonify({"error": "list is required and must be non-empty"}), 422
+
+    notes = body.get("notes") or ""
+    if not isinstance(notes, str):
+        notes = str(notes)
+    try:
+        provider_id = add_reminder(
+            title,
+            list_name,
+            fallback_list=list_name,
+            notes=notes,
+            create_if_missing=True,
+        )
+    except Exception as e:
+        log.error("/actions/reminder: AppleScript failed: %s", e)
+        return jsonify({"error": "applescript_failed"}), 502
+    if not provider_id:
+        return jsonify({"error": "applescript_failed"}), 502
+
+    log.info("/actions/reminder: created %s in %s", provider_id, list_name)
+    return jsonify({
+        "status": "created",
+        "provider_id": provider_id,
+        "external_id": body.get("external_id"),
+    })
+
+
+@app.route("/actions/note", methods=["POST"])
+def create_action_note():
+    """Create one exact note for an authenticated Maya action."""
+    secret = os.environ.get("PENNY_WEBHOOK_SECRET", "")
+    provided = request.headers.get("Authorization", "")
+    if not secret or provided != f"Bearer {secret}":
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {}
+    title_value = body.get("title")
+    folder_value = body.get("folder")
+    title = title_value.strip() if isinstance(title_value, str) else ""
+    folder_name = folder_value.strip() if isinstance(folder_value, str) else ""
+    if not title:
+        return jsonify({"error": "title is required and must be non-empty"}), 422
+    if not folder_name:
+        return jsonify({"error": "folder is required and must be non-empty"}), 422
+
+    note_body = body.get("body") or ""
+    if not isinstance(note_body, str):
+        note_body = str(note_body)
+    try:
+        provider_id = add_note(
+            note_body,
+            folder_name=folder_name,
+            title=title,
+        )
+    except Exception as e:
+        log.error("/actions/note: AppleScript failed: %s", e)
+        return jsonify({"error": "applescript_failed"}), 502
+    if not provider_id:
+        return jsonify({"error": "applescript_failed"}), 502
+
+    log.info("/actions/note: created %s in %s", provider_id, folder_name)
+    return jsonify({"status": "created", "provider_id": provider_id})
+
+
+@app.route("/actions/reminders/state", methods=["GET"])
+def action_reminders_state():
+    """Read completion state for one exact Reminders list."""
+    secret = os.environ.get("PENNY_WEBHOOK_SECRET", "")
+    provided = request.headers.get("Authorization", "")
+    if not secret or provided != f"Bearer {secret}":
+        return jsonify({"error": "unauthorized"}), 401
+
+    list_name = (request.args.get("list") or "").strip()
+    if not list_name:
+        return jsonify({"error": "list is required and must be non-empty"}), 422
+
+    try:
+        reminders = read_reminders(list_name)
+    except Exception as e:
+        log.error("/actions/reminders/state: AppleScript failed: %s", e)
+        return jsonify({"error": "applescript_failed"}), 502
+    if reminders is None:
+        return jsonify({"error": "list_not_found"}), 404
+
+    return jsonify({"list": list_name, "reminders": reminders})
 
 
 # ===== Main =====
