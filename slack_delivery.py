@@ -49,7 +49,9 @@ from transcript_log import (
     QUALITY_FAILURE_CONTENT_KIND,
     QUALITY_FAILURE_DESTINATION,
     SLACK_API_ERROR_CODES,
+    SLACK_CLAIM_LEASE_SECONDS,
     SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
+    SLACK_HTTP_TIMEOUT_SECONDS,
     claim_next_quality_failure_delivery,
     claim_next_slack_delivery,
     mark_quality_failure_delivery_failed,
@@ -57,6 +59,8 @@ from transcript_log import (
     mark_slack_delivery_chunk_sent,
     mark_slack_delivery_failed,
     mark_slack_delivery_reconciliation_required,
+    renew_quality_failure_delivery_claim,
+    renew_slack_delivery_claim,
 )
 
 log = logging.getLogger(__name__)
@@ -293,7 +297,7 @@ def _post_to_slack(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         },
-        timeout=10,
+        timeout=SLACK_HTTP_TIMEOUT_SECONDS,
     )
     if getattr(resp, "status_code", 200) == 429:
         raise SlackAPIError(
@@ -398,6 +402,20 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
         chunk_index = int(row.get("next_chunk_index") or 0)
         attempted_posts += 1
         try:
+            renew_slack_delivery_claim(
+                delivery_id,
+                claim_token=claim_token,
+                claim_owner=claim_owner,
+                lease_seconds=SLACK_CLAIM_LEASE_SECONDS,
+            )
+        except Exception as exc:
+            log.warning(
+                "Slack delivery claim lost id=%s: %s",
+                delivery_id,
+                _classified_error("acknowledgement_error", exc),
+            )
+            break
+        try:
             thread_ts = None
             if chunk_index > 0:
                 parent_provider_ts = row.get("provider_ts")
@@ -497,6 +515,12 @@ def process_pending_quality_failure_deliveries(limit: int = 20) -> int:
                 [str(row["message_text"])],
             )
             try:
+                renew_quality_failure_delivery_claim(
+                    delivery_id,
+                    claim_token=claim_token,
+                    claim_owner=claim_owner,
+                    lease_seconds=SLACK_CLAIM_LEASE_SECONDS,
+                )
                 provider_ts = _post_to_slack(
                     channel_id,
                     message,

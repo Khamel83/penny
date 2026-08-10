@@ -177,6 +177,38 @@ class SlackDeliveryTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
         self.assertEqual(sorted(outcomes), [0, 1])
 
+    def test_worker_renews_claim_immediately_before_provider_call(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="renew-before-slack-post",
+            source="iCloud",
+            transcript="Renew this lease before posting.",
+            ingest_state="routed",
+        )
+        import slack_delivery
+
+        events: list[str] = []
+
+        def renew(*_args, **_kwargs) -> None:
+            events.append("renew")
+
+        def post(*_args, **_kwargs):
+            events.append("post")
+            return _SlackResponse({"ok": True, "ts": "renewed.001"})
+
+        with (
+            patch.object(
+                slack_delivery,
+                "renew_slack_delivery_claim",
+                create=True,
+                side_effect=renew,
+            ),
+            patch.object(slack_delivery.requests, "post", side_effect=post),
+        ):
+            self.assertEqual(slack_delivery.process_pending_slack_deliveries(), 1)
+
+        self.assertEqual(events, ["renew", "post"])
+
     def test_two_workers_claim_one_quality_delivery_and_post_once(self) -> None:
         os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
         os.environ["PENNY_MAYA_LEDGER_CHANNEL_ID"] = "C-MAYA-LEDGER"

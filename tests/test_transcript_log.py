@@ -2787,6 +2787,181 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(dict(row)["status"], "sent")
         self.assertEqual(dict(row)["provider_ts"], "123.456")
 
+    def test_sent_slack_receipt_is_exact_idempotent_and_immutable(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="immutable-slack-sent-receipt",
+            source="iCloud",
+            transcript="A terminal provider receipt cannot be replaced.",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=row_id
+        )[0]["id"]
+        transcript_log.mark_slack_delivery_sent(delivery_id, provider_ts="winner.001")
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE slack_deliveries "
+                "SET sent_at = '2026-08-10 12:00:00', "
+                "updated_at = '2026-08-10 12:00:00' WHERE id = ?",
+                (delivery_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.mark_slack_delivery_sent(delivery_id, provider_ts="winner.001")
+        with self.assertRaisesRegex(ValueError, "receipt conflicts"):
+            transcript_log.mark_slack_delivery_sent(
+                delivery_id,
+                provider_ts="stale.002",
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            terminal = dict(
+                conn.execute(
+                    "SELECT status, provider_ts, sent_at, updated_at "
+                    "FROM slack_deliveries WHERE id = ?",
+                    (delivery_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(
+            terminal,
+            {
+                "status": "sent",
+                "provider_ts": "winner.001",
+                "sent_at": "2026-08-10 12:00:00",
+                "updated_at": "2026-08-10 12:00:00",
+            },
+        )
+
+    def test_terminal_chunk_receipt_is_exact_idempotent_and_never_resurrected(
+        self,
+    ) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="immutable-terminal-chunk",
+            source="iCloud",
+            transcript="A terminal chunk cannot be replayed with stale evidence.",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=row_id
+        )[0]["id"]
+        transcript_log.mark_slack_delivery_chunk_sent(
+            delivery_id,
+            chunk_index=0,
+            chunk_count=1,
+            provider_ts="winner.chunk.001",
+        )
+        transcript_log.mark_slack_delivery_chunk_sent(
+            delivery_id,
+            chunk_index=0,
+            chunk_count=1,
+            provider_ts="winner.chunk.001",
+        )
+        with self.assertRaisesRegex(ValueError, "receipt conflicts"):
+            transcript_log.mark_slack_delivery_chunk_sent(
+                delivery_id,
+                chunk_index=0,
+                chunk_count=1,
+                provider_ts="stale.chunk.002",
+            )
+        with self.assertRaisesRegex(ValueError, "receipt conflicts"):
+            transcript_log.mark_slack_delivery_chunk_sent(
+                delivery_id,
+                chunk_index=0,
+                chunk_count=2,
+                provider_ts="winner.chunk.001",
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            terminal = dict(
+                conn.execute(
+                    "SELECT status, provider_ts, next_chunk_index, "
+                    "chunk_provider_ts, sent_at FROM slack_deliveries WHERE id = ?",
+                    (delivery_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(terminal["status"], "sent")
+        self.assertEqual(terminal["provider_ts"], "winner.chunk.001")
+        self.assertEqual(terminal["next_chunk_index"], 1)
+        self.assertEqual(terminal["chunk_provider_ts"], '["winner.chunk.001"]')
+        self.assertIsNotNone(terminal["sent_at"])
+
+    def test_stale_chunk_receipt_cannot_win_after_terminal_race(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="stale-terminal-chunk-race",
+            source="iCloud",
+            transcript="A stale chunk cannot mutate a winner receipt.",
+        )
+        delivery_id = transcript_log.get_pending_slack_deliveries(
+            transcript_id=row_id
+        )[0]["id"]
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE slack_deliveries SET status = 'sent', "
+                "provider_ts = 'winner.race.001', sent_at = datetime('now') "
+                "WHERE id = ?",
+                (delivery_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaisesRegex(ValueError, "terminal state"):
+            transcript_log.mark_slack_delivery_chunk_sent(
+                delivery_id,
+                chunk_index=0,
+                chunk_count=1,
+                provider_ts="stale.race.002",
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            terminal = dict(
+                conn.execute(
+                    "SELECT status, provider_ts, next_chunk_index, chunk_provider_ts "
+                    "FROM slack_deliveries WHERE id = ?",
+                    (delivery_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(
+            terminal,
+            {
+                "status": "sent",
+                "provider_ts": "winner.race.001",
+                "next_chunk_index": 0,
+                "chunk_provider_ts": "[]",
+            },
+        )
+
+    def test_default_slack_lease_strictly_exceeds_http_timeout_with_margin(self) -> None:
+        import slack_delivery
+
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-natural-lease-duration",
+            source="iCloud",
+            transcript="The natural lease covers one bounded provider call.",
+        )
+        claim = transcript_log.claim_next_slack_delivery("lease-duration-worker")
+        self.assertEqual(claim["transcript_row_id"], row_id)
+        claimed_at = datetime.fromisoformat(str(claim["slack_claimed_at"]))
+        expires_at = datetime.fromisoformat(str(claim["slack_claim_expires_at"]))
+        lease_seconds = (expires_at - claimed_at).total_seconds()
+        self.assertEqual(lease_seconds, transcript_log.SLACK_CLAIM_LEASE_SECONDS)
+        self.assertGreater(
+            lease_seconds,
+            slack_delivery.SLACK_HTTP_TIMEOUT_SECONDS
+            + transcript_log.SLACK_CLAIM_LEASE_MARGIN_SECONDS,
+        )
+
     def test_late_failure_cannot_reopen_completed_parent_or_final_continuation(
         self,
     ) -> None:

@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
 SLACK_MAX_ATTEMPTS = 5
+SLACK_HTTP_TIMEOUT_SECONDS = 10
+SLACK_CLAIM_LEASE_MARGIN_SECONDS = 5
+SLACK_CLAIM_LEASE_SECONDS = 30
 QUALITY_FAILURE_CONTENT_KIND = "transcript_quality_failure"
 QUALITY_FAILURE_DESTINATION = "maya-ledger"
 MAX_QUALITY_DETAIL_CHARACTERS = 255
@@ -2077,13 +2080,13 @@ def _slack_claim_matches(
 def claim_next_slack_delivery(
     claim_owner: str,
     *,
-    lease_seconds: int = 60,
+    lease_seconds: int = SLACK_CLAIM_LEASE_SECONDS,
 ) -> dict[str, Any] | None:
     """Atomically lease one due Slack row, including an expired prior lease."""
     owner = str(claim_owner).strip()
     if not owner:
         raise ValueError("Slack claim owner is required")
-    lease = max(1, min(int(lease_seconds), 3600))
+    lease = max(SLACK_CLAIM_LEASE_SECONDS, min(int(lease_seconds), 3600))
     claim_token = secrets.token_hex(16)
     conn = None
     try:
@@ -2209,13 +2212,13 @@ def get_pending_quality_failure_deliveries(
 def claim_next_quality_failure_delivery(
     claim_owner: str,
     *,
-    lease_seconds: int = 60,
+    lease_seconds: int = SLACK_CLAIM_LEASE_SECONDS,
 ) -> dict[str, Any] | None:
     """Atomically lease one due body-free quality-failure projection."""
     owner = str(claim_owner).strip()
     if not owner:
         raise ValueError("Slack claim owner is required")
-    lease = max(1, min(int(lease_seconds), 3600))
+    lease = max(SLACK_CLAIM_LEASE_SECONDS, min(int(lease_seconds), 3600))
     claim_token = secrets.token_hex(16)
     conn = None
     try:
@@ -2292,6 +2295,84 @@ def claim_next_quality_failure_delivery(
     finally:
         if conn:
             conn.close()
+
+
+def _renew_slack_claim(
+    table: str,
+    delivery_id: int,
+    *,
+    claim_token: str,
+    claim_owner: str,
+    lease_seconds: int = SLACK_CLAIM_LEASE_SECONDS,
+) -> None:
+    _validate_slack_claim_arguments(claim_token, claim_owner)
+    if table not in {"slack_deliveries", "quality_failure_slack_deliveries"}:
+        raise ValueError("Unsupported Slack delivery table")
+    lease = max(SLACK_CLAIM_LEASE_SECONDS, min(int(lease_seconds), 3600))
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            f"""
+            UPDATE {table}
+            SET slack_claim_expires_at = datetime('now', '+' || ? || ' seconds'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND status = 'delivering'
+              AND sent_at IS NULL
+              AND slack_claim_token = ?
+              AND slack_claim_owner = ?
+              AND slack_claim_expires_at > datetime('now')
+            """,
+            (lease, delivery_id, claim_token, claim_owner),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch or lease expired")
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to renew Slack delivery claim id=%s: %s",
+            delivery_id,
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def renew_slack_delivery_claim(
+    delivery_id: int,
+    *,
+    claim_token: str,
+    claim_owner: str,
+    lease_seconds: int = SLACK_CLAIM_LEASE_SECONDS,
+) -> None:
+    _renew_slack_claim(
+        "slack_deliveries",
+        delivery_id,
+        claim_token=claim_token,
+        claim_owner=claim_owner,
+        lease_seconds=lease_seconds,
+    )
+
+
+def renew_quality_failure_delivery_claim(
+    delivery_id: int,
+    *,
+    claim_token: str,
+    claim_owner: str,
+    lease_seconds: int = SLACK_CLAIM_LEASE_SECONDS,
+) -> None:
+    _renew_slack_claim(
+        "quality_failure_slack_deliveries",
+        delivery_id,
+        claim_token=claim_token,
+        claim_owner=claim_owner,
+        lease_seconds=lease_seconds,
+    )
 
 
 def mark_quality_failure_delivery_sent(
@@ -2420,12 +2501,23 @@ def mark_slack_delivery_sent(
     try:
         conn = _get_conn()
         current = conn.execute(
-            "SELECT status, slack_claim_token, slack_claim_owner "
+            "SELECT status, provider_ts, sent_at, "
+            "slack_claim_token, slack_claim_owner "
             "FROM slack_deliveries WHERE id = ?",
             (delivery_id,),
         ).fetchone()
         if current is None:
             raise LookupError("Slack delivery row does not exist")
+        if current["status"] == "sent" or current["sent_at"] is not None:
+            if (
+                current["status"] == "sent"
+                and current["sent_at"] is not None
+                and current["provider_ts"] == provider_ts
+            ):
+                return
+            raise ValueError("Slack sent receipt conflicts with terminal state")
+        if current["status"] not in {"pending", "delivering"}:
+            raise ValueError("Slack receipt conflicts with terminal state")
         if current["status"] == "delivering" and not _slack_claim_matches(
             current, claim_token, claim_owner
         ):
@@ -2444,6 +2536,8 @@ def mark_slack_delivery_sent(
                    sent_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE id = ?
+                 AND status IN ('pending', 'delivering')
+                 AND sent_at IS NULL
                  AND (
                        status != 'delivering'
                        OR (slack_claim_token = ? AND slack_claim_owner = ?)
@@ -2451,7 +2545,19 @@ def mark_slack_delivery_sent(
             (provider_ts, delivery_id, claim_token, claim_owner),
         )
         if cursor.rowcount != 1:
-            raise ValueError("Slack claim owner mismatch")
+            terminal = conn.execute(
+                "SELECT status, provider_ts, sent_at FROM slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if (
+                terminal is not None
+                and terminal["status"] == "sent"
+                and terminal["sent_at"] is not None
+                and terminal["provider_ts"] == provider_ts
+            ):
+                conn.rollback()
+                return
+            raise ValueError("Slack receipt conflicts with terminal state")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2634,7 +2740,7 @@ def mark_slack_delivery_chunk_sent(
         conn = _get_conn()
         current = conn.execute(
             """
-            SELECT status, next_chunk_index, chunk_provider_ts,
+            SELECT status, sent_at, next_chunk_index, chunk_provider_ts,
                    slack_claim_token, slack_claim_owner
             FROM slack_deliveries
             WHERE id = ?
@@ -2649,14 +2755,33 @@ def mark_slack_delivery_chunk_sent(
             raise ValueError("Slack claim owner mismatch")
 
         next_chunk_index = int(current["next_chunk_index"] or 0)
+        existing_timestamps = _json_loads_or_default(current["chunk_provider_ts"], [])
+        if not isinstance(existing_timestamps, list):
+            existing_timestamps = []
+        exact_existing_receipt = (
+            next_chunk_index > chunk_index
+            and chunk_index < len(existing_timestamps)
+            and existing_timestamps[chunk_index] == provider_ts
+        )
+        if current["status"] == "sent" or current["sent_at"] is not None:
+            if (
+                current["status"] == "sent"
+                and current["sent_at"] is not None
+                and exact_existing_receipt
+                and next_chunk_index == chunk_count
+            ):
+                return
+            raise ValueError("Slack chunk receipt conflicts with terminal state")
+        if current["status"] not in {"pending", "delivering"}:
+            raise ValueError("Slack chunk receipt conflicts with terminal state")
         if next_chunk_index > chunk_index:
-            return
+            if exact_existing_receipt:
+                return
+            raise ValueError("Slack chunk receipt conflicts with persisted progress")
         if next_chunk_index != chunk_index:
             raise ValueError("Slack chunk acknowledgement is out of order")
 
-        timestamps = _json_loads_or_default(current["chunk_provider_ts"], [])
-        if not isinstance(timestamps, list):
-            timestamps = []
+        timestamps = existing_timestamps
         timestamps.append(provider_ts)
         following_chunk = chunk_index + 1
         complete = following_chunk >= chunk_count
@@ -2677,6 +2802,8 @@ def mark_slack_delivery_chunk_sent(
                 sent_at = CASE WHEN ? THEN datetime('now') ELSE sent_at END,
                 updated_at = datetime('now')
             WHERE id = ?
+              AND status IN ('pending', 'delivering')
+              AND sent_at IS NULL
               AND (
                     status != 'delivering'
                     OR (slack_claim_token = ? AND slack_claim_owner = ?)
@@ -2694,7 +2821,29 @@ def mark_slack_delivery_chunk_sent(
             ),
         )
         if cursor.rowcount != 1:
-            raise ValueError("Slack claim owner mismatch")
+            terminal = conn.execute(
+                "SELECT status, sent_at, next_chunk_index, chunk_provider_ts "
+                "FROM slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+            terminal_timestamps = (
+                _json_loads_or_default(terminal["chunk_provider_ts"], [])
+                if terminal is not None
+                else []
+            )
+            if (
+                terminal is not None
+                and terminal["status"] == "sent"
+                and terminal["sent_at"] is not None
+                and int(terminal["next_chunk_index"] or 0) > chunk_index
+                and int(terminal["next_chunk_index"] or 0) == chunk_count
+                and isinstance(terminal_timestamps, list)
+                and chunk_index < len(terminal_timestamps)
+                and terminal_timestamps[chunk_index] == provider_ts
+            ):
+                conn.rollback()
+                return
+            raise ValueError("Slack chunk receipt conflicts with terminal state")
         conn.commit()
     except Exception as e:
         log.error(
