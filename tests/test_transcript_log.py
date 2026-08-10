@@ -76,6 +76,135 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(row["duration_seconds"], 12.5)
         self.assertEqual(row["ingest_state"], "transcribed")
 
+    def test_apple_effect_schema_migrates_partial_table_and_preserves_row(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="apple-effect-migration",
+            source="test",
+            transcript="migration fixture",
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute("DROP TABLE apple_effects")
+            conn.execute(
+                """CREATE TABLE apple_effects (
+                    effect_key TEXT PRIMARY KEY,
+                    transcript_id INTEGER NOT NULL,
+                    effect_type TEXT NOT NULL,
+                    requested_target TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'reserved',
+                    provider_id TEXT
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO apple_effects (
+                    effect_key, transcript_id, effect_type,
+                    requested_target, payload_sha256, state, provider_id
+                ) VALUES (?, ?, 'note', 'Penny', ?, 'succeeded', 'legacy-id')""",
+                ("legacy-effect", row_id, "a" * 64),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+        conn = transcript_log._get_conn()
+        try:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(apple_effects)")
+            }
+            preserved = conn.execute(
+                "SELECT provider_id, state FROM apple_effects WHERE effect_key = ?",
+                ("legacy-effect",),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIn("actual_target", columns)
+        self.assertIn("lease_expires_at", columns)
+        self.assertEqual(dict(preserved), {"provider_id": "legacy-id", "state": "succeeded"})
+
+    def test_apple_effect_success_receipt_is_monotonic_and_conflicts_are_isolated(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="apple-effect-monotonic", source="test", transcript="body"
+        )
+        kwargs = dict(
+            effect_key="e" * 64,
+            transcript_id=int(row_id),
+            effect_type="note",
+            requested_target="Penny",
+            fallback_target="",
+            payload_sha256="a" * 64,
+        )
+        claim = transcript_log.claim_apple_effect(**kwargs)
+        self.assertTrue(claim["claimable"])
+        self.assertTrue(
+            transcript_log.mark_apple_effect_succeeded(
+                kwargs["effect_key"], "provider-one", "Penny",
+                lease_owner=claim["lease_owner"],
+            )
+        )
+        self.assertFalse(
+            transcript_log.mark_apple_effect_succeeded(
+                kwargs["effect_key"], "provider-two", "Penny"
+            )
+        )
+        preserved = transcript_log.get_apple_effect(kwargs["effect_key"])
+        self.assertEqual(preserved["state"], "succeeded")
+        self.assertEqual(preserved["provider_id"], "provider-one")
+
+        other = {**kwargs, "effect_key": "f" * 64, "effect_type": "reminder"}
+        other_claim = transcript_log.claim_apple_effect(**other)
+        self.assertTrue(other_claim["claimable"])
+        self.assertTrue(
+            transcript_log.mark_apple_effect_succeeded(
+                other["effect_key"], "provider-one", "Inbox",
+                lease_owner=other_claim["lease_owner"],
+            )
+        )
+        # Provider IDs are scoped by effect type; a coincidental Notes ID and
+        # Reminders ID are not a cross-provider collision.
+        self.assertEqual(
+            transcript_log.get_apple_effect(other["effect_key"])["state"],
+            "succeeded",
+        )
+        conflict = {**kwargs, "effect_key": "g" * 64}
+        conflict_claim = transcript_log.claim_apple_effect(**conflict)
+        self.assertTrue(conflict_claim["claimable"])
+        self.assertFalse(
+            transcript_log.mark_apple_effect_succeeded(
+                conflict["effect_key"], "provider-one", "Penny",
+                lease_owner=conflict_claim["lease_owner"],
+            )
+        )
+        self.assertEqual(
+            transcript_log.get_apple_effect(conflict["effect_key"])["state"],
+            "quarantined",
+        )
+        self.assertFalse(transcript_log.claim_apple_effect(**conflict)["claimable"])
+
+    def test_apple_effect_health_parses_iso_z_stale_lease(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="apple-effect-health", source="test", transcript="body"
+        )
+        claim = transcript_log.claim_apple_effect(
+            effect_key="b" * 64,
+            transcript_id=int(row_id),
+            effect_type="note",
+            requested_target="Penny",
+            payload_sha256="b" * 64,
+            lease_seconds=1,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE apple_effects SET lease_expires_at=? WHERE effect_key=?",
+                ("2020-01-01T00:00:00Z", "b" * 64),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(transcript_log.get_apple_effect_health()["stale_in_flight_count"], 1)
+
     def test_insert_result_distinguishes_duplicate_from_failure(self) -> None:
         inserted = transcript_log.insert_transcript_result(
             content_hash="typed-result", source="test", transcript="first"

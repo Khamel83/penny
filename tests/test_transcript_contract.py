@@ -32,6 +32,7 @@ os.environ["GOOGLE_TOKEN_FILE"] = "/tmp/penny_test_home/.penny/google_token.json
 logging.disable(logging.CRITICAL)
 
 import core  # noqa: E402
+from apple_effects import AppleEffectReceipt  # noqa: E402
 import slack_delivery  # noqa: E402
 import transcript_log  # noqa: E402
 
@@ -834,12 +835,19 @@ class TranscriptContractTests(unittest.TestCase):
 
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True) as add_note_mock,
+            patch.object(
+                core,
+                "ensure_note",
+                return_value=AppleEffectReceipt(
+                    "e" * 64, "note", "note-id", "succeeded",
+                    actual_target="Penny", transcript_id=row_id,
+                ),
+            ) as ensure_note_mock,
             patch.object(core, "mark_routed", return_value=False) as mark_routed_mock,
             patch.object(core, "mark_failed", transcript_log.mark_failed),
             self.assertRaisesRegex(
                 core.RoutingError,
-                "mark transcript routed",
+                "receipt_persistence_failed",
             ),
         ):
             core.classify_and_route(
@@ -848,11 +856,7 @@ class TranscriptContractTests(unittest.TestCase):
                 row_id=row_id,
             )
 
-        add_note_mock.assert_called_once_with(
-            transcript,
-            folder_name="Penny",
-            source="iCloud",
-        )
+        ensure_note_mock.assert_called_once()
         mark_routed_mock.assert_called_once_with(
             row_id,
             {"type": "long_note"},

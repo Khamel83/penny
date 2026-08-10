@@ -31,6 +31,7 @@ os.environ.setdefault(
 logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
+from apple_effects import AppleEffectReceipt  # noqa: E402
 import watcher  # noqa: E402
 import core  # noqa: E402
 import maya_delivery  # noqa: E402
@@ -1111,7 +1112,14 @@ class WatcherTests(unittest.TestCase):
             patch.object(core.cfg.maya, "ingest_token", "test-token"),
             patch.object(core, "_route_to_maya") as legacy_maya,
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True) as add_note,
+            patch.object(
+                core,
+                "ensure_note",
+                return_value=AppleEffectReceipt(
+                    "f" * 64, "note", "note-id", "succeeded",
+                    actual_target="Penny", transcript_id=row_id,
+                ),
+            ) as ensure_note,
             patch.object(maya_delivery.cfg.maya, "transcript_url", "http://maya.test/ingest/transcript"),
             patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
             patch.object(maya_delivery.requests, "post") as v2_maya,
@@ -1124,11 +1132,7 @@ class WatcherTests(unittest.TestCase):
         legacy_maya.assert_not_called()
         v2_maya.assert_not_called()
         self.assertEqual(delivered, 0)
-        add_note.assert_called_once_with(
-            "Keep this Maya-originated retry local.",
-            folder_name="Penny",
-            source="maya:icloud",
-        )
+        ensure_note.assert_called_once()
         stored = transcript_log.get_transcript(int(row_id))
         self.assertEqual(stored["routed_to"], "note in Penny")
 

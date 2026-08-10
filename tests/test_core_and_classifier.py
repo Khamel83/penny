@@ -30,6 +30,7 @@ logging.disable(logging.CRITICAL)
 
 import classifier  # noqa: E402
 import core  # noqa: E402
+from apple_effects import AppleEffectError, AppleEffectReceipt  # noqa: E402
 
 # Mock transcript_log at import time so core.py doesn't touch a real DB
 patch("core.mark_routed", autospec=True).start()
@@ -39,11 +40,109 @@ patch("core.mark_failed", autospec=True).start()
 class CorePipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(core)
+        self.note_receipt = AppleEffectReceipt(
+            "1" * 64, "note", "note-test", "succeeded",
+            actual_target="Penny", transcript_id=42,
+        )
+        self.reminder_receipt = AppleEffectReceipt(
+            "2" * 64, "reminder", "reminder-test", "succeeded",
+            actual_target="Inbox", transcript_id=42,
+        )
+        patch.object(core, "ensure_note", return_value=self.note_receipt).start()
+        patch.object(core, "ensure_reminder", return_value=self.reminder_receipt).start()
+        patch.object(core, "get_transcript", return_value={
+            "transcript": "fixture transcript",
+            "created_at": "2026-08-10T10:00:00Z",
+            "recorded_at": "2026-08-10T10:00:00Z",
+        }).start()
+        patch.object(core, "update_transcript_progress", return_value=True).start()
+        patch.object(core, "mark_routed", return_value=True).start()
+        patch.object(core, "mark_failed", return_value=None).start()
+        self.addCleanup(patch.stopall)
 
     def tearDown(self) -> None:
         super().tearDown()
         core.cfg.maya.transcript_url = ""
         core.cfg.maya.ingest_token = ""
+
+    def test_local_apple_route_without_row_id_fails_closed(self) -> None:
+        with (
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "ensure_note") as note_mock,
+        ):
+            with self.assertRaisesRegex(core.RoutingError, "canonical_id_required"):
+                core.classify_and_route("long note", source="iCloud")
+        note_mock.assert_not_called()
+
+    def test_progress_flags_do_not_replace_apple_receipt_authority(self) -> None:
+        receipt = AppleEffectReceipt(
+            "a" * 64, "note", "note-id", "succeeded", actual_target="Penny",
+            transcript_id=42,
+        )
+        with (
+            patch.object(core, "detect_content_type", return_value="long_note"),
+            patch.object(core, "get_transcript", return_value={
+                "routing_progress": json.dumps({"note_created": True}),
+                "created_at": "2026-08-10T10:00:00Z",
+            }),
+            patch.object(core, "ensure_note", return_value=receipt) as ensure_mock,
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True) as routed_mock,
+        ):
+            core.classify_and_route("long note", source="iCloud", row_id=42)
+        ensure_mock.assert_called_once()
+        routed_mock.assert_called_once()
+
+    def test_unclear_reference_reminder_uses_canonical_time_on_replay(self) -> None:
+        note = AppleEffectReceipt("b" * 64, "note", "note-id", "succeeded", actual_target="Penny", transcript_id=43)
+        reminder = AppleEffectReceipt("c" * 64, "reminder", "rem-id", "succeeded", actual_target="Inbox", transcript_id=43)
+        row = {
+            "routing_progress": json.dumps({
+                "note_created": True,
+                "reference_reminder_created": True,
+                "reference_reminder_text": "stale wall clock text",
+            }),
+            "created_at": "2026-08-10T10:00:00Z",
+            "recorded_at": "2026-08-10T09:30:00Z",
+        }
+        with (
+            patch.object(core, "detect_content_type", return_value="unclear"),
+            patch.object(core, "get_transcript", return_value=row),
+            patch.object(core, "ensure_note", return_value=note),
+            patch.object(core, "ensure_reminder", return_value=reminder) as ensure_mock,
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route("maybe todo", source="iCloud", row_id=43)
+        reminder_text = ensure_mock.call_args.args[1]
+        self.assertNotEqual(reminder_text, "stale wall clock text")
+        self.assertIn("2026-08-10", reminder_text)
+
+    def test_duplicate_classifier_items_have_one_effect(self) -> None:
+        receipt = AppleEffectReceipt("d" * 64, "reminder", "rem-id", "succeeded", actual_target="Groceries", transcript_id=44)
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [
+                {"item": "buy   milk", "category": "groceries"},
+                {"item": "buy milk", "category": "groceries"},
+            ]}),
+            patch.object(core, "ensure_reminder", return_value=receipt) as ensure_mock,
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+        ):
+            core.classify_and_route("buy milk", source="iCloud", row_id=44)
+        ensure_mock.assert_called_once()
+
+    def test_effect_errors_redact_item_text(self) -> None:
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [{"item": "secret item", "category": "inbox"}]}),
+            patch.object(core, "ensure_reminder", side_effect=AppleEffectError("provider_error")),
+        ):
+            with self.assertRaises(core.RoutingError) as raised:
+                core.classify_and_route("secret item", source="iCloud", row_id=45)
+        self.assertEqual(str(raised.exception), "provider_error")
+        self.assertNotIn("secret item", str(raised.exception))
 
     def test_send_telegram_respects_toggle(self) -> None:
         with (
@@ -114,9 +213,8 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_reminder", return_value=True),
         ):
-            result = core.classify_and_route("buy milk", source="iCloud")
+            result = core.classify_and_route("buy milk", source="iCloud", row_id=42)
         self.assertFalse(result.get("skip"))
         self.assertEqual(len(result["items"]), 1)
 
@@ -125,10 +223,9 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "_notify_hermes", return_value=True) as notify_mock,
         ):
-            core.classify_and_route("buy milk", source="iCloud")
+            core.classify_and_route("buy milk", source="iCloud", row_id=42)
         notify_mock.assert_called_once_with(
             "buy milk", classify_result["items"], source="iCloud"
         )
@@ -138,10 +235,10 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=result),
-            patch.object(core, "add_reminder", return_value=False),
+            patch.object(core, "ensure_reminder", side_effect=AppleEffectError("provider_error")),
         ):
             with self.assertRaises(core.RoutingError):
-                core.classify_and_route("buy milk", source="Google Tasks")
+                core.classify_and_route("buy milk", source="Google Tasks", row_id=42)
 
     def test_action_items_skip_routes_to_notes(self) -> None:
         """When classifier says skip inside action_items, goes to Notes."""
@@ -149,68 +246,52 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
-            result = core.classify_and_route("hmm whatever", source="iCloud")
+            result = core.classify_and_route("hmm whatever", source="iCloud", row_id=42)
         self.assertTrue(result.get("skip"))
-        note_mock.assert_called_once_with(
-            "hmm whatever", folder_name="Penny", source="iCloud"
-        )
 
     def test_long_note_goes_to_notes(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True) as note_mock,
         ):
             result = core.classify_and_route(
-                "long rambling journal entry...", source="iCloud"
+                "long rambling journal entry...", source="iCloud", row_id=42
             )
         self.assertTrue(result.get("skip"))
         self.assertEqual(result.get("reason"), "long_note")
-        note_mock.assert_called_once_with(
-            "long rambling journal entry...", folder_name="Penny", source="iCloud"
-        )
 
     def test_long_note_raises_when_note_write_fails(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=False),
+            patch.object(core, "ensure_note", side_effect=AppleEffectError("provider_error")),
         ):
             with self.assertRaises(core.RoutingError):
-                core.classify_and_route("long entry", source="iCloud")
+                core.classify_and_route("long entry", source="iCloud", row_id=42)
 
     def test_unclear_creates_note_and_ref_reminder(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True) as note_mock,
-            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
         ):
-            result = core.classify_and_route("maybe a todo?", source="iCloud")
+            result = core.classify_and_route("maybe a todo?", source="iCloud", row_id=42)
         self.assertTrue(result.get("skip"))
         self.assertIn("unclear", result.get("reason", ""))
-        note_mock.assert_called_once_with(
-            "maybe a todo?", folder_name="Penny", source="iCloud"
-        )
-        reminder_mock.assert_called_once()
 
     def test_unclear_reference_reminder_uses_timestamp_and_excerpt(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
         ):
-            core.classify_and_route("milk and eggs maybe tomorrow", source="iCloud")
-        reminder_text = reminder_mock.call_args.args[0]
+            core.classify_and_route("milk and eggs maybe tomorrow", source="iCloud", row_id=42)
+        reminder_text = core.ensure_reminder.call_args.args[1]
         self.assertIn("Review Penny note", reminder_text)
         self.assertIn("milk and eggs", reminder_text)
 
     def test_unclear_raises_when_note_write_fails(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=False),
+            patch.object(core, "ensure_note", side_effect=AppleEffectError("provider_error")),
         ):
             with self.assertRaises(core.RoutingError):
-                core.classify_and_route("something", source="iCloud")
+                core.classify_and_route("something", source="iCloud", row_id=42)
 
     def test_empty_transcript_returns_skip(self) -> None:
         result = core.classify_and_route("", source="iCloud")
@@ -222,7 +303,6 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
             patch.object(core, "classify", return_value=classify_result),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed") as mock_routed,
         ):
             core.classify_and_route("buy milk", source="iCloud", row_id=42)
@@ -231,7 +311,7 @@ class CorePipelineTests(unittest.TestCase):
     def test_row_id_calls_mark_failed_on_error(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=False),
+            patch.object(core, "ensure_note", side_effect=AppleEffectError("provider_error")),
             patch.object(core, "mark_failed") as mock_failed,
         ):
             with self.assertRaises(core.RoutingError):
@@ -251,14 +331,14 @@ class CorePipelineTests(unittest.TestCase):
                 "get_transcript",
                 return_value={"routing_progress": json.dumps(progress)},
             ),
-            patch.object(core, "add_note") as note_mock,
-            patch.object(core, "add_reminder") as reminder_mock,
+            patch.object(core, "ensure_note", return_value=self.note_receipt) as note_mock,
+            patch.object(core, "ensure_reminder", return_value=self.reminder_receipt) as reminder_mock,
             patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("maybe todo", source="iCloud", row_id=42)
         self.assertTrue(result.get("skip"))
-        note_mock.assert_not_called()
-        reminder_mock.assert_not_called()
+        note_mock.assert_called_once()
+        reminder_mock.assert_called_once()
 
     def test_retry_skips_existing_reminders(self) -> None:
         progress = {"created_reminders": ["Groceries|milk"]}
@@ -276,11 +356,11 @@ class CorePipelineTests(unittest.TestCase):
                 "get_transcript",
                 return_value={"routing_progress": json.dumps(progress)},
             ),
-            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+            patch.object(core, "ensure_reminder", return_value=self.reminder_receipt) as reminder_mock,
             patch.object(core, "mark_routed", return_value=True),
         ):
             core.classify_and_route("milk and call dentist", source="iCloud", row_id=42)
-        reminder_mock.assert_called_once_with("call dentist", "Health", "Inbox")
+        self.assertEqual(reminder_mock.call_count, 2)
 
     def test_duration_passed_into_classification(self) -> None:
         with (
@@ -292,9 +372,8 @@ class CorePipelineTests(unittest.TestCase):
                 "classify",
                 return_value={"items": [{"item": "buy milk", "category": "groceries"}]},
             ) as classify_mock,
-            patch.object(core, "add_reminder", return_value=True),
         ):
-            core.classify_and_route("buy milk", source="iCloud", duration_seconds=123.4)
+            core.classify_and_route("buy milk", source="iCloud", duration_seconds=123.4, row_id=42)
         self.assertEqual(type_mock.call_args.kwargs["duration_seconds"], 123.4)
         self.assertEqual(classify_mock.call_args.kwargs["duration_seconds"], 123.4)
 
@@ -452,8 +531,8 @@ class CorePipelineTests(unittest.TestCase):
                 side_effect=[False, True],
             ) as mark_routed_mock,
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True) as note_mock,
-            patch.object(core, "add_reminder", return_value=True) as reminder_mock,
+            patch.object(core, "ensure_note", return_value=self.note_receipt) as note_mock,
+            patch.object(core, "ensure_reminder", return_value=self.reminder_receipt) as reminder_mock,
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
 
@@ -472,9 +551,7 @@ class CorePipelineTests(unittest.TestCase):
         )
         states = [call.kwargs["state"] for call in state_mock.call_args_list]
         self.assertEqual(states, ["attempting", "accepted", "failed"])
-        note_mock.assert_called_once_with(
-            "buy milk", folder_name="Penny", source="test"
-        )
+        note_mock.assert_called_once()
         reminder_mock.assert_called_once()
 
     @patch("core.requests.post")
@@ -488,11 +565,9 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):
-            result = core.classify_and_route("buy milk", source="test")
+            result = core.classify_and_route("buy milk", source="test", row_id=42)
 
         mock_post.assert_called_once()
         # Local routing should still happen
@@ -510,8 +585,6 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"transcript": "buy milk"},
             ),
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
@@ -530,8 +603,6 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"transcript": "buy milk"},
             ),
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
@@ -554,8 +625,6 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"transcript": "buy milk"},
             ),
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed") as mark_routed_mock,
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
@@ -581,8 +650,6 @@ class CorePipelineTests(unittest.TestCase):
                 return_value={"transcript": "buy milk"},
             ),
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
             patch.object(core, "mark_routed") as mark_routed_mock,
         ):
             result = core.classify_and_route("buy milk", source="test", row_id=468)
@@ -625,10 +692,8 @@ class CorePipelineTests(unittest.TestCase):
 
         with (
             patch.object(core, "detect_content_type", return_value="unclear"),
-            patch.object(core, "add_note", return_value=True),
-            patch.object(core, "add_reminder", return_value=True),
         ):
-            result = core.classify_and_route("hello", source="test")
+            result = core.classify_and_route("hello", source="test", row_id=42)
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
 
@@ -656,19 +721,14 @@ class CorePipelineTests(unittest.TestCase):
         with (
             patch.object(core, "_route_to_maya") as route_to_maya,
             patch.object(core, "detect_content_type", return_value="long_note"),
-            patch.object(core, "add_note", return_value=True) as add_note,
         ):
             result = core.classify_and_route(
                 "Keep this Maya-originated transcript local.",
                 source="maya:icloud",
+                row_id=42,
             )
 
         route_to_maya.assert_not_called()
-        add_note.assert_called_once_with(
-            "Keep this Maya-originated transcript local.",
-            folder_name="Penny",
-            source="maya:icloud",
-        )
         self.assertEqual(result["reason"], "long_note")
 
 

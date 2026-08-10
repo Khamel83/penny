@@ -134,5 +134,33 @@ class AddReminderTests(unittest.TestCase):
         self.assertIn("Inbox", script)
 
 
+class ReceiptTransportContractTests(unittest.TestCase):
+    def test_missing_notes_folder_is_an_empty_marker_search(self):
+        with patch.object(
+            reminders,
+            "_run_osascript",
+            return_value="",
+        ):
+            # The transport must distinguish a missing folder from an
+            # Automation/permission failure; callers may then create it.
+            self.assertEqual(reminders.find_note_by_marker("a" * 64, "Penny"), [])
+
+    @patch("reminders._run_osascript", return_value="id-1\n")
+    def test_note_marker_search_uses_explicit_line_delimiter(self, run_mock):
+        matches = reminders.find_note_by_marker("a" * 64, "Penny")
+        self.assertEqual(matches, ["id-1"])
+        self.assertIn("linefeed", run_mock.call_args.args[0])
+
+    @patch("reminders._run_osascript", return_value="id-1\tInbox")
+    def test_reminder_marker_is_body_only_and_readback_has_target(self, run_mock):
+        receipt = reminders.create_reminder_with_marker(
+            "a" * 64, "buy milk", "Groceries", "Inbox"
+        )
+        script = run_mock.call_args.args[0]
+        self.assertEqual(receipt.provider_id, "id-1")
+        self.assertIn('body:', script)
+        self.assertNotIn('name:"penny-effect:', script)
+
+
 if __name__ == "__main__":
     unittest.main()

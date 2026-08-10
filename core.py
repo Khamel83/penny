@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 
 import requests
 
+from apple_effects import AppleEffectError, AppleEffectReceipt, ensure_note, ensure_reminder
 from classifier import classify, detect_content_type
 from config import get_config
 from reminders import add_note, add_reminder
@@ -282,10 +283,51 @@ def _short_excerpt(text: str, limit: int = 60) -> str:
     return cleaned[: limit - 3].rstrip() + "..."
 
 
-def _reference_reminder_text(transcript: str) -> str:
-    timestamp = datetime.now().strftime("%Y-%m-%d %-I:%M %p")
+def _reference_reminder_text(transcript: str, row_id: int | None = None) -> str:
+    if row_id is None:
+        raise RoutingError("canonical_id_required")
+    row = get_transcript(row_id)
+    if not row:
+        raise RoutingError("canonical_id_required")
+    raw_timestamp = row.get("recorded_at") or row.get("created_at")
+    try:
+        captured = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+        if captured.tzinfo is None:
+            captured = captured.replace(tzinfo=timezone.utc)
+        timestamp = captured.astimezone(timezone.utc).strftime("%Y-%m-%d %-I:%M %p UTC")
+    except (TypeError, ValueError):
+        timestamp = "recorded"
     excerpt = _short_excerpt(transcript) or "voice memo"
     return f"Review Penny note ({timestamp}): {excerpt}"
+
+
+def _require_effect_row(row_id: int | None) -> int:
+    if not isinstance(row_id, int) or row_id <= 0:
+        raise RoutingError("canonical_id_required")
+    return row_id
+
+
+def _receipt_or_error(receipt: AppleEffectReceipt) -> AppleEffectReceipt:
+    if receipt.state != "succeeded" or not receipt.provider_id:
+        raise RoutingError(receipt.error_code or "provider_error")
+    return receipt
+
+
+def _record_effect_progress(
+    row_id: int,
+    *,
+    effect_name: str,
+    receipt: AppleEffectReceipt,
+    **summary: Any,
+) -> bool:
+    payload = {
+        f"{effect_name}_created": True,
+        f"{effect_name}_effect_key": receipt.effect_key,
+        f"{effect_name}_provider_id": receipt.provider_id,
+        f"{effect_name}_actual_target": receipt.actual_target,
+        **summary,
+    }
+    return bool(update_transcript_progress(row_id, payload))
 
 
 def _record_maya_route_state(row_id: int | None, **details: Any) -> bool:
@@ -550,75 +592,85 @@ def classify_and_route(
     try:
         if content_type == "long_note":
             log.info("Routing as long note to Apple Notes")
-            if not progress.get("note_created"):
-                if not add_note(transcript, folder_name="Penny", source=source):
-                    raise RoutingError("Failed to save long note to Apple Notes")
-                if row_id is not None:
-                    update_transcript_progress(
-                        row_id,
-                        {
-                            "note_created": True,
-                            "note_folder": "Penny",
-                            "content_type": "long_note",
-                        },
+            effect_row_id = _require_effect_row(row_id)
+            try:
+                note_receipt = _receipt_or_error(
+                    ensure_note(
+                        effect_row_id,
+                        transcript,
+                        folder="Penny",
+                        source=source,
                     )
-            if row_id is not None:
-                if not mark_routed(
-                    row_id,
-                    {"type": "long_note"},
-                    "note in Penny",
-                ):
-                    raise RoutingError("Failed to mark transcript routed locally")
+                )
+            except AppleEffectError as exc:
+                raise RoutingError(exc.code) from None
+            if not _record_effect_progress(
+                effect_row_id,
+                effect_name="note",
+                receipt=note_receipt,
+                note_folder="Penny",
+                content_type="long_note",
+            ):
+                raise RoutingError("receipt_persistence_failed")
+            if not mark_routed(
+                effect_row_id,
+                {"type": "long_note"},
+                "note in Penny",
+            ):
+                raise RoutingError("receipt_persistence_failed")
             return _finish_route(
                 transcript, {"skip": True, "reason": "long_note"}, source
             )
 
         if content_type == "unclear":
             log.info("Unclear content — saving to Notes with reference reminder")
-            if not progress.get("note_created"):
-                if not add_note(transcript, folder_name="Penny", source=source):
-                    raise RoutingError("Failed to save unclear note to Apple Notes")
-                if row_id is not None:
-                    update_transcript_progress(
-                        row_id,
-                        {
-                            "note_created": True,
-                            "note_folder": "Penny",
-                            "content_type": "unclear",
-                        },
+            effect_row_id = _require_effect_row(row_id)
+            try:
+                note_receipt = _receipt_or_error(
+                    ensure_note(
+                        effect_row_id,
+                        transcript,
+                        folder="Penny",
+                        source=source,
                     )
-
-            ref_text = str(
-                progress.get("reference_reminder_text")
-                or _reference_reminder_text(transcript)
-            )
-            if row_id is not None and not progress.get("reference_reminder_text"):
-                update_transcript_progress(
-                    row_id, {"reference_reminder_text": ref_text}
                 )
-            if not progress.get("reference_reminder_created"):
-                if not add_reminder(
-                    ref_text, "Inbox", cfg.apple_reminders.default_list
-                ):
-                    raise RoutingError(
-                        "Failed to create reference reminder for unclear note"
-                    )
-                if row_id is not None:
-                    update_transcript_progress(
-                        row_id,
-                        {
-                            "reference_reminder_created": True,
-                            "reference_reminder_text": ref_text,
-                        },
-                    )
+            except AppleEffectError as exc:
+                raise RoutingError(exc.code) from None
+            if not _record_effect_progress(
+                effect_row_id,
+                effect_name="note",
+                receipt=note_receipt,
+                note_folder="Penny",
+                content_type="unclear",
+            ):
+                raise RoutingError("receipt_persistence_failed")
 
-            if row_id is not None:
-                if not mark_routed(
-                    row_id,
-                    {"type": "unclear", "ref_reminder": ref_text},
-                    "note + ref reminder",
-                ):
-                    raise RoutingError("Failed to mark transcript routed locally")
+            ref_text = _reference_reminder_text(transcript, effect_row_id)
+            try:
+                reminder_receipt = _receipt_or_error(
+                    ensure_reminder(
+                        effect_row_id,
+                        ref_text,
+                        "Inbox",
+                        cfg.apple_reminders.default_list,
+                    )
+                )
+            except AppleEffectError as exc:
+                raise RoutingError(exc.code) from None
+            if not _record_effect_progress(
+                effect_row_id,
+                effect_name="reference_reminder",
+                receipt=reminder_receipt,
+                reference_reminder_text=ref_text,
+            ):
+                raise RoutingError("receipt_persistence_failed")
+
+            if not mark_routed(
+                effect_row_id,
+                {"type": "unclear", "ref_reminder": ref_text},
+                "note + ref reminder",
+            ):
+                raise RoutingError("receipt_persistence_failed")
             result = {
                 "skip": True,
                 "reason": "unclear content, saved to Notes with reference",
@@ -634,18 +686,29 @@ def classify_and_route(
         )
 
         if result.get("skip"):
-            log.info("Skipping routing for non-reminder: %s", result.get("reason"))
+            log.info("Skipping routing for non-reminder classifier result")
             note_text = transcript or "(No intelligible speech detected.)"
-            if not progress.get("note_created"):
-                if not add_note(note_text, folder_name="Penny", source=source):
-                    raise RoutingError("Failed to add transcript to Apple Notes")
-                if row_id is not None:
-                    update_transcript_progress(
-                        row_id, {"note_created": True, "note_folder": "Penny"}
+            effect_row_id = _require_effect_row(row_id)
+            try:
+                note_receipt = _receipt_or_error(
+                    ensure_note(
+                        effect_row_id,
+                        note_text,
+                        folder="Penny",
+                        source=source,
                     )
-            if row_id is not None:
-                if not mark_routed(row_id, result, "note in Penny"):
-                    raise RoutingError("Failed to mark transcript routed locally")
+                )
+            except AppleEffectError as exc:
+                raise RoutingError(exc.code) from None
+            if not _record_effect_progress(
+                effect_row_id,
+                effect_name="note",
+                receipt=note_receipt,
+                note_folder="Penny",
+            ):
+                raise RoutingError("receipt_persistence_failed")
+            if not mark_routed(effect_row_id, result, "note in Penny"):
+                raise RoutingError("receipt_persistence_failed")
             return _finish_route(transcript, result, source)
 
         items = result.get("items", [])
@@ -653,41 +716,51 @@ def classify_and_route(
             raise RoutingError("Classifier returned no routable items")
 
         routed_count = 0
-        created_reminders = set(progress.get("created_reminders", []))
+        created_reminders: set[str] = set()
         for entry in items:
-            item_text = str(entry.get("item", "")).strip()
+            item_text = re.sub(r"\s+", " ", str(entry.get("item", ""))).strip()
             category = str(entry.get("category", "inbox")).strip().lower()
             if not item_text:
                 continue
             target_list = _target_reminders_list(category)
             reminder_key = f"{target_list}|{item_text}"
-            if reminder_key not in created_reminders:
-                ok = add_reminder(
-                    item_text, target_list, cfg.apple_reminders.default_list
+            if reminder_key in created_reminders:
+                continue
+            effect_row_id = _require_effect_row(row_id)
+            try:
+                reminder_receipt = _receipt_or_error(
+                    ensure_reminder(
+                        effect_row_id,
+                        item_text,
+                        target_list,
+                        cfg.apple_reminders.default_list,
+                    )
                 )
-                if not ok:
-                    raise RoutingError(
-                        f"Failed to add reminder to '{target_list}': {item_text[:80]}"
-                    )
-                created_reminders.add(reminder_key)
-                if row_id is not None:
-                    update_transcript_progress(
-                        row_id,
-                        {"created_reminders": sorted(created_reminders)},
-                    )
+            except AppleEffectError as exc:
+                raise RoutingError(exc.code) from None
+            created_reminders.add(reminder_key)
+            if not update_transcript_progress(
+                effect_row_id,
+                {
+                    "created_reminders": sorted(created_reminders),
+                    "last_reminder_effect_key": reminder_receipt.effect_key,
+                    "last_reminder_provider_id": reminder_receipt.provider_id,
+                },
+            ):
+                raise RoutingError("receipt_persistence_failed")
             routed_count += 1
 
         if cfg.notifications.telegram_enabled:
             msg = build_result_message(transcript, result, source)
             send_telegram(msg)
 
-        if row_id is not None:
-            if not mark_routed(row_id, result, f"{routed_count} reminder(s)"):
-                raise RoutingError("Failed to mark transcript routed locally")
+        effect_row_id = _require_effect_row(row_id)
+        if not mark_routed(effect_row_id, result, f"{routed_count} reminder(s)"):
+            raise RoutingError("receipt_persistence_failed")
 
         return _finish_route(transcript, result, source)
 
     except RoutingError as e:
         if row_id is not None:
-            mark_failed(row_id, str(e))
+            mark_failed(row_id, e.args[0] if e.args else "routing_failed")
         raise
