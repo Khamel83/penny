@@ -337,6 +337,27 @@ def test_cli_exit_codes_are_ready_degraded_unready(tmp_path: Path, monkeypatch, 
         assert capsys.readouterr().out
 
 
+def test_cli_exception_fallback_preserves_safe_json_schema(monkeypatch, capsys):
+    from scripts import penny_doctor
+
+    monkeypatch.setattr(
+        penny_doctor,
+        "run_doctor",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("secret /private/transcript")),
+    )
+    assert penny_doctor.main(["--json"]) == 2
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert set(payload) == {"overall", "components", "observed_at", "source_revision"}
+    assert payload["overall"] == "unready"
+    assert payload["components"] == {}
+    assert payload["source_revision"] == "unknown"
+    assert payload["observed_at"].endswith("Z")
+    parsed = datetime.fromisoformat(payload["observed_at"].replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    assert "secret /private/transcript" not in output
+
+
 def test_health_workflow_has_no_mutating_recovery_commands():
     workflow = Path(__file__).parents[1] / ".github/workflows/health-check.yml"
     text = workflow.read_text(encoding="utf-8").lower()

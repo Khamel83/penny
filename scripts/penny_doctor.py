@@ -7,7 +7,9 @@ Exit status is stable for automation: 0 ready, 1 degraded, 2 unready.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -24,6 +26,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _fallback_json() -> str:
+    """Return the stable, metadata-only failure report contract."""
+
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return json.dumps(
+        {
+            "overall": "unready",
+            "components": {},
+            "observed_at": observed_at,
+            "source_revision": "unknown",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -33,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception:
         # A Doctor failure is itself an unready result; never print exception
         # text, paths, provider output, or secrets.
-        print('{"overall":"unready","components":{},"source_revision":"unknown"}')
+        print(_fallback_json())
         return 2
     print(render_json(report) if args.json else render_human(report))
     return {"ready": 0, "degraded": 1, "unready": 2}.get(report.overall, 2)
