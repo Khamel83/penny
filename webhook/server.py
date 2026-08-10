@@ -164,6 +164,12 @@ def _validate_bind_policy(host: object | None = None) -> None:
     raise RuntimeError("non-loopback webhook bind requires explicit protection")
 
 
+# Fail closed for direct execution and WSGI-style imports alike.  ``main``
+# repeats this check so callers that mutate the loaded config in tests cannot
+# bypass the startup guard.
+_validate_bind_policy(cfg.webhook.host)
+
+
 def _safe_quality_code(value: object) -> str:
     candidate = str(value or "").strip().lower()
     if _SAFE_CODE_RE.fullmatch(candidate):
