@@ -15,11 +15,13 @@ import logging
 from pathlib import Path
 
 from flask import Flask, request, jsonify
+from werkzeug.exceptions import RequestEntityTooLarge
 
 # Allow imports from repo root (config, classifier, reminders, core)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import get_config
+from ingress_auth import MAX_INGEST_TEXT_BYTES, authorize_bearer
 from core import (
     setup_logging,
     get_file_hash,
@@ -32,6 +34,7 @@ cfg = get_config()
 log = setup_logging("webhook")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = cfg.webhook.max_request_bytes
 
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 
@@ -66,6 +69,22 @@ def transcribe(path: Path) -> TranscriptionResult:
 
 # ===== Flask routes =====
 
+
+def _require_ingest_auth():
+    if not authorize_bearer(request, cfg.webhook.ingest_token):
+        return jsonify({"error": "unauthorized"}), 401
+    if (
+        request.content_length is not None
+        and request.content_length > cfg.webhook.max_request_bytes
+    ):
+        return jsonify({"error": "request too large"}), 413
+    return None
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def request_too_large(_error):
+    return jsonify({"error": "request too large"}), 413
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -79,6 +98,10 @@ def health():
 @app.route("/upload", methods=["POST"])
 def upload():
     """Receive audio file from iOS Shortcut, transcribe, classify, add to Reminders."""
+    auth_error = _require_ingest_auth()
+    if auth_error is not None:
+        return auth_error
+
     # iOS Shortcuts sends multipart files under varying field names; accept any file field
     # or fall back to raw request body (when Shortcuts sends audio as binary body).
     audio_file = request.files.get("audio") or (request.files and next(iter(request.files.values()), None))
@@ -183,6 +206,10 @@ def ingest():
     Accept pre-transcribed text from any source.
     JSON body: {"text": "buy milk", "source": "HA"}
     """
+    auth_error = _require_ingest_auth()
+    if auth_error is not None:
+        return auth_error
+
     data = request.get_json(silent=True)
     if not data or "text" not in data:
         return jsonify({"error": "Missing 'text' field in JSON body"}), 400
@@ -190,6 +217,8 @@ def ingest():
     text = data["text"].strip()
     if not text:
         return jsonify({"error": "Empty text"}), 400
+    if len(text.encode("utf-8")) > MAX_INGEST_TEXT_BYTES:
+        return jsonify({"error": "text too large"}), 413
 
     source = data.get("source", "text")
     log.info("Ingest (%s): %s...", source, text[:100])

@@ -25,6 +25,11 @@
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>
         <string>/Users/macmini/.penny/google_token.json</string>
+        <!-- Explicit LAN override; config.toml defaults to loopback. -->
+        <key>PENNY_WEBHOOK_HOST</key>
+        <string>0.0.0.0</string>
+        <key>PENNY_INGEST_TOKEN</key>
+        <string>YOUR_PENNY_INGEST_TOKEN_HERE</string>
         <key>MAYA_TRANSCRIPT_URL</key>
         <string>YOUR_MAYA_TRANSCRIPT_URL_HERE</string>
         <key>MAYA_INGEST_TOKEN</key>

@@ -55,6 +55,8 @@ class VoiceMemosConfig:
 class WebhookConfig:
     port: int
     host: str
+    ingest_token: str
+    max_request_bytes: int
 
 
 @dataclass
@@ -153,7 +155,11 @@ def get_config() -> Config:
         ),
         webhook=WebhookConfig(
             port=raw["webhook"]["port"],
-            host=raw["webhook"]["host"],
+            host=os.environ.get("PENNY_WEBHOOK_HOST", raw["webhook"]["host"]),
+            ingest_token=env("PENNY_INGEST_TOKEN"),
+            max_request_bytes=(raw["voice_memos"]["max_file_size_mb"] + 1)
+            * 1024
+            * 1024,
         ),
         logging=LoggingConfig(
             level=raw["logging"]["level"],

@@ -9,7 +9,7 @@ Create a new Shortcut with these actions:
 1. **Record Audio** - Duration: "Ask When Running" or "Set to 0 for manual stop"
 2. **Get Contents of URL** - POST to webhook
    - URL: `http://macmini:5678/upload`
-   - Headers: None
+   - Headers: `Authorization: Bearer <PENNY_INGEST_TOKEN>`
    - Request Body: Form
      - audio: Variable (select the recorded audio)
 3. **Show Result** - Show the transcript returned
@@ -33,6 +33,7 @@ If you prefer the native Voice Memos app:
    - **Find Voice Memos** - Filter: "Created in last 1 minute"
    - **Repeat with Each**:
      - **Get Contents of URL** - POST to `http://macmini:5678/upload`
+     - Header: `Authorization: Bearer <PENNY_INGEST_TOKEN>`
      - Form field: audio = Repeat Item
 
 2. Create Automation:
@@ -53,3 +54,8 @@ If you prefer the native Voice Memos app:
 1. Run the shortcut
 2. Record something short
 3. Check webhook log: `ssh macmini "tail -f ~/.penny/logs/webhook.log"`
+
+Set `PENNY_INGEST_TOKEN` in the webhook launchd environment before using either
+shortcut. `config.toml` defaults the webhook to loopback; set
+`PENNY_WEBHOOK_HOST=0.0.0.0` only for the protected LAN deployment. Old
+headerless clients receive `401 Unauthorized`.

@@ -36,6 +36,10 @@ app = server_module.app
 app.config["TESTING"] = True
 
 
+def _ingest_auth(token: str = "ingest-test-token") -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import transcript_log
@@ -84,6 +88,7 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
         "/upload",
         data={"audio": (io.BytesIO(b"fake audio data"), "test.m4a")},
         content_type="multipart/form-data",
+        headers=_ingest_auth(),
     )
 
     assert response.status_code == 422
@@ -116,7 +121,12 @@ class UploadTests(unittest.TestCase):
     def test_upload_success(self, mock_route, mock_insert, mock_transcribe, mock_logged):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
-            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+            resp = client.post(
+                "/upload",
+                data=data,
+                content_type="multipart/form-data",
+                headers=_ingest_auth(),
+            )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
@@ -128,7 +138,12 @@ class UploadTests(unittest.TestCase):
     def test_upload_duplicate_returns_ok(self, mock_logged):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
-            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+            resp = client.post(
+                "/upload",
+                data=data,
+                content_type="multipart/form-data",
+                headers=_ingest_auth(),
+            )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
@@ -136,7 +151,7 @@ class UploadTests(unittest.TestCase):
 
     def test_upload_missing_audio_returns_400(self):
         with app.test_client() as client:
-            resp = client.post("/upload")
+            resp = client.post("/upload", headers=_ingest_auth())
             self.assertEqual(resp.status_code, 400)
 
     @patch("webhook.server.is_already_logged", return_value=False)
@@ -144,7 +159,12 @@ class UploadTests(unittest.TestCase):
     def test_upload_error_returns_500(self, mock_transcribe, mock_logged):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
-            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+            resp = client.post(
+                "/upload",
+                data=data,
+                content_type="multipart/form-data",
+                headers=_ingest_auth(),
+            )
             self.assertEqual(resp.status_code, 500)
 
     @patch("webhook.server.is_already_logged", return_value=False)
@@ -154,7 +174,12 @@ class UploadTests(unittest.TestCase):
         """Temp file should be cleaned up even when transcription fails."""
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
-            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+            resp = client.post(
+                "/upload",
+                data=data,
+                content_type="multipart/form-data",
+                headers=_ingest_auth(),
+            )
             self.assertEqual(resp.status_code, 500)
 
 
@@ -164,7 +189,11 @@ class IngestTests(unittest.TestCase):
     @patch("webhook.server.classify_and_route", return_value={"items": [{"item": "milk", "category": "groceries"}]})
     def test_ingest_success(self, mock_route, mock_insert, mock_logged):
         with app.test_client() as client:
-            resp = client.post("/ingest", json={"text": "buy milk", "source": "test"})
+            resp = client.post(
+                "/ingest",
+                json={"text": "buy milk", "source": "test"},
+                headers=_ingest_auth(),
+            )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
@@ -176,23 +205,29 @@ class IngestTests(unittest.TestCase):
 
     def test_ingest_missing_json_returns_400(self):
         with app.test_client() as client:
-            resp = client.post("/ingest")
+            resp = client.post("/ingest", headers=_ingest_auth())
             self.assertEqual(resp.status_code, 400)
 
     def test_ingest_missing_text_returns_400(self):
         with app.test_client() as client:
-            resp = client.post("/ingest", json={"not_text": "buy milk"})
+            resp = client.post(
+                "/ingest", json={"not_text": "buy milk"}, headers=_ingest_auth()
+            )
             self.assertEqual(resp.status_code, 400)
 
     def test_ingest_empty_text_returns_400(self):
         with app.test_client() as client:
-            resp = client.post("/ingest", json={"text": "   "})
+            resp = client.post(
+                "/ingest", json={"text": "   "}, headers=_ingest_auth()
+            )
             self.assertEqual(resp.status_code, 400)
 
     @patch("webhook.server.is_already_logged", return_value=True)
     def test_ingest_duplicate_returns_ok(self, mock_logged):
         with app.test_client() as client:
-            resp = client.post("/ingest", json={"text": "buy milk"})
+            resp = client.post(
+                "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
+            )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertIn("already processed", body["message"])
@@ -202,7 +237,9 @@ class IngestTests(unittest.TestCase):
     @patch("webhook.server.classify_and_route", side_effect=RuntimeError("routing failed"))
     def test_ingest_error_returns_500(self, mock_route, mock_insert, mock_logged):
         with app.test_client() as client:
-            resp = client.post("/ingest", json={"text": "buy milk"})
+            resp = client.post(
+                "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
+            )
             self.assertEqual(resp.status_code, 500)
 
 
@@ -213,6 +250,38 @@ DELIVER_PAYLOAD = {
     "recorded_at": "2026-07-09T18:00:00Z",
     "metadata": {"via": "maya"},
 }
+
+
+def test_upload_rejects_missing_token_before_transcription(client, monkeypatch):
+    transcribe = MagicMock()
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"audio"), "memo.m4a")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 401
+    transcribe.assert_not_called()
+
+
+def test_ingest_token_cannot_authorize_deliver(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "deliver-secret")
+    response = client.post(
+        "/deliver", json=DELIVER_PAYLOAD, headers=_ingest_auth()
+    )
+    assert response.status_code == 401
+
+
+def test_oversized_ingest_is_rejected_before_route(client, monkeypatch):
+    route = MagicMock()
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+    response = client.post(
+        "/ingest",
+        json={"text": "x" * 65_537},
+        headers=_ingest_auth(),
+    )
+    assert response.status_code == 413
+    route.assert_not_called()
 
 
 def _auth(secret="test-secret"):

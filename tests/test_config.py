@@ -34,6 +34,7 @@ class ConfigTests(unittest.TestCase):
         os.environ["OPENROUTER_API_KEY"] = "test-key"
         os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
         os.environ["TELEGRAM_CHAT_ID"] = "12345"
+        os.environ["PENNY_INGEST_TOKEN"] = "ingest-test-token"
         os.environ[
             "GOOGLE_CREDENTIALS_FILE"
         ] = "/tmp/penny_test_home/.penny/google_credentials.json"
@@ -44,6 +45,8 @@ class ConfigTests(unittest.TestCase):
     def tearDown(self):
         config._config = None
         os.environ.pop("MAYA_DELIVERY_TIMEOUT_SECONDS", None)
+        os.environ.pop("PENNY_INGEST_TOKEN", None)
+        os.environ.pop("PENNY_WEBHOOK_HOST", None)
 
     def test_get_config_returns_config_with_expected_fields(self):
         cfg = config.get_config()
@@ -55,7 +58,15 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.voice_memos.max_file_size_mb, 50)
         self.assertEqual(cfg.voice_memos.poll_interval_seconds, 60)
         self.assertEqual(cfg.webhook.port, 5678)
+        self.assertEqual(cfg.webhook.host, "127.0.0.1")
+        self.assertEqual(cfg.webhook.ingest_token, "ingest-test-token")
+        self.assertEqual(cfg.webhook.max_request_bytes, 51 * 1024 * 1024)
         self.assertEqual(cfg.openrouter_api_key, "test-key")
+
+    def test_webhook_host_can_be_overridden_for_lan_deployment(self):
+        os.environ["PENNY_WEBHOOK_HOST"] = "0.0.0.0"
+        cfg = config.get_config()
+        self.assertEqual(cfg.webhook.host, "0.0.0.0")
 
     def test_get_config_caches_result(self):
         cfg1 = config.get_config()
