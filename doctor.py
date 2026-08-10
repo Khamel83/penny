@@ -41,6 +41,7 @@ _SAFE_REASON_VALUES = frozenset(
     {
         "ok",
         "backlog",
+        "callback_secret_missing",
         "backup_stale",
         "backup_unverified",
         "bind_policy",
@@ -78,10 +79,13 @@ _SAFE_DETAIL_KEYS = frozenset(
         "archive_pending_count",
         "archive_rebuild_needed_count",
         "archive_failed_count",
+        "invalid_count",
+        "rebuild_needed_count",
         "awaiting_file_count",
         "backup_catalog_present",
         "backup_set_present",
         "callback_secret_configured",
+        "callback_secret_missing",
         "dead_letter_count",
         "failed_count",
         "foreign_keys_ok",
@@ -118,12 +122,89 @@ _SAFE_DETAIL_KEYS = frozenset(
         "protected_bind",
         "timestamp_valid",
         "latest_set_present",
+        "database_metadata_bound",
     }
 )
-_HEX_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+_FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
 _DEFAULT_HEALTH_MAX_AGE_SECONDS = 15 * 60
 _DEFAULT_BACKUP_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _configured_value(value: object) -> bool:
+    """Return whether a config/environment value is non-empty and concrete.
+
+    Doctor only reports a boolean presence bit.  Common repository template
+    markers are deliberately treated as absent so a loaded launchd plist or
+    environment cannot appear healthy merely because a key exists.
+    """
+
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    if not candidate:
+        return False
+    upper = candidate.upper()
+    if (
+        upper.startswith(("YOUR_", "REPLACE_", "CHANGE_ME", "CHANGEME", "TODO_"))
+        or "_HERE" in upper
+        or "PLACEHOLDER" in upper
+        or candidate.startswith("<")
+        or candidate.endswith(">")
+    ):
+        return False
+    return True
+
+
+def _capture_startup_source_revision(*, runner: Callable[..., Any] | None = None) -> str:
+    """Capture the checkout revision once, before a long-lived service starts."""
+
+    runner = runner or subprocess.run
+    checkout = str(Path(__file__).resolve().parent)
+    try:
+        for command in (
+            ["git", "-C", checkout, "diff", "--quiet", "HEAD", "--"],
+            ["git", "-C", checkout, "diff", "--quiet", "--cached", "--"],
+        ):
+            clean = runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if getattr(clean, "returncode", 1) != 0:
+                return "unknown"
+        result = runner(
+            ["git", "-C", checkout, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        value = str(getattr(result, "stdout", "") or "").strip().lower()
+        if getattr(result, "returncode", 1) == 0 and _FULL_SHA_RE.fullmatch(value):
+            return value
+    except (OSError, subprocess.SubprocessError, TypeError):
+        pass
+    return "unknown"
+
+
+# A launchd process must retain the revision it started from.  Reading HEAD
+# on every health request could report a newly checked-out revision before the
+# service has actually restarted.
+_STARTUP_SOURCE_REVISION = _capture_startup_source_revision()
+
+
+_REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
+    "backup": frozenset({"verified", "age_seconds", "timestamp_valid"}),
+    "services": frozenset(
+        {"watcher_ok", "tasks_ok", "launchd_ok", "age_seconds", "timestamp_valid"}
+    ),
+    "ingress": frozenset(
+        {"secret_configured", "callback_secret_configured", "loopback_bind", "protected_bind"}
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -172,7 +253,7 @@ class DoctorReport:
         }
         object.__setattr__(self, "components", safe_components)
         revision = str(self.source_revision or "").strip().lower()
-        object.__setattr__(self, "source_revision", revision if _HEX_SHA_RE.fullmatch(revision) else "unknown")
+        object.__setattr__(self, "source_revision", revision if _FULL_SHA_RE.fullmatch(revision) else "unknown")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -245,6 +326,11 @@ def _safe_state(value: object) -> str:
     return candidate if candidate in _STATE_VALUES else "unknown"
 
 
+def _probe_has_required_evidence(name: str, values: Mapping[str, Any]) -> bool:
+    required = _REQUIRED_PROBE_KEYS.get(name)
+    return not required or required.issubset(values.keys())
+
+
 def _sha256_file(path: Path) -> str | None:
     digest = hashlib.sha256()
     try:
@@ -259,9 +345,9 @@ def _sha256_file(path: Path) -> str | None:
 def _source_revision() -> str:
     for key in ("PENNY_SOURCE_REVISION", "GITHUB_SHA"):
         value = str(os.environ.get(key, "")).strip().lower()
-        if _HEX_SHA_RE.fullmatch(value):
+        if _FULL_SHA_RE.fullmatch(value):
             return value
-    return "unknown"
+    return _STARTUP_SOURCE_REVISION
 
 
 def _sqlite_path() -> Path:
@@ -375,11 +461,11 @@ def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: 
     )
     url_configured = bool(
         config is not None
-        and str(getattr(config.maya, "transcript_url", "")).strip()
+        and _configured_value(getattr(config.maya, "transcript_url", ""))
     ) or "MAYA_TRANSCRIPT_URL" in launchd_keys
     token_configured = bool(
         config is not None
-        and str(getattr(config.maya, "ingest_token", "")).strip()
+        and _configured_value(getattr(config.maya, "ingest_token", ""))
     ) or "MAYA_INGEST_TOKEN" in launchd_keys
     configured = url_configured and token_configured
     pending_age = max(
@@ -406,7 +492,7 @@ def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **
         "com.penny.watcher", ("PENNY_SLACK_BOT_TOKEN",)
     )
     return {
-        "configured": bool(os.environ.get("PENNY_SLACK_BOT_TOKEN", "").strip())
+        "configured": _configured_value(os.environ.get("PENNY_SLACK_BOT_TOKEN", ""))
         or "PENNY_SLACK_BOT_TOKEN" in launchd_keys,
         "query_ok": health.get("query_ok", 0),
         "health_error": health.get("health_error", 1),
@@ -448,9 +534,10 @@ def _health_text_age(path: Path, *, now: datetime) -> tuple[int | None, bool]:
     return max(0, int((now - parsed).total_seconds())), True
 
 
-def _launchd_status(*, runner: Callable[..., Any] = subprocess.run) -> bool:
+def _launchd_status(*, runner: Callable[..., Any] | None = None) -> bool:
     if os.name != "posix" or not hasattr(os, "getuid"):
         return False
+    runner = runner or subprocess.run
     uid = os.getuid()
     labels = ("com.penny.watcher", "com.penny.webhook", "com.penny.tasks", "com.penny.export")
     for label in labels:
@@ -473,12 +560,13 @@ def _launchd_environment_keys(
     label: str,
     keys: tuple[str, ...],
     *,
-    runner: Callable[..., Any] = subprocess.run,
+    runner: Callable[..., Any] | None = None,
 ) -> set[str]:
     """Return configured key names without retaining or rendering values."""
 
     if os.name != "posix" or not hasattr(os, "getuid") or not keys:
         return set()
+    runner = runner or subprocess.run
     try:
         result = runner(
             ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
@@ -492,14 +580,58 @@ def _launchd_environment_keys(
     if getattr(result, "returncode", 1) != 0:
         return set()
     output = str(getattr(result, "stdout", "") or "")
-    return {
-        key
-        for key in keys
-        if re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
+    configured: set[str] = set()
+    for key in keys:
+        match = re.search(
+            rf"[\"'`]?(?P<key>{re.escape(key)})[\"'`]?\s*(?:=>|=)\s*(?P<value>[^\n,}}]+)",
             output,
         )
-    }
+        if match is None:
+            continue
+        value = match.group("value").strip().strip("\"'").strip()
+        if _configured_value(value):
+            configured.add(key)
+    return configured
+
+
+def _launchd_environment_value(
+    label: str,
+    key: str,
+    *,
+    runner: Callable[..., Any] | None = None,
+) -> str:
+    """Return only a bounded classification for one launchd value."""
+
+    if os.name != "posix" or not hasattr(os, "getuid"):
+        return "missing"
+    runner = runner or subprocess.run
+    try:
+        result = runner(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TypeError):
+        return "missing"
+    if getattr(result, "returncode", 1) != 0:
+        return "missing"
+    output = str(getattr(result, "stdout", "") or "")
+    match = re.search(
+        rf"[\"'`]?(?P<key>{re.escape(key)})[\"'`]?\s*(?:=>|=)\s*(?P<value>[^\n,}}]+)",
+        output,
+    )
+    if match is None:
+        return "missing"
+    value = match.group("value").strip().strip("\"'").strip()
+    if not _configured_value(value):
+        return "missing"
+    if key == "PENNY_WEBHOOK_HOST":
+        return "loopback" if value.lower() in {"127.0.0.1", "::1", "localhost"} else "non_loopback"
+    if key == "PENNY_WEBHOOK_ALLOW_NONLOOPBACK":
+        return "enabled" if value.lower() in {"1", "true", "yes"} else "disabled"
+    return "configured"
 
 
 def _default_probe_services(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -582,6 +714,35 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
         latest_set_matches = bool(catalog_path is not None and catalog_path.parent.name == receipt_id)
         data["latest_set_matches_receipt"] = latest_set_matches
         actual_catalog_sha = _sha256_file(receipt_set_catalog) if receipt_set_present else None
+        database_metadata_bound = False
+        receipt_row_count = receipt.get("row_count")
+        receipt_max_id = receipt.get("max_transcript_id")
+        if (
+            receipt_set_present
+            and "row_count" in receipt
+            and "max_transcript_id" in receipt
+            and isinstance(receipt_row_count, int)
+            and not isinstance(receipt_row_count, bool)
+            and receipt_row_count >= 0
+            and (receipt_max_id is None or (isinstance(receipt_max_id, int) and not isinstance(receipt_max_id, bool) and receipt_max_id >= 0))
+        ):
+            try:
+                catalog_value = json.loads(receipt_set_catalog.read_text(encoding="utf-8"))
+                database = catalog_value.get("database") if isinstance(catalog_value, dict) else None
+                catalog_row_count = database.get("row_count") if isinstance(database, dict) else None
+                catalog_max_id = database.get("max_transcript_id") if isinstance(database, dict) else None
+                database_metadata_bound = (
+                    isinstance(catalog_row_count, int)
+                    and not isinstance(catalog_row_count, bool)
+                    and catalog_row_count == receipt_row_count
+                    and catalog_max_id == receipt_max_id
+                )
+            except (OSError, UnicodeError, ValueError, TypeError):
+                database_metadata_bound = False
+        data["row_count"] = receipt_row_count if isinstance(receipt_row_count, int) else 0
+        if isinstance(receipt_max_id, int):
+            data["max_transcript_id"] = receipt_max_id
+        data["database_metadata_bound"] = database_metadata_bound
         valid = bool(
             receipt.get("schema_version") == 1
             and receipt.get("status") == "verified"
@@ -592,6 +753,7 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
             and receipt_set_present
             and latest_set_matches
             and actual_catalog_sha == receipt_hash
+            and database_metadata_bound
         )
         timestamp = receipt.get("verified_at") or receipt.get("observed_at") or receipt.get("created_at")
         age, timestamp_valid = _age_seconds(timestamp, now=current)
@@ -620,18 +782,39 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
 
 def _default_probe_ingress(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
-    token = str(getattr(getattr(config, "webhook", None), "ingest_token", "") or "").strip()
+    config_token = getattr(getattr(config, "webhook", None), "ingest_token", "")
+    token = _configured_value(config_token)
+    token = token or _configured_value(os.environ.get("PENNY_INGEST_TOKEN", ""))
     launchd_keys = _launchd_environment_keys(
         "com.penny.webhook", ("PENNY_INGEST_TOKEN",)
     )
-    host = str(getattr(getattr(config, "webhook", None), "host", "") or "").strip().lower()
-    loopback = host in {"127.0.0.1", "::1", "localhost"}
-    protected = os.environ.get("PENNY_WEBHOOK_ALLOW_NONLOOPBACK") == "1"
+    config_host = getattr(getattr(config, "webhook", None), "host", "")
+    host_value = os.environ.get("PENNY_WEBHOOK_HOST", "")
+    if not _configured_value(host_value):
+        host_value = config_host
+    host = str(host_value).strip().lower() if _configured_value(host_value) else ""
+    launchd_host = _launchd_environment_value("com.penny.webhook", "PENNY_WEBHOOK_HOST")
+    if launchd_host in {"loopback", "non_loopback"}:
+        loopback = launchd_host == "loopback"
+    else:
+        loopback = host in {"127.0.0.1", "::1", "localhost"}
+    launchd_protected = _launchd_environment_value(
+        "com.penny.webhook", "PENNY_WEBHOOK_ALLOW_NONLOOPBACK"
+    )
+    protected = (
+        os.environ.get("PENNY_WEBHOOK_ALLOW_NONLOOPBACK") == "1"
+        or launchd_protected == "enabled"
+    )
+    callback_configured = _configured_value(os.environ.get("PENNY_WEBHOOK_SECRET", ""))
+    callback_configured = callback_configured or bool(
+        "PENNY_WEBHOOK_SECRET"
+        in _launchd_environment_keys("com.penny.webhook", ("PENNY_WEBHOOK_SECRET",))
+    )
     return {
         "secret_configured": bool(token) or "PENNY_INGEST_TOKEN" in launchd_keys,
         "loopback_bind": loopback,
         "protected_bind": protected,
-        "callback_secret_configured": bool(os.environ.get("PENNY_WEBHOOK_SECRET", "").strip()),
+        "callback_secret_configured": callback_configured,
     }
 
 
@@ -641,8 +824,12 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if explicit is not None:
         if explicit == "unknown":
             return "unknown", _safe_reason(values.get("reason"), "unknown")
+        if not _probe_has_required_evidence(name, values):
+            return "unknown", "unknown"
         return explicit, _safe_reason(values.get("reason"), "ok")
     if not values:
+        return "unknown", "unknown"
+    if not _probe_has_required_evidence(name, values):
         return "unknown", "unknown"
     if name == "sqlite":
         if not values.get("query_ok", 0):
@@ -739,6 +926,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if name == "ingress":
         if not values.get("secret_configured", False):
             return "unready", "secret_missing"
+        if not values.get("callback_secret_configured", False):
+            return "unready", "callback_secret_missing"
         if values.get("loopback_bind", False):
             return "ready", "ok"
         if values.get("protected_bind", False):
@@ -796,7 +985,12 @@ def run_doctor(
             data = dict(overrides[name]) if name in overrides else probe_functions[name](config, now=current)
         except Exception:
             data = {"reason": "probe_error"}
-        state, reason = _infer_status(name, data)
+        try:
+            state, reason = _infer_status(name, data)
+        except Exception:
+            # Adapters are untrusted boundaries: a malformed counter or
+            # provider-shaped value must never escape as a traceback or body.
+            state, reason = "unready", "probe_error"
         if state == "unknown" and name not in _OPTIONAL_COMPONENTS:
             state, reason = "unready", "unknown"
         components[name] = ComponentStatus(

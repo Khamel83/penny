@@ -36,9 +36,20 @@ def _ready_probes(tmp_path: Path):
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
         "maya": {"configured": False, "query_ok": 1, "pending_count": 0, "dead_letter_count": 0},
         "slack": {"configured": True, "query_ok": 1, "failed_count": 0, "pending_count": 0},
-        "backup": {"verified": True, "age_seconds": 2},
-        "services": {"watcher_ok": True, "tasks_ok": True, "launchd_ok": True, "age_seconds": 2},
-        "ingress": {"secret_configured": True, "loopback_bind": True},
+        "backup": {"verified": True, "age_seconds": 2, "timestamp_valid": True},
+        "services": {
+            "watcher_ok": True,
+            "tasks_ok": True,
+            "launchd_ok": True,
+            "age_seconds": 2,
+            "timestamp_valid": True,
+        },
+        "ingress": {
+            "secret_configured": True,
+            "callback_secret_configured": True,
+            "loopback_bind": True,
+            "protected_bind": False,
+        },
     }
 
 
@@ -135,6 +146,123 @@ def test_launchd_secret_presence_probe_keeps_values_out_of_report(monkeypatch):
     assert "secret-value" not in doctor.render_json(report)
 
 
+def test_secret_templates_and_empty_environment_values_are_not_configured(monkeypatch):
+    import doctor
+
+    monkeypatch.setenv("PENNY_SLACK_BOT_TOKEN", "YOUR_SLACK_BOT_TOKEN_HERE")
+    monkeypatch.setenv("PENNY_INGEST_TOKEN", "<set-me>")
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    'PENNY_SLACK_BOT_TOKEN = "YOUR_SLACK_BOT_TOKEN_HERE"\n'
+                    'PENNY_INGEST_TOKEN = "YOUR_PENNY_INGEST_TOKEN_HERE"\n'
+                    'PENNY_WEBHOOK_SECRET = ""\n'
+                ),
+            },
+        )(),
+    )
+    assert doctor._default_probe_slack()["configured"] is False
+    ingress = doctor._default_probe_ingress(
+        _config(Path("/tmp"), token="YOUR_PENNY_INGEST_TOKEN_HERE")
+    )
+    assert ingress["secret_configured"] is False
+    assert ingress["callback_secret_configured"] is False
+
+
+def test_loaded_webhook_environment_controls_bind_and_callback_presence(monkeypatch):
+    import doctor
+
+    for key in ("PENNY_INGEST_TOKEN", "PENNY_WEBHOOK_SECRET", "PENNY_WEBHOOK_HOST", "PENNY_WEBHOOK_ALLOW_NONLOOPBACK"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    "PENNY_INGEST_TOKEN = ingest-value\n"
+                    "PENNY_WEBHOOK_SECRET = callback-value\n"
+                    "PENNY_WEBHOOK_HOST = 0.0.0.0\n"
+                    "PENNY_WEBHOOK_ALLOW_NONLOOPBACK = 1\n"
+                ),
+            },
+        )(),
+    )
+    ingress = doctor._default_probe_ingress(
+        _config(Path("/tmp"), token="YOUR_PENNY_INGEST_TOKEN_HERE")
+    )
+    assert ingress == {
+        "secret_configured": True,
+        "callback_secret_configured": True,
+        "loopback_bind": False,
+        "protected_bind": True,
+    }
+
+
+def test_source_revision_prefers_environment_then_uses_git_fallback(monkeypatch):
+    import doctor
+
+    monkeypatch.setenv("PENNY_SOURCE_REVISION", "a" * 40)
+    assert doctor._source_revision() == "a" * 40
+
+    monkeypatch.delenv("PENNY_SOURCE_REVISION", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.setattr(doctor, "_STARTUP_SOURCE_REVISION", "b" * 40)
+    assert doctor._source_revision() == "b" * 40
+
+    monkeypatch.setattr(doctor, "_STARTUP_SOURCE_REVISION", "unknown")
+    assert doctor._source_revision() == "unknown"
+
+
+def test_startup_source_revision_requires_clean_checkout(monkeypatch):
+    import doctor
+
+    dirty_calls: list[list[str]] = []
+
+    def dirty_runner(command, **kwargs):
+        dirty_calls.append(command)
+        return type("Result", (), {"returncode": 1, "stdout": ""})()
+
+    assert doctor._capture_startup_source_revision(runner=dirty_runner) == "unknown"
+    assert dirty_calls and dirty_calls[0][-3:] == ["diff", "--quiet", "HEAD", "--"][-3:]
+
+    clean_results = iter(
+        (
+            type("Result", (), {"returncode": 0, "stdout": ""})(),
+            type("Result", (), {"returncode": 0, "stdout": ""})(),
+            type("Result", (), {"returncode": 0, "stdout": "c" * 40 + "\n"})(),
+        )
+    )
+    assert doctor._capture_startup_source_revision(runner=lambda *args, **kwargs: next(clean_results)) == "c" * 40
+
+
+def test_incomplete_required_probe_evidence_cannot_be_ready(tmp_path: Path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["backup"] = {"verified": True, "age_seconds": 1}
+    probes["services"] = {"watcher_ok": True, "tasks_ok": True, "launchd_ok": True, "age_seconds": 1}
+    probes["ingress"] = {
+        "secret_configured": True,
+        "callback_secret_configured": True,
+        "loopback_bind": True,
+    }
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    for name in ("backup", "services", "ingress"):
+        assert report.components[name].state == "unready"
+        assert report.components[name].reason == "unknown"
+
+
 def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatch):
     from doctor import _default_probe_backup
 
@@ -144,7 +272,10 @@ def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatc
     old_set.mkdir(parents=True)
     latest_set.mkdir(parents=True)
     catalog = latest_set / "catalog.json"
-    catalog.write_text("catalog-v1\n", encoding="utf-8")
+    catalog.write_text(
+        json.dumps({"database": {"row_count": 1, "max_transcript_id": 1}}),
+        encoding="utf-8",
+    )
     digest = hashlib.sha256(catalog.read_bytes()).hexdigest()
     receipt = root / "last_verification.json"
     receipt.write_text(
@@ -155,6 +286,8 @@ def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatc
                 "valid": True,
                 "backup_set_id": latest_set.name,
                 "catalog_sha256": digest,
+                "row_count": 1,
+                "max_transcript_id": 1,
                 "verified_at": "2026-08-10T12:00:00Z",
                 "remote_catalog_verified": True,
             }

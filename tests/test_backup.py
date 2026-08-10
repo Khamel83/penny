@@ -283,6 +283,20 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
         self.assertEqual(list(destination.parent.glob("*.partial")), [])
 
+        with self.assertRaises(backup_penny.SyncError):
+            backup_penny.write_verification_receipt(
+                self.backup / "truthy-not-boolean.json",
+                receipt=receipt,
+                verification=SimpleNamespace(
+                    valid=1,
+                    backup_set_id=receipt.backup_set_id,
+                    row_count=receipt.row_count,
+                    max_transcript_id=receipt.max_transcript_id,
+                ),
+                remote_catalog_verified=1,
+                verified_at=self.now,
+            )
+
     def test_failed_verification_cannot_advance_existing_receipt(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
         destination = self.backup / "last_verification.json"
@@ -301,6 +315,32 @@ class BackupTests(unittest.TestCase):
                 remote_catalog_verified=True,
             )
         self.assertEqual(json.loads(destination.read_text(encoding="utf-8"))["backup_set_id"], "old")
+
+    def test_verification_receipt_rejects_naive_time_and_symlink_ancestor(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        verification = verify_backup_set(receipt.set_path, self.root / "scratch-receipt-safety")
+        with self.assertRaises(backup_penny.SyncError):
+            backup_penny.write_verification_receipt(
+                self.backup / "naive.json",
+                receipt=receipt,
+                verification=verification,
+                remote_catalog_verified=True,
+                verified_at=datetime(2026, 8, 10, 12, 30),
+            )
+
+        outside = self.root / "outside"
+        outside.mkdir()
+        linked_parent = self.root / "linked-receipts"
+        linked_parent.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(backup_penny.SyncError):
+            backup_penny.write_verification_receipt(
+                linked_parent / "last_verification.json",
+                receipt=receipt,
+                verification=verification,
+                remote_catalog_verified=True,
+                verified_at=self.now,
+            )
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_verifier_cli_returns_one_for_invalid_set_and_two_for_safety(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)

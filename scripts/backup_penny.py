@@ -24,7 +24,13 @@ SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
-from backup import BackupError, BackupReceipt, create_backup_set, verify_backup_set  # noqa: E402
+from backup import (  # noqa: E402
+    BackupError,
+    BackupReceipt,
+    _reject_symlink_components,
+    create_backup_set,
+    verify_backup_set,
+)
 
 
 DEFAULT_DB = Path("~/.penny/transcripts.db").expanduser()
@@ -61,7 +67,7 @@ def write_verification_receipt(
     sync must never call this function, so a prior good receipt remains intact.
     """
 
-    if not getattr(verification, "valid", False) or not remote_catalog_verified:
+    if getattr(verification, "valid", None) is not True or remote_catalog_verified is not True:
         raise SyncError("verification_not_complete")
     set_id = str(getattr(verification, "backup_set_id", "") or receipt.backup_set_id)
     if set_id != receipt.backup_set_id or not _BACKUP_SET_ID_RE.fullmatch(set_id):
@@ -69,11 +75,26 @@ def write_verification_receipt(
     catalog_sha = str(receipt.catalog_sha256)
     if len(catalog_sha) != 64 or any(char not in "0123456789abcdef" for char in catalog_sha.lower()):
         raise SyncError("verification_catalog_hash_invalid")
-    timestamp = (verified_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if verified_at is None:
+        timestamp = datetime.now(timezone.utc)
+    elif not isinstance(verified_at, datetime) or verified_at.tzinfo is None:
+        raise SyncError("verification_timestamp_invalid")
+    else:
+        try:
+            timestamp = verified_at.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SyncError("verification_timestamp_invalid") from exc
     raw_max_id = getattr(verification, "max_transcript_id", receipt.max_transcript_id)
+    raw_row_count = getattr(verification, "row_count", receipt.row_count)
     try:
+        if isinstance(raw_max_id, bool) or (raw_max_id is not None and int(raw_max_id) < 0):
+            raise ValueError("max_transcript_id")
         max_id = None if raw_max_id is None else int(raw_max_id)
-        row_count = int(getattr(verification, "row_count", receipt.row_count) or 0)
+        if isinstance(raw_row_count, bool):
+            raise ValueError("row_count")
+        row_count = int(raw_row_count)
+        if row_count < 0:
+            raise ValueError("row_count")
     except (TypeError, ValueError, OverflowError) as exc:
         raise SyncError("verification_metadata_invalid") from exc
     payload = {
@@ -88,9 +109,15 @@ def write_verification_receipt(
         "remote_catalog_verified": True,
     }
     destination = Path(path).expanduser()
-    if destination.is_symlink():
-        raise SyncError("verification_receipt_symlink")
+    try:
+        _reject_symlink_components(destination.absolute(), label="verification_receipt")
+    except BackupError as exc:
+        raise SyncError("verification_receipt_symlink") from exc
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        _reject_symlink_components(destination.absolute(), label="verification_receipt")
+    except BackupError as exc:
+        raise SyncError("verification_receipt_symlink") from exc
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -109,6 +136,11 @@ def write_verification_receipt(
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
         os.chmod(destination, 0o600)
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         return destination
     except (OSError, TypeError, ValueError) as exc:
         raise SyncError("verification_receipt_write_failed") from exc
