@@ -100,6 +100,8 @@ def init_db() -> None:
     conn = None
     try:
         conn = sqlite3.connect(str(TRANSCRIPT_DB_PATH), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
@@ -248,37 +250,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_quality_failure_slack_due "
             "ON quality_failure_slack_deliveries(status, next_attempt_at)"
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS archive_deliveries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transcript_row_id INTEGER NOT NULL UNIQUE,
-                local_object_path TEXT NOT NULL,
-                audio_sha256 TEXT NOT NULL,
-                byte_length INTEGER NOT NULL,
-                extension TEXT NOT NULL,
-                archive_source TEXT NOT NULL,
-                source_aliases TEXT NOT NULL DEFAULT '[]',
-                original_name TEXT,
-                recorded_at TEXT,
-                ingested_at TEXT,
-                archive_duration_seconds REAL,
-                mime_type TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                attempt_count INTEGER NOT NULL DEFAULT 0,
-                next_attempt_at TEXT,
-                last_error_code TEXT,
-                destination_audio_path TEXT,
-                destination_markdown_path TEXT,
-                destination_manifest_path TEXT,
-                receipt_sha256 TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                published_at TEXT,
-                FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
-            )
-            """
-        )
+        _ensure_archive_delivery_schema(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_archive_deliveries_due "
             "ON archive_deliveries(status, next_attempt_at)"
@@ -302,6 +274,7 @@ def init_db() -> None:
 def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(TRANSCRIPT_DB_PATH), timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -390,6 +363,372 @@ def _ensure_unique_index(
 
     conn.execute(
         f"CREATE UNIQUE INDEX {index} ON {table}({column})"
+    )
+
+
+_ARCHIVE_DELIVERY_COLUMNS = {
+    "id",
+    "transcript_row_id",
+    "local_object_path",
+    "audio_sha256",
+    "byte_length",
+    "extension",
+    "archive_source",
+    "source_aliases",
+    "original_name",
+    "recorded_at",
+    "ingested_at",
+    "archive_duration_seconds",
+    "mime_type",
+    "status",
+    "availability_status",
+    "unavailable_reason",
+    "attempt_count",
+    "next_attempt_at",
+    "last_error_code",
+    "destination_audio_path",
+    "destination_markdown_path",
+    "destination_manifest_path",
+    "receipt_sha256",
+    "publication_scope",
+    "publication_generation",
+    "alias_set_sha256",
+    "validation_status",
+    "validation_error_code",
+    "last_validated_at",
+    "rebuild_needed",
+    "created_at",
+    "updated_at",
+    "published_at",
+    "local_mirror_published_at",
+}
+
+
+def _create_archive_delivery_table(
+    conn: sqlite3.Connection, table: str = "archive_deliveries"
+) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transcript_row_id INTEGER NOT NULL UNIQUE,
+            local_object_path TEXT,
+            audio_sha256 TEXT,
+            byte_length INTEGER,
+            extension TEXT,
+            archive_source TEXT NOT NULL,
+            source_aliases TEXT NOT NULL DEFAULT '[]',
+            original_name TEXT,
+            recorded_at TEXT,
+            ingested_at TEXT,
+            archive_duration_seconds REAL,
+            mime_type TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            availability_status TEXT NOT NULL DEFAULT 'available',
+            unavailable_reason TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            last_error_code TEXT,
+            destination_audio_path TEXT,
+            destination_markdown_path TEXT,
+            destination_manifest_path TEXT,
+            receipt_sha256 TEXT,
+            publication_scope TEXT NOT NULL DEFAULT 'local_mirror',
+            publication_generation INTEGER NOT NULL DEFAULT 1,
+            alias_set_sha256 TEXT,
+            validation_status TEXT NOT NULL DEFAULT 'pending',
+            validation_error_code TEXT,
+            last_validated_at TEXT,
+            rebuild_needed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            published_at TEXT,
+            local_mirror_published_at TEXT,
+            FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+        )
+        """
+    )
+
+
+def _archive_schema_is_current(conn: sqlite3.Connection) -> bool:
+    if not _ARCHIVE_DELIVERY_COLUMNS.issubset(
+        _table_columns(conn, "archive_deliveries")
+    ):
+        return False
+    foreign_keys = conn.execute(
+        "PRAGMA foreign_key_list(archive_deliveries)"
+    ).fetchall()
+    has_foreign_key = any(
+        row[2] == "transcripts"
+        and row[3] == "transcript_row_id"
+        and row[4] == "id"
+        for row in foreign_keys
+    )
+    unique_transcript_index = False
+    for index in conn.execute("PRAGMA index_list(archive_deliveries)").fetchall():
+        if not int(index[2]) or (len(index) > 4 and int(index[4])):
+            continue
+        columns = [
+            row[2]
+            for row in conn.execute(f"PRAGMA index_info({index[1]})").fetchall()
+        ]
+        if columns == ["transcript_row_id"]:
+            unique_transcript_index = True
+            break
+    return has_foreign_key and unique_transcript_index
+
+
+def _quarantine_archive_orphans(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT deliveries.*
+        FROM archive_deliveries AS deliveries
+        LEFT JOIN transcripts ON transcripts.id = deliveries.transcript_row_id
+        WHERE transcripts.id IS NULL
+        """
+    ).fetchall()
+    for row in rows:
+        snapshot = dict(row)
+        conn.execute(
+            """
+            INSERT INTO archive_delivery_quarantine (
+                legacy_delivery_id, transcript_row_id, reason_code, row_snapshot
+            ) VALUES (?, ?, 'orphan_transcript', ?)
+            """,
+            (
+                snapshot.get("id"),
+                snapshot.get("transcript_row_id"),
+                json.dumps(snapshot, default=str, sort_keys=True),
+            ),
+        )
+        conn.execute(
+            "DELETE FROM archive_deliveries WHERE id = ?", (snapshot["id"],)
+        )
+
+
+def _ensure_archive_delivery_schema(conn: sqlite3.Connection) -> None:
+    legacy_publication_rows: list[dict[str, Any]] = []
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS archive_delivery_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            legacy_delivery_id INTEGER,
+            transcript_row_id INTEGER,
+            reason_code TEXT NOT NULL,
+            row_snapshot TEXT NOT NULL,
+            quarantined_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    existing_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_deliveries'"
+    ).fetchone()
+    if existing_table is None:
+        _create_archive_delivery_table(conn)
+    elif not _archive_schema_is_current(conn):
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_publications'"
+        ).fetchone():
+            legacy_publication_rows = [
+                dict(row) for row in conn.execute("SELECT * FROM archive_publications")
+            ]
+            conn.execute("DROP TABLE archive_publications")
+        legacy_rows = [
+            dict(row) for row in conn.execute("SELECT * FROM archive_deliveries")
+        ]
+        legacy_name = "archive_deliveries_legacy_migration"
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (legacy_name,),
+        ).fetchone():
+            raise sqlite3.IntegrityError("stale archive migration table")
+        conn.execute(f"ALTER TABLE archive_deliveries RENAME TO {legacy_name}")
+        _create_archive_delivery_table(conn)
+        seen_transcripts: set[int] = set()
+        for legacy in legacy_rows:
+            raw_transcript_id = legacy.get("transcript_row_id", legacy.get("transcript_id"))
+            try:
+                transcript_id = int(raw_transcript_id)
+            except (TypeError, ValueError):
+                transcript_id = 0
+            canonical = conn.execute(
+                "SELECT source, recorded_at, duration_seconds FROM transcripts WHERE id = ?",
+                (transcript_id,),
+            ).fetchone()
+            reason: str | None = None
+            if canonical is None:
+                reason = "orphan_transcript"
+            elif transcript_id in seen_transcripts:
+                reason = "duplicate_transcript"
+            if reason is not None:
+                conn.execute(
+                    """
+                    INSERT INTO archive_delivery_quarantine (
+                        legacy_delivery_id, transcript_row_id, reason_code, row_snapshot
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        legacy.get("id"),
+                        transcript_id or None,
+                        reason,
+                        json.dumps(legacy, default=str, sort_keys=True),
+                    ),
+                )
+                continue
+            seen_transcripts.add(transcript_id)
+            local_path = legacy.get("local_object_path")
+            audio_sha256 = legacy.get("audio_sha256")
+            byte_length = legacy.get("byte_length")
+            extension = legacy.get("extension")
+            materialized = bool(
+                local_path and audio_sha256 and byte_length is not None and extension
+            )
+            old_status = str(legacy.get("status") or "pending")
+            availability = str(
+                legacy.get("availability_status")
+                or ("available" if materialized else "unavailable")
+            )
+            status = old_status if materialized else "unavailable"
+            validation_status = str(
+                legacy.get("validation_status")
+                or ("pending" if materialized else "invalid")
+            )
+            conn.execute(
+                """
+                INSERT INTO archive_deliveries (
+                    id, transcript_row_id, local_object_path, audio_sha256,
+                    byte_length, extension, archive_source, source_aliases,
+                    original_name, recorded_at, ingested_at,
+                    archive_duration_seconds, mime_type, status,
+                    availability_status, unavailable_reason, attempt_count,
+                    next_attempt_at, last_error_code, destination_audio_path,
+                    destination_markdown_path, destination_manifest_path,
+                    receipt_sha256, publication_scope, publication_generation,
+                    alias_set_sha256, validation_status, validation_error_code,
+                    last_validated_at, rebuild_needed, created_at, updated_at,
+                    published_at, local_mirror_published_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE(?, datetime('now')), COALESCE(?, datetime('now')),
+                    ?, ?
+                )
+                """,
+                (
+                    legacy.get("id"), transcript_id, local_path, audio_sha256,
+                    byte_length, extension,
+                    legacy.get("archive_source") or canonical["source"],
+                    legacy.get("source_aliases") or "[]",
+                    legacy.get("original_name"),
+                    legacy.get("recorded_at") or canonical["recorded_at"],
+                    legacy.get("ingested_at"),
+                    legacy.get("archive_duration_seconds") or canonical["duration_seconds"],
+                    legacy.get("mime_type"), status, availability,
+                    legacy.get("unavailable_reason")
+                    or (None if materialized else "migration_missing_archive_metadata"),
+                    int(legacy.get("attempt_count") or 0),
+                    legacy.get("next_attempt_at"), legacy.get("last_error_code"),
+                    legacy.get("destination_audio_path"),
+                    legacy.get("destination_markdown_path"),
+                    legacy.get("destination_manifest_path"),
+                    legacy.get("receipt_sha256"),
+                    legacy.get("publication_scope") or "local_mirror",
+                    int(legacy.get("publication_generation") or 1),
+                    legacy.get("alias_set_sha256"), validation_status,
+                    legacy.get("validation_error_code")
+                    or (None if materialized else "migration_missing_archive_metadata"),
+                    legacy.get("last_validated_at"),
+                    int(legacy.get("rebuild_needed") or (old_status == "published")),
+                    legacy.get("created_at"), legacy.get("updated_at"),
+                    legacy.get("published_at"),
+                    legacy.get("local_mirror_published_at") or legacy.get("published_at"),
+                ),
+            )
+        conn.execute(f"DROP TABLE {legacy_name}")
+
+    _quarantine_archive_orphans(conn)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS archive_publications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            archive_delivery_id INTEGER NOT NULL,
+            transcript_row_id INTEGER NOT NULL,
+            publication_generation INTEGER NOT NULL,
+            alias_set_sha256 TEXT NOT NULL,
+            source_aliases TEXT NOT NULL,
+            destination_audio_path TEXT NOT NULL,
+            destination_markdown_path TEXT NOT NULL,
+            destination_manifest_path TEXT NOT NULL,
+            receipt_sha256 TEXT NOT NULL,
+            publication_scope TEXT NOT NULL DEFAULT 'local_mirror',
+            published_at TEXT NOT NULL DEFAULT (datetime('now')),
+            superseded_at TEXT,
+            UNIQUE(archive_delivery_id, publication_generation),
+            FOREIGN KEY(archive_delivery_id) REFERENCES archive_deliveries(id),
+            FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+        )
+        """
+    )
+    for publication in legacy_publication_rows:
+        delivery = conn.execute(
+            "SELECT transcript_row_id, publication_generation, alias_set_sha256, "
+            "source_aliases FROM archive_deliveries WHERE id = ?",
+            (publication.get("archive_delivery_id"),),
+        ).fetchone()
+        if delivery is None:
+            continue
+        values = (
+            publication.get("id"),
+            publication.get("archive_delivery_id"),
+            publication.get("transcript_row_id") or delivery["transcript_row_id"],
+            publication.get("publication_generation")
+            or delivery["publication_generation"],
+            publication.get("alias_set_sha256") or delivery["alias_set_sha256"],
+            publication.get("source_aliases") or delivery["source_aliases"],
+            publication.get("destination_audio_path"),
+            publication.get("destination_markdown_path"),
+            publication.get("destination_manifest_path"),
+            publication.get("receipt_sha256"),
+            publication.get("publication_scope") or "local_mirror",
+            publication.get("published_at"),
+            publication.get("superseded_at"),
+        )
+        if any(value is None for value in values[3:10]):
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO archive_publications (
+                id, archive_delivery_id, transcript_row_id, publication_generation,
+                alias_set_sha256, source_aliases, destination_audio_path,
+                destination_markdown_path, destination_manifest_path,
+                receipt_sha256, publication_scope, published_at, superseded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?)
+            """,
+            values,
+        )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO archive_publications (
+            archive_delivery_id, transcript_row_id, publication_generation,
+            alias_set_sha256, source_aliases, destination_audio_path,
+            destination_markdown_path, destination_manifest_path,
+            receipt_sha256, publication_scope, published_at
+        )
+        SELECT id, transcript_row_id, publication_generation,
+               alias_set_sha256, source_aliases, destination_audio_path,
+               destination_markdown_path, destination_manifest_path,
+               receipt_sha256, 'local_mirror',
+               COALESCE(local_mirror_published_at, published_at, datetime('now'))
+        FROM archive_deliveries
+        WHERE status = 'published'
+          AND publication_scope = 'local_mirror'
+          AND alias_set_sha256 IS NOT NULL
+          AND destination_audio_path IS NOT NULL
+          AND destination_markdown_path IS NOT NULL
+          AND destination_manifest_path IS NOT NULL
+          AND receipt_sha256 IS NOT NULL
+        """
     )
 
 
@@ -956,6 +1295,7 @@ def _insert_transcript_transaction(
     enqueue_slack: bool = True,
     archive_staged: Any | None = None,
     archive_metadata: dict[str, Any] | None = None,
+    archive_unavailable_reason: str | None = None,
 ) -> int | None:
     """Insert a transcript and related outbox rows in one transaction."""
     if quality_status is None:
@@ -1013,6 +1353,13 @@ def _insert_transcript_transaction(
                     int(cursor.lastrowid),
                     archive_staged,
                     archive_metadata,
+                )
+            elif archive_unavailable_reason is not None:
+                _record_archive_unavailable_conn(
+                    conn,
+                    int(cursor.lastrowid),
+                    availability_status="not_applicable",
+                    reason_code=archive_unavailable_reason,
                 )
             _queue_slack_delivery(
                 conn,
@@ -1092,6 +1439,7 @@ def insert_transcript(
     enqueue_slack: bool = True,
     archive_staged: Any | None = None,
     archive_metadata: dict[str, Any] | None = None,
+    archive_unavailable_reason: str | None = None,
 ) -> int | None:
     """Compatibility wrapper returning an id only for a newly inserted row."""
     result = insert_transcript_result(
@@ -1113,6 +1461,7 @@ def insert_transcript(
         enqueue_slack=enqueue_slack,
         archive_staged=archive_staged,
         archive_metadata=archive_metadata,
+        archive_unavailable_reason=archive_unavailable_reason,
     )
     return result.row_id if result.outcome is InsertOutcome.INSERTED else None
 
@@ -1764,6 +2113,7 @@ def get_slack_delivery_health() -> dict[str, int]:
     health = {
         "pending_count": 0,
         "sent_count": 0,
+        "local_mirror_published_count": 0,
         "failed_count": 0,
         "quality_failure_pending_count": 0,
         "quality_failure_failed_count": 0,
@@ -1919,7 +2269,8 @@ def _queue_archive_delivery_conn(
 ) -> None:
     metadata = dict(metadata or {})
     canonical = conn.execute(
-        "SELECT source, audio_sha256 FROM transcripts WHERE id = ?",
+        "SELECT source, audio_sha256, recorded_at, duration_seconds "
+        "FROM transcripts WHERE id = ?",
         (transcript_id,),
     ).fetchone()
     if canonical is None:
@@ -1929,7 +2280,9 @@ def _queue_archive_delivery_conn(
         raise ValueError("Canonical archive audio hash conflict")
 
     existing = conn.execute(
-        "SELECT source_aliases, status FROM archive_deliveries "
+        "SELECT source_aliases, status, alias_set_sha256, publication_generation, "
+        "availability_status "
+        "FROM archive_deliveries "
         "WHERE transcript_row_id = ?",
         (transcript_id,),
     ).fetchone()
@@ -1943,6 +2296,10 @@ def _queue_archive_delivery_conn(
     aliases.update(str(value) for value in metadata.get("source_aliases", []) if value)
     if existing is not None:
         aliases.update(_json_loads_or_default(existing["source_aliases"], []))
+    aliases_json = json.dumps(
+        sorted(aliases), separators=(",", ":"), ensure_ascii=False
+    )
+    alias_set_sha256 = hashlib.sha256(aliases_json.encode("utf-8")).hexdigest()
 
     backend = metadata.get("backend")
     model = metadata.get("model")
@@ -1957,32 +2314,59 @@ def _queue_archive_delivery_conn(
         """,
         (staged.audio_sha256, backend, model, transcript_id),
     )
-    conn.execute(
-        """
-        INSERT INTO archive_deliveries (
-            transcript_row_id, local_object_path, audio_sha256, byte_length,
-            extension, archive_source, source_aliases, original_name,
-            recorded_at, ingested_at, archive_duration_seconds, mime_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(transcript_row_id) DO UPDATE SET
-            source_aliases = excluded.source_aliases,
-            updated_at = datetime('now')
-        """,
-        (
-            transcript_id,
-            str(staged.path),
-            staged.audio_sha256,
-            int(staged.byte_length),
-            staged.extension,
-            str(metadata.get("source") or canonical["source"]),
-            json.dumps(sorted(aliases)),
-            metadata.get("original_name"),
-            metadata.get("captured_at"),
-            metadata.get("ingested_at"),
-            metadata.get("duration_seconds"),
-            metadata.get("mime_type"),
-        ),
+    values = (
+        str(staged.path),
+        staged.audio_sha256,
+        int(staged.byte_length),
+        staged.extension,
+        str(metadata.get("source") or canonical["source"]),
+        aliases_json,
+        metadata.get("original_name"),
+        metadata.get("captured_at") or canonical["recorded_at"],
+        metadata.get("ingested_at"),
+        metadata.get("duration_seconds")
+        if metadata.get("duration_seconds") is not None
+        else canonical["duration_seconds"],
+        metadata.get("mime_type"),
     )
+    if existing is None:
+        conn.execute(
+            """
+            INSERT INTO archive_deliveries (
+                transcript_row_id, local_object_path, audio_sha256, byte_length,
+                extension, archive_source, source_aliases, original_name,
+                recorded_at, ingested_at, archive_duration_seconds, mime_type,
+                alias_set_sha256, availability_status, publication_scope
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 'local_mirror')
+            """,
+            (transcript_id, *values, alias_set_sha256),
+        )
+    elif (
+        existing["alias_set_sha256"] != alias_set_sha256
+        or existing["availability_status"] != "available"
+    ):
+        next_generation = int(existing["publication_generation"] or 1)
+        if existing["status"] == "published":
+            next_generation += 1
+        conn.execute(
+            """
+            UPDATE archive_deliveries
+            SET local_object_path = ?, audio_sha256 = ?, byte_length = ?,
+                extension = ?, archive_source = ?, source_aliases = ?,
+                original_name = COALESCE(original_name, ?),
+                recorded_at = COALESCE(recorded_at, ?),
+                ingested_at = COALESCE(ingested_at, ?),
+                archive_duration_seconds = COALESCE(archive_duration_seconds, ?),
+                mime_type = COALESCE(mime_type, ?), alias_set_sha256 = ?,
+                publication_generation = ?, status = 'pending',
+                availability_status = 'available', unavailable_reason = NULL,
+                validation_status = 'pending', validation_error_code = NULL,
+                rebuild_needed = 0, next_attempt_at = NULL,
+                updated_at = datetime('now')
+            WHERE transcript_row_id = ?
+            """,
+            (*values, alias_set_sha256, next_generation, transcript_id),
+        )
 
 
 def queue_archive_delivery(
@@ -2013,7 +2397,9 @@ def get_pending_archive_deliveries(limit: int = 5) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT deliveries.*, transcripts.source, transcripts.transcript,
-                   transcripts.created_at, transcripts.quality_status,
+                   transcripts.created_at, transcripts.recorded_at AS canonical_recorded_at,
+                   deliveries.recorded_at AS archive_recorded_at,
+                   transcripts.quality_status,
                    transcripts.transcription_backend, transcripts.transcription_model
             FROM archive_deliveries AS deliveries
             JOIN transcripts ON transcripts.id = deliveries.transcript_row_id
@@ -2029,6 +2415,205 @@ def get_pending_archive_deliveries(limit: int = 5) -> list[dict[str, Any]]:
     except sqlite3.Error:
         log.error("Failed to fetch archive deliveries due to a database error")
         return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_published_archive_deliveries(limit: int = 10) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM archive_deliveries
+            WHERE status = 'published' AND publication_scope = 'local_mirror'
+            ORDER BY COALESCE(last_validated_at, local_mirror_published_at, created_at)
+            LIMIT ?
+            """,
+            (max(0, min(int(limit), 100)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_archive_delivery_validated(delivery_id: int) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE archive_deliveries
+            SET validation_status = 'valid', validation_error_code = NULL,
+                last_validated_at = datetime('now'), rebuild_needed = 0,
+                updated_at = datetime('now')
+            WHERE id = ? AND status = 'published'
+            """,
+            (delivery_id,),
+        )
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_archive_delivery_rebuild_needed(
+    delivery_id: int, reason_code: str = "local_mirror_validation_failed"
+) -> None:
+    safe_reason = (
+        reason_code
+        if reason_code in {
+            "local_mirror_validation_failed",
+            "local_mirror_missing",
+            "local_mirror_receipt_mismatch",
+        }
+        else "local_mirror_validation_failed"
+    )
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """
+            UPDATE archive_deliveries
+            SET status = 'pending', publication_generation = publication_generation + 1,
+                validation_status = 'invalid', validation_error_code = ?,
+                last_validated_at = datetime('now'), rebuild_needed = 1,
+                destination_audio_path = NULL, destination_markdown_path = NULL,
+                destination_manifest_path = NULL, receipt_sha256 = NULL,
+                next_attempt_at = NULL, updated_at = datetime('now')
+            WHERE id = ? AND status = 'published'
+            """,
+            (safe_reason, delivery_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Archive delivery is not published")
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_archive_backfill_candidates(limit: int = 10) -> list[dict[str, Any]]:
+    """Return a bounded historical set lacking any archive applicability row."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT transcripts.id AS transcript_row_id, transcripts.source,
+                   transcripts.transcript, transcripts.audio_path AS transcript_audio_path,
+                   transcripts.audio_sha256, transcripts.recorded_at,
+                   transcripts.created_at, transcripts.duration_seconds,
+                   transcripts.quality_status, transcripts.transcription_backend,
+                   transcripts.transcription_model,
+                   (
+                       SELECT voice_memo_ingest.audio_path
+                       FROM voice_memo_ingest
+                       WHERE voice_memo_ingest.transcript_row_id = transcripts.id
+                         AND voice_memo_ingest.audio_path IS NOT NULL
+                       ORDER BY voice_memo_ingest.recording_pk
+                       LIMIT 1
+                   ) AS voice_audio_path
+            FROM transcripts
+            LEFT JOIN archive_deliveries
+              ON archive_deliveries.transcript_row_id = transcripts.id
+            WHERE archive_deliveries.id IS NULL
+            ORDER BY transcripts.id
+            LIMIT ?
+            """,
+            (max(0, min(int(limit), 100)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        if conn:
+            conn.close()
+
+
+_ARCHIVE_AVAILABILITY_REASONS = frozenset(
+    {
+        "legacy_placeholder",
+        "missing_audio_source",
+        "no_raw_audio",
+        "source_unavailable",
+    }
+)
+
+
+def _record_archive_unavailable_conn(
+    conn: sqlite3.Connection,
+    transcript_id: int,
+    *,
+    availability_status: str,
+    reason_code: str,
+) -> None:
+    if availability_status not in {"unavailable", "not_applicable"}:
+        raise ValueError("Invalid archive availability status")
+    if reason_code not in _ARCHIVE_AVAILABILITY_REASONS:
+        reason_code = "source_unavailable"
+    canonical = conn.execute(
+            "SELECT source, recorded_at, duration_seconds FROM transcripts WHERE id = ?",
+            (transcript_id,),
+        ).fetchone()
+    if canonical is None:
+        raise LookupError("Canonical transcript row does not exist")
+    aliases_json = json.dumps(
+        [str(canonical["source"])], separators=(",", ":"), ensure_ascii=False
+    )
+    alias_hash = hashlib.sha256(aliases_json.encode("utf-8")).hexdigest()
+    conn.execute(
+            """
+            INSERT INTO archive_deliveries (
+                transcript_row_id, archive_source, source_aliases, recorded_at,
+                archive_duration_seconds, status, availability_status,
+                unavailable_reason, alias_set_sha256, publication_scope,
+                validation_status, validation_error_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local_mirror', 'not_applicable', ?)
+            ON CONFLICT(transcript_row_id) DO UPDATE SET
+                status = excluded.status,
+                availability_status = excluded.availability_status,
+                unavailable_reason = excluded.unavailable_reason,
+                validation_status = excluded.validation_status,
+                validation_error_code = excluded.validation_error_code,
+                updated_at = datetime('now')
+            """,
+            (
+                transcript_id,
+                canonical["source"],
+                aliases_json,
+                canonical["recorded_at"],
+                canonical["duration_seconds"],
+                availability_status,
+                availability_status,
+                reason_code,
+                alias_hash,
+                reason_code,
+            ),
+    )
+
+
+def record_archive_unavailable(
+    transcript_id: int,
+    *,
+    availability_status: str,
+    reason_code: str,
+) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        _record_archive_unavailable_conn(
+            conn,
+            transcript_id,
+            availability_status=availability_status,
+            reason_code=reason_code,
+        )
+        conn.commit()
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
     finally:
         if conn:
             conn.close()
@@ -2096,6 +2681,53 @@ def mark_archive_delivery_published(
     conn = None
     try:
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT transcript_row_id, publication_generation, alias_set_sha256, "
+            "source_aliases FROM archive_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("Archive delivery does not exist")
+        existing_publication = conn.execute(
+            """
+            SELECT alias_set_sha256, source_aliases, destination_audio_path,
+                   destination_markdown_path, destination_manifest_path,
+                   receipt_sha256
+            FROM archive_publications
+            WHERE archive_delivery_id = ? AND publication_generation = ?
+            """,
+            (delivery_id, row["publication_generation"]),
+        ).fetchone()
+        expected_publication = (
+            row["alias_set_sha256"], row["source_aliases"], audio_path,
+            markdown_path, manifest_path, receipt_sha256,
+        )
+        if existing_publication is not None:
+            if tuple(existing_publication) != expected_publication:
+                raise sqlite3.IntegrityError(
+                    "archive publication generation already has a different receipt"
+                )
+        else:
+            conn.execute(
+                "UPDATE archive_publications SET superseded_at = datetime('now') "
+                "WHERE archive_delivery_id = ? AND superseded_at IS NULL",
+                (delivery_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO archive_publications (
+                    archive_delivery_id, transcript_row_id, publication_generation,
+                    alias_set_sha256, source_aliases, destination_audio_path,
+                    destination_markdown_path, destination_manifest_path,
+                    receipt_sha256, publication_scope
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local_mirror')
+                """,
+                (
+                    delivery_id, row["transcript_row_id"], row["publication_generation"],
+                    *expected_publication,
+                ),
+            )
         conn.execute(
             """
             UPDATE archive_deliveries
@@ -2103,8 +2735,12 @@ def mark_archive_delivery_published(
                 last_error_code = NULL, destination_audio_path = ?,
                 destination_markdown_path = ?, destination_manifest_path = ?,
                 receipt_sha256 = ?, published_at = datetime('now'),
+                local_mirror_published_at = datetime('now'),
+                publication_scope = 'local_mirror', validation_status = 'valid',
+                validation_error_code = NULL, last_validated_at = datetime('now'),
+                rebuild_needed = 0,
                 updated_at = datetime('now')
-            WHERE id = ? AND status != 'published'
+            WHERE id = ?
             """,
             (audio_path, markdown_path, manifest_path, receipt_sha256, delivery_id),
         )
@@ -2119,6 +2755,10 @@ def get_archive_delivery_health() -> dict[str, int]:
         "pending_count": 0,
         "sent_count": 0,
         "failed_count": 0,
+        "unavailable_count": 0,
+        "not_applicable_count": 0,
+        "invalid_count": 0,
+        "rebuild_needed_count": 0,
         "oldest_pending_age_seconds": 0,
         "health_error": 0,
     }
@@ -2133,9 +2773,13 @@ def get_archive_delivery_health() -> dict[str, int]:
                 "pending": "pending_count",
                 "published": "sent_count",
                 "failed": "failed_count",
+                "unavailable": "unavailable_count",
+                "not_applicable": "not_applicable_count",
             }.get(str(row["status"]))
             if key:
                 health[key] = int(row["count"])
+                if str(row["status"]) == "published":
+                    health["local_mirror_published_count"] = int(row["count"])
         age = conn.execute(
             """
             SELECT CAST(MAX(0, (julianday('now') - julianday(MIN(created_at))) * 86400)
@@ -2144,6 +2788,16 @@ def get_archive_delivery_health() -> dict[str, int]:
             """
         ).fetchone()
         health["oldest_pending_age_seconds"] = int(age[0] or 0)
+        validation = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN validation_status = 'invalid' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN rebuild_needed = 1 THEN 1 ELSE 0 END)
+            FROM archive_deliveries
+            """
+        ).fetchone()
+        health["invalid_count"] = int(validation[0] or 0)
+        health["rebuild_needed_count"] = int(validation[1] or 0)
         return health
     except Exception as exc:
         log.error("Failed to fetch archive health: %s", _safe_exception_class(exc))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import sqlite3
 import sys
@@ -47,6 +48,7 @@ class WatcherTests(unittest.TestCase):
         self.db_dir = tempfile.mkdtemp()
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
+        patch.object(transcript_log, "_MIGRATION_SOURCES", []).start()
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
 
@@ -78,6 +80,30 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         terminal_mock.assert_called_once_with(123, "skipped_too_large")
 
+    def test_oversized_archive_manifest_reports_skipped_quality_truthfully(self) -> None:
+        audio_path = Path(self.db_dir) / "oversized-truth.m4a"
+        audio_path.write_bytes(b"audio")
+        object_root = Path(self.db_dir) / "objects"
+        mirror_root = Path(self.db_dir) / "mirror"
+        with (
+            patch.object(watcher, "MAX_FILE_SIZE", 0),
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+            patch.object(watcher.cfg.archive, "mirror_root", mirror_root),
+        ):
+            self.assertTrue(
+                watcher._process_audio_file(
+                    audio_path, file_hash="oversized-truth-hash"
+                )
+            )
+            row = transcript_log.get_transcript_by_hash("oversized-truth-hash")
+            self.assertEqual(row["quality_status"], "skipped_too_large")
+            watcher._process_archive_outbox()
+        delivery = transcript_log.get_archive_delivery_health()
+        self.assertEqual(delivery["sent_count"], 1)
+        manifest_path = next(mirror_root.rglob("*.json"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["quality_status"], "skipped_too_large")
+
     def test_stages_before_transcription_and_queues_after_canonical_insert(self) -> None:
         audio_path = Path(self.db_dir) / "ordered.m4a"
         audio_path.write_bytes(b"audio")
@@ -93,6 +119,44 @@ class WatcherTests(unittest.TestCase):
             self.assertTrue(watcher._process_audio_file(audio_path, file_hash="legacy-md5"))
         self.assertEqual(events, ["stage", "transcribe", "insert"])
         self.assertIs(insert.call_args.kwargs["archive_staged"], staged)
+
+    def test_voice_memo_link_preserves_apple_source_path_while_transcript_uses_stage(self) -> None:
+        audio_path = Path(self.db_dir) / "source-provenance.m4a"
+        audio_path.write_bytes(b"audio")
+        object_root = Path(self.db_dir) / "objects"
+        transcript_log.upsert_voice_memo_recording(
+            204,
+            label="source provenance",
+            raw_path=audio_path.name,
+            duration_seconds=1.0,
+        )
+        with (
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult("text", QualityResult(True), 1),
+            ),
+            patch.object(watcher, "classify_and_route"),
+        ):
+            self.assertTrue(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="source-provenance-hash",
+                    recording_pk=204,
+                )
+            )
+        canonical = transcript_log.get_transcript_by_hash("source-provenance-hash")
+        conn = transcript_log._get_conn()
+        try:
+            source_row = conn.execute(
+                "SELECT audio_path FROM voice_memo_ingest WHERE recording_pk = 204"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source_row["audio_path"], str(audio_path))
+        self.assertNotEqual(canonical["audio_path"], str(audio_path))
+        self.assertTrue(str(canonical["audio_path"]).startswith(str(object_root)))
 
     def test_persistence_failure_never_queues_archive(self) -> None:
         audio_path = Path(self.db_dir) / "failed.m4a"
@@ -182,6 +246,59 @@ class WatcherTests(unittest.TestCase):
             receipt_sha256="manifest-hash",
         )
 
+    def test_published_local_mirror_tamper_and_missing_manifest_rebuild_safely(self) -> None:
+        object_root = Path(self.db_dir) / "validation-objects"
+        mirror_root = Path(self.db_dir) / "validation-mirror"
+        for index in (1, 2):
+            source = Path(self.db_dir) / f"validation-{index}.m4a"
+            source.write_bytes(f"audio-{index}".encode())
+            staged = watcher.stage_audio(source, object_root)
+            row_id = transcript_log.insert_transcript(
+                content_hash=f"validation-{index}",
+                source="iCloud",
+                transcript=f"canonical-{index}",
+                recorded_at="2026-08-09T19:27:31Z",
+                archive_staged=staged,
+                archive_metadata={
+                    "source": "iCloud",
+                    "source_alias": source.name,
+                    "original_name": source.name,
+                    "quality_status": "passed",
+                },
+                enqueue_slack=False,
+            )
+            self.assertIsNotNone(row_id)
+        with (
+            patch.object(watcher.cfg.archive, "mirror_root", mirror_root),
+            patch.object(watcher.cfg.archive, "delivery_batch_limit", 10),
+        ):
+            watcher._process_archive_outbox()
+            published = transcript_log.get_published_archive_deliveries(limit=10)
+            self.assertEqual(len(published), 2)
+            tampered_markdown = Path(published[0]["destination_markdown_path"])
+            os.chmod(tampered_markdown, 0o600)
+            tampered_markdown.write_text("tampered", encoding="utf-8")
+            Path(published[1]["destination_manifest_path"]).unlink()
+
+            watcher._reconcile_published_archives(limit=10)
+            health = transcript_log.get_archive_delivery_health()
+            self.assertEqual(health["rebuild_needed_count"], 2)
+            self.assertEqual(health["invalid_count"], 2)
+            self.assertGreaterEqual(
+                len(list((mirror_root / ".penny-conflicts").rglob("*.*"))), 3
+            )
+
+            watcher._process_archive_outbox()
+            rebuilt = transcript_log.get_published_archive_deliveries(limit=10)
+        self.assertEqual(len(rebuilt), 2)
+        self.assertTrue(all(row["publication_generation"] == 2 for row in rebuilt))
+        self.assertTrue(
+            all(watcher.validate_archive(Path(row["destination_manifest_path"])) for row in rebuilt)
+        )
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["rebuild_needed_count"], 0)
+        self.assertEqual(health["invalid_count"], 0)
+
     def test_disk_scan_reconciles_canonical_row_missing_archive_delivery(self) -> None:
         memo_dir = Path(self.db_dir) / "memos"
         memo_dir.mkdir()
@@ -194,6 +311,64 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "needs_archive_delivery", return_value=True),
         ):
             self.assertEqual(watcher.scan_for_unprocessed_files(), [(memo, "existing-hash")])
+
+    def test_historical_backfill_queues_old_linked_audio_without_retranscription(self) -> None:
+        source = Path(self.db_dir) / "historical.m4a"
+        source.write_bytes(b"historical audio")
+        row_id = transcript_log.insert_transcript(
+            content_hash="historical-backfill",
+            source="iCloud",
+            transcript="already canonical",
+            recorded_at="2025-01-02T03:04:05Z",
+            enqueue_slack=False,
+        )
+        transcript_log.upsert_voice_memo_recording(
+            701,
+            label="historical",
+            raw_path=source.name,
+            duration_seconds=2.0,
+            recorded_at="2025-01-02T03:04:05Z",
+        )
+        transcript_log.link_voice_memo_transcript(
+            701,
+            transcript_row_id=int(row_id),
+            content_hash="historical-backfill",
+            audio_path=str(source),
+        )
+        with (
+            patch.object(
+                watcher.cfg.archive,
+                "object_root",
+                Path(self.db_dir) / "historical-objects",
+            ),
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+            patch.object(watcher, "classify_and_route") as route,
+        ):
+            watcher._reconcile_archive_backfill(limit=100)
+        transcribe.assert_not_called()
+        route.assert_not_called()
+        due = transcript_log.get_pending_archive_deliveries(limit=5)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["transcript_row_id"], row_id)
+        self.assertEqual(due[0]["canonical_recorded_at"], "2025-01-02T03:04:05Z")
+
+    def test_historical_non_audio_and_missing_audio_are_visible_in_health(self) -> None:
+        transcript_log.insert_transcript(
+            content_hash="historical-text",
+            source="text",
+            transcript="no raw audio by design",
+            enqueue_slack=False,
+        )
+        transcript_log.insert_transcript(
+            content_hash="historical-missing-audio",
+            source="iCloud",
+            transcript="audio is unavailable",
+            enqueue_slack=False,
+        )
+        watcher._reconcile_archive_backfill(limit=100)
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["not_applicable_count"], 1)
+        self.assertEqual(health["unavailable_count"], 1)
 
     def test_watcher_does_not_mark_source_routed_after_insert_failure(self) -> None:
         audio_path = Path(self.db_dir) / "persistence-failure.m4a"
@@ -338,6 +513,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
             patch.object(watcher, "link_voice_memo_transcript", return_value=True),
             patch.object(watcher, "transcribe_with_quality") as transcribe,
+            patch.object(watcher, "queue_archive_delivery"),
             patch.object(watcher, "classify_and_route") as route,
             patch.object(watcher, "mark_voice_memo_routed") as routed,
         ):
@@ -374,6 +550,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
             patch.object(watcher, "link_voice_memo_transcript", return_value=True),
             patch.object(watcher, "transcribe_with_quality") as transcribe,
+            patch.object(watcher, "queue_archive_delivery"),
             patch.object(watcher, "classify_and_route") as route,
         ):
             self.assertTrue(
@@ -386,6 +563,38 @@ class WatcherTests(unittest.TestCase):
 
         transcribe.assert_not_called()
         route.assert_not_called()
+
+    def test_existing_canonical_archive_queue_failure_blocks_success(self) -> None:
+        audio_path = Path(self.db_dir) / "existing-queue-failure.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 189,
+            "status": "pending",
+            "quality_status": "passed",
+            "transcript": "do not route yet",
+            "source": "iCloud",
+        }
+        with (
+            patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(
+                watcher,
+                "queue_archive_delivery",
+                side_effect=sqlite3.OperationalError("archive unavailable"),
+            ),
+            patch.object(watcher, "classify_and_route") as route,
+            patch.object(watcher, "link_voice_memo_transcript") as link,
+            patch.object(watcher, "mark_voice_memo_routed") as routed,
+        ):
+            self.assertFalse(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="existing-queue-failure-hash",
+                    recording_pk=189,
+                )
+            )
+        route.assert_not_called()
+        link.assert_not_called()
+        routed.assert_not_called()
 
     def test_insert_race_processed_duplicate_skips_routing(self) -> None:
         audio_path = Path(self.db_dir) / "race-processed.m4a"
@@ -414,6 +623,7 @@ class WatcherTests(unittest.TestCase):
                     InsertOutcome.DUPLICATE, row_id=90, existing_status="processed"
                 ),
             ),
+            patch.object(watcher, "queue_archive_delivery"),
             patch.object(watcher, "classify_and_route") as route,
         ):
             self.assertTrue(

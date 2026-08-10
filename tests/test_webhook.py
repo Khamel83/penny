@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import os
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
@@ -50,8 +51,10 @@ def _inserted(row_id: int) -> TranscriptInsertResult:
 def client(tmp_path, monkeypatch):
     import transcript_log
     monkeypatch.setattr(transcript_log, "TRANSCRIPT_DB_PATH", tmp_path / "transcripts.db")
+    monkeypatch.setattr(transcript_log, "_MIGRATION_SOURCES", [])
     import webhook.server as server
     transcript_log.init_db()
+    monkeypatch.setattr(server.cfg.archive, "object_root", tmp_path / "archive-objects")
     server.app.config["TESTING"] = True
     with server.app.test_client() as c:
         yield c
@@ -115,6 +118,139 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
     route_mock.assert_not_called()
 
 
+def test_upload_stages_before_transcription_and_keeps_durable_object(client, monkeypatch):
+    import transcript_log
+    import webhook.server as server
+
+    staged_paths = []
+    monkeypatch.setattr(
+        server,
+        "transcribe",
+        lambda path: (
+            staged_paths.append(Path(path)),
+            TranscriptionResult("archived upload", QualityResult(True), 1),
+        )[1],
+    )
+    monkeypatch.setattr(
+        server, "classify_and_route", lambda *args, **kwargs: {"items": []}
+    )
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"upload audio"), "../private/capture.m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+    assert response.status_code == 200
+    assert len(staged_paths) == 1
+    assert staged_paths[0].is_file()
+    assert str(staged_paths[0]).startswith(str(server.cfg.archive.object_root))
+    content_hash = hashlib.md5(b"upload audio").hexdigest()
+    row = transcript_log.get_transcript_by_hash(content_hash)
+    assert row["audio_path"] == str(staged_paths[0])
+    due = transcript_log.get_pending_archive_deliveries(limit=10)
+    assert len(due) == 1
+    assert due[0]["transcript_row_id"] == row["id"]
+    assert due[0]["original_name"] == "capture.m4a"
+    assert due[0]["source_aliases"] == '["Shortcut","capture.m4a"]'
+    assert due[0]["mime_type"] != "multipart/form-data"
+
+
+def test_upload_duplicate_archive_queue_failure_returns_503_without_route(client, monkeypatch):
+    import webhook.server as server
+
+    monkeypatch.setattr(
+        server,
+        "transcribe",
+        lambda _: TranscriptionResult("canonical", QualityResult(True), 1),
+    )
+    monkeypatch.setattr(
+        server,
+        "insert_transcript_result",
+        lambda **kwargs: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=77, existing_status="pending"
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_transcript_by_hash",
+        lambda _: {
+            "id": 77,
+            "status": "pending",
+            "source": "Shortcut",
+            "transcript": "canonical",
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "queue_archive_delivery",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("archive unavailable")
+        ),
+    )
+    route = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route)
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"upload audio"), "capture.m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "upload unavailable"}
+    route.assert_not_called()
+
+
+def test_upload_atomic_archive_persistence_failure_returns_503_without_canonical_ack(
+    client, monkeypatch
+):
+    import transcript_log
+    import webhook.server as server
+
+    monkeypatch.setattr(
+        server,
+        "transcribe",
+        lambda _: TranscriptionResult("canonical", QualityResult(True), 1),
+    )
+    monkeypatch.setattr(
+        transcript_log,
+        "_queue_archive_delivery_conn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("archive unavailable")
+        ),
+    )
+    route = MagicMock()
+    monkeypatch.setattr(server, "classify_and_route", route)
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"atomic audio"), "atomic.m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+    assert response.status_code == 503
+    assert transcript_log.get_transcript_by_hash(
+        hashlib.md5(b"atomic audio").hexdigest()
+    ) is None
+    route.assert_not_called()
+    assert list(server.cfg.archive.object_root.rglob("*.m4a"))
+
+
+def test_ingest_text_records_archive_not_applicable(client, monkeypatch):
+    import transcript_log
+    import webhook.server as server
+
+    monkeypatch.setattr(
+        server, "classify_and_route", lambda *args, **kwargs: {"items": []}
+    )
+    response = client.post(
+        "/ingest",
+        json={"text": "text has no raw audio", "source": "text"},
+        headers=_ingest_auth(),
+    )
+    assert response.status_code == 200
+    health = transcript_log.get_archive_delivery_health()
+    assert health["not_applicable_count"] == 1
+
+
 class UploadTests(unittest.TestCase):
     @patch(
         "webhook.server.transcribe",
@@ -136,6 +272,8 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(body["status"], "ok")
             self.assertIn("test transcript", body["transcript"])
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
+            self.assertIn("archive_staged", mock_insert.call_args.kwargs)
+            self.assertIn("archive_metadata", mock_insert.call_args.kwargs)
             self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
     @patch(
@@ -153,7 +291,7 @@ class UploadTests(unittest.TestCase):
         return_value=TranscriptionResult("test transcript", QualityResult(True), 1),
     )
     def test_upload_duplicate_returns_ok(self, mock_transcribe, mock_insert, mock_get):
-        with app.test_client() as client:
+        with patch.object(server_module, "queue_archive_delivery") as queue, app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
             resp = client.post(
                 "/upload",
@@ -165,6 +303,7 @@ class UploadTests(unittest.TestCase):
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
             self.assertTrue(body["skipped"])
+            queue.assert_called_once()
 
     def test_upload_missing_audio_returns_400(self):
         with app.test_client() as client:
@@ -268,13 +407,14 @@ class IngestTests(unittest.TestCase):
         ),
     )
     def test_ingest_duplicate_returns_ok(self, mock_insert, mock_get):
-        with app.test_client() as client:
+        with patch.object(server_module, "record_archive_unavailable") as applicability, app.test_client() as client:
             resp = client.post(
                 "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
             )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertTrue(body["skipped"])
+            applicability.assert_called_once()
 
     @patch("webhook.server.insert_transcript_result", return_value=_inserted(1))
     @patch("webhook.server.classify_and_route", side_effect=RuntimeError("routing failed"))

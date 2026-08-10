@@ -9,13 +9,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import transcript_log
+
 from archive import (
     ArchivePublishError,
     SourceChangedError,
     publish_archive,
+    process_archive_delivery,
     sha256_file,
     stage_audio,
     validate_archive,
+    validate_local_mirror_receipt,
 )
 
 
@@ -174,6 +178,101 @@ class ArchiveTests(unittest.TestCase):
         os.chmod(receipt.markdown_path, 0o600)
         receipt.markdown_path.write_text("tampered", encoding="utf-8")
         self.assertFalse(validate_archive(receipt.manifest_path))
+
+    def test_local_mirror_receipt_validation_binds_manifest_to_delivery(self) -> None:
+        source = self.root / "memo.m4a"
+        source.write_bytes(b"durable")
+        staged = stage_audio(source, self.root / "objects")
+        receipt = publish_archive(
+            staged=staged,
+            transcript_id=91,
+            transcript="text",
+            source="iCloud",
+            source_aliases=["memo.m4a"],
+            captured_at="2026-08-09T19:27:31Z",
+            mirror_root=self.root / "mirror",
+        )
+        manifest = json.loads(receipt.manifest_path.read_text(encoding="utf-8"))
+        row = {
+            "transcript_row_id": 91,
+            "publication_generation": manifest["publication_generation"],
+            "alias_set_sha256": manifest["alias_set_sha256"],
+            "publication_scope": "local_mirror",
+            "destination_manifest_path": str(receipt.manifest_path),
+            "receipt_sha256": receipt.receipt_sha256,
+        }
+        self.assertTrue(validate_local_mirror_receipt(row))
+        row["transcript_row_id"] = 92
+        self.assertFalse(validate_local_mirror_receipt(row))
+
+    def test_alias_expansion_publishes_new_immutable_generation_idempotently(self) -> None:
+        db_path = self.root / "transcripts.db"
+        source = self.root / "memo.m4a"
+        source.write_bytes(b"durable")
+        staged = stage_audio(source, self.root / "objects")
+        with patch.object(transcript_log, "TRANSCRIPT_DB_PATH", db_path):
+            transcript_log.init_db()
+            row_id = transcript_log.insert_transcript(
+                content_hash="alias-generation",
+                source="iCloud",
+                transcript="canonical",
+                recorded_at="2026-08-09T19:27:31Z",
+            )
+            transcript_log.queue_archive_delivery(
+                int(row_id), staged, {"source": "iCloud", "source_alias": "first"}
+            )
+            first_row = transcript_log.get_pending_archive_deliveries(limit=1)[0]
+            first = process_archive_delivery(first_row, self.root / "mirror")
+            first_manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(first_manifest["recorded_at"], "2026-08-09T19:27:31Z")
+            transcript_log.mark_archive_delivery_published(
+                first_row["id"],
+                audio_path=str(first.audio_path),
+                markdown_path=str(first.markdown_path),
+                manifest_path=str(first.manifest_path),
+                receipt_sha256=first.receipt_sha256,
+            )
+
+            transcript_log.queue_archive_delivery(
+                int(row_id), staged, {"source": "iCloud", "source_alias": "second"}
+            )
+            second_row = transcript_log.get_pending_archive_deliveries(limit=1)[0]
+            self.assertEqual(second_row["publication_generation"], 2)
+            second = process_archive_delivery(second_row, self.root / "mirror")
+            self.assertNotEqual(first.manifest_path, second.manifest_path)
+            self.assertTrue(first.manifest_path.exists())
+            second_manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(second_manifest["source_aliases"], ["first", "iCloud", "second"])
+            self.assertEqual(second_manifest["publication_generation"], 2)
+            transcript_log.mark_archive_delivery_published(
+                second_row["id"],
+                audio_path=str(second.audio_path),
+                markdown_path=str(second.markdown_path),
+                manifest_path=str(second.manifest_path),
+                receipt_sha256=second.receipt_sha256,
+            )
+            transcript_log.mark_archive_delivery_published(
+                second_row["id"],
+                audio_path=str(second.audio_path),
+                markdown_path=str(second.markdown_path),
+                manifest_path=str(second.manifest_path),
+                receipt_sha256=second.receipt_sha256,
+            )
+            transcript_log.queue_archive_delivery(
+                int(row_id), staged, {"source": "iCloud", "source_alias": "second"}
+            )
+            self.assertEqual(transcript_log.get_pending_archive_deliveries(), [])
+            conn = transcript_log._get_conn()
+            try:
+                publications = conn.execute(
+                    "SELECT publication_generation, superseded_at FROM archive_publications "
+                    "ORDER BY publication_generation"
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertEqual([row["publication_generation"] for row in publications], [1, 2])
+            self.assertIsNotNone(publications[0]["superseded_at"])
+            self.assertIsNone(publications[1]["superseded_at"])
 
 
 if __name__ == "__main__":

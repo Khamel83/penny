@@ -16,7 +16,16 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from archive import SourceChangedError, process_archive_delivery, stage_audio
+from archive import (
+    SourceChangedError,
+    StagedAudio,
+    process_archive_delivery,
+    preserve_invalid_local_mirror,
+    sha256_file,
+    stage_audio,
+    validate_archive,
+    validate_local_mirror_receipt,
+)
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from maya_delivery import process_pending_maya_deliveries
@@ -25,7 +34,9 @@ from transcript_quality import transcribe_with_quality
 from transcript_log import (
     InsertOutcome,
     get_archive_delivery_health,
+    get_archive_backfill_candidates,
     get_pending_archive_deliveries,
+    get_published_archive_deliveries,
     get_maya_delivery_health,
     get_source_watermark,
     get_slack_delivery_health,
@@ -46,8 +57,11 @@ from transcript_log import (
     mark_voice_memo_waiting_for_file,
     mark_archive_delivery_failed,
     mark_archive_delivery_published,
+    mark_archive_delivery_rebuild_needed,
+    mark_archive_delivery_validated,
     needs_archive_delivery,
     queue_archive_delivery,
+    record_archive_unavailable,
     upsert_voice_memo_recording,
     advance_source_watermark,
 )
@@ -260,6 +274,8 @@ def update_health_check() -> None:
         and int(vm_health.get("terminal_failure_count", 0)) == 0
         and not int(archive_health.get("health_error", 0))
         and int(archive_health.get("failed_count", 0)) == 0
+        and int(archive_health.get("invalid_count", 0)) == 0
+        and int(archive_health.get("rebuild_needed_count", 0)) == 0
     )
     HEALTH_FILE.write_text(
         (
@@ -296,7 +312,13 @@ def update_health_check() -> None:
             f"quality_needs_review:"
             f"{maya_health['quality_needs_review_count']}|"
             f"archive_pending:{archive_health.get('pending_count', 0)}|"
+            f"archive_local_mirror_published:"
+            f"{archive_health.get('local_mirror_published_count', archive_health.get('sent_count', 0))}|"
             f"archive_failed:{archive_health.get('failed_count', 0)}|"
+            f"archive_unavailable:{archive_health.get('unavailable_count', 0)}|"
+            f"archive_not_applicable:{archive_health.get('not_applicable_count', 0)}|"
+            f"archive_invalid:{archive_health.get('invalid_count', 0)}|"
+            f"archive_rebuild_needed:{archive_health.get('rebuild_needed_count', 0)}|"
             f"archive_oldest_pending_age_seconds:"
             f"{archive_health.get('oldest_pending_age_seconds', 0)}|"
             f"archive_health_error:{archive_health.get('health_error', 0)}\n"
@@ -518,10 +540,6 @@ def _process_audio_file(
             )
             return True
         except Exception as exc:
-            # Compatibility for tests/legacy adapters that supply a pre-migration
-            # row projection. Real migrated rows always expose audio_sha256.
-            if canonical is not None and "audio_sha256" not in canonical:
-                return True
             log.error(
                 "Could not durably queue archive for transcript id=%s: %s",
                 row_id,
@@ -545,6 +563,7 @@ def _process_audio_file(
             ingest_state="skipped_too_large",
             recorded_at=recorded_at,
             file_seen_at=datetime.now().isoformat(),
+            quality_status="skipped_too_large",
             enqueue_slack=False,
             archive_staged=staged,
             archive_metadata=metadata("skipped_too_large"),
@@ -569,7 +588,7 @@ def _process_audio_file(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(staged.path),
+                audio_path=str(audio_path),
             ):
                 return False
             mark_voice_memo_terminal(recording_pk, "skipped_too_large")
@@ -584,16 +603,13 @@ def _process_audio_file(
         ):
             return False
         already_routed = existing.get("status") in {"routed", "processed"}
-        linked_audio_path = (
-            staged.path if "audio_sha256" in existing else audio_path
-        )
         if recording_pk is not None:
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(linked_audio_path),
+                audio_path=str(audio_path),
                 routed=already_routed,
             ):
                 return False
@@ -676,7 +692,7 @@ def _process_audio_file(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(staged.path),
+                audio_path=str(audio_path),
             ):
                 return False
             mark_voice_memo_terminal(recording_pk, "needs_review")
@@ -714,14 +730,11 @@ def _process_audio_file(
         if not persist_archive(row_id, "passed", existing):
             return False
         if recording_pk is not None:
-            linked_audio_path = (
-                staged.path if "audio_sha256" in existing else audio_path
-            )
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(linked_audio_path),
+                audio_path=str(audio_path),
                 routed=existing.get("status") in {"routed", "processed"},
             ):
                 return False
@@ -741,7 +754,7 @@ def _process_audio_file(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(staged.path),
+                audio_path=str(audio_path),
             ):
                 return False
 
@@ -952,6 +965,93 @@ def _process_archive_outbox() -> None:
             )
 
 
+def _reconcile_archive_backfill(limit: int) -> None:
+    """Reconcile old canonical rows without retranscription or rerouting."""
+    for row in get_archive_backfill_candidates(limit=limit):
+        transcript_id = int(row["transcript_row_id"])
+        transcript_path = Path(row["transcript_audio_path"]) if row.get("transcript_audio_path") else None
+        voice_path = Path(row["voice_audio_path"]) if row.get("voice_audio_path") else None
+        candidate = next(
+            (path for path in (transcript_path, voice_path) if path and path.is_file()),
+            None,
+        )
+        if candidate is None:
+            source = str(row.get("source") or "").lower()
+            transcript = str(row.get("transcript") or "").lstrip().lower()
+            if transcript.startswith("(migrated"):
+                status, reason = "unavailable", "legacy_placeholder"
+            elif source in {"icloud", "shortcut", "voice-memos"}:
+                status, reason = "unavailable", "missing_audio_source"
+            else:
+                status, reason = "not_applicable", "no_raw_audio"
+            record_archive_unavailable(
+                transcript_id,
+                availability_status=status,
+                reason_code=reason,
+            )
+            continue
+        try:
+            known_sha = row.get("audio_sha256")
+            if known_sha and transcript_path == candidate:
+                if sha256_file(candidate) != known_sha:
+                    raise SourceChangedError(candidate.name)
+                staged = StagedAudio(
+                    candidate,
+                    str(known_sha),
+                    candidate.stat().st_size,
+                    candidate.suffix.lower(),
+                )
+            else:
+                staged = stage_audio(candidate, cfg.archive.object_root)
+            queue_archive_delivery(
+                transcript_id,
+                staged,
+                {
+                    "source": row["source"],
+                    "source_alias": candidate.name,
+                    "original_name": candidate.name,
+                    "captured_at": row.get("recorded_at"),
+                    "ingested_at": row.get("created_at"),
+                    "duration_seconds": row.get("duration_seconds"),
+                    "mime_type": mimetypes.guess_type(candidate.name)[0],
+                    "backend": row.get("transcription_backend"),
+                    "model": row.get("transcription_model"),
+                    "quality_status": row.get("quality_status"),
+                },
+            )
+        except Exception as exc:
+            log.error(
+                "Archive backfill failed for transcript id=%s: %s",
+                transcript_id,
+                type(exc).__name__,
+            )
+
+
+def _reconcile_published_archives(limit: int) -> None:
+    """Validate local mirror receipts and safely requeue missing/tampered trios."""
+    for row in get_published_archive_deliveries(limit=limit):
+        delivery_id = int(row["id"])
+        manifest_path = Path(str(row.get("destination_manifest_path") or ""))
+        valid = validate_local_mirror_receipt(row)
+        if valid:
+            mark_archive_delivery_validated(delivery_id)
+            continue
+        try:
+            preserve_invalid_local_mirror(row, cfg.archive.mirror_root)
+            reason = (
+                "local_mirror_missing"
+                if not manifest_path.is_file()
+                else "local_mirror_validation_failed"
+            )
+            mark_archive_delivery_rebuild_needed(delivery_id, reason)
+        except Exception as exc:
+            log.error(
+                "Local mirror reconciliation failed for delivery id=%s: %s",
+                delivery_id,
+                type(exc).__name__,
+            )
+
+
 def _retry_waiting_for_files(limit: int) -> None:
     waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
     if not waiting:
@@ -1047,6 +1147,8 @@ def _process_ingest_pass() -> None:
         lambda: _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT),
         lambda: _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT),
         lambda: _retry_pending_routes(limit=5),
+        lambda: _reconcile_archive_backfill(cfg.archive.delivery_batch_limit),
+        lambda: _reconcile_published_archives(cfg.archive.delivery_batch_limit),
         _process_archive_outbox,
         _process_slack_outbox,
         _process_maya_outbox,

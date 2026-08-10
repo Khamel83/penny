@@ -243,7 +243,9 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
                 watcher, "link_voice_memo_transcript"
             ) as link_mock, patch.object(
                 watcher, "transcribe_with_quality"
-            ) as transcribe_mock:
+            ) as transcribe_mock, patch.object(
+                watcher, "queue_archive_delivery"
+            ):
                 result = watcher._process_audio_file(audio_path, recording_pk=7)
 
             self.assertTrue(result)

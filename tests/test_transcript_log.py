@@ -189,7 +189,9 @@ class TranscriptLogTests(unittest.TestCase):
             manifest_path="/mirror/a.json",
             receipt_sha256="receipt-hash",
         )
-        self.assertEqual(transcript_log.get_archive_delivery_health()["sent_count"], 1)
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["sent_count"], 1)
+        self.assertEqual(health["local_mirror_published_count"], 1)
 
         real = transcript_log._get_conn()
         class ClosingConnection:
@@ -203,6 +205,125 @@ class TranscriptLogTests(unittest.TestCase):
         with patch.object(transcript_log, "_get_conn", return_value=broken):
             self.assertEqual(transcript_log.get_archive_delivery_health()["health_error"], 1)
         self.assertTrue(broken.closed)
+
+    def test_archive_partial_schema_migrates_and_quarantines_orphans(self) -> None:
+        valid_id = transcript_log.insert_transcript(
+            content_hash="partial-valid", source="iCloud", transcript="valid"
+        )
+        self.assertIsNotNone(valid_id)
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("DROP TABLE archive_deliveries")
+            conn.execute(
+                """
+                CREATE TABLE archive_deliveries (
+                    id INTEGER PRIMARY KEY,
+                    transcript_id INTEGER,
+                    status TEXT,
+                    destination_manifest_path TEXT,
+                    receipt_sha256 TEXT
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO archive_deliveries VALUES (?, ?, ?, ?, ?)",
+                [
+                    (41, valid_id, "published", "/mirror/valid.json", "receipt"),
+                    (42, 999999, "pending", None, None),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = transcript_log._get_conn()
+        try:
+            self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(archive_deliveries)")
+            }
+            self.assertIn("transcript_row_id", columns)
+            self.assertIn("publication_generation", columns)
+            preserved = conn.execute(
+                "SELECT id, transcript_row_id, receipt_sha256, publication_scope "
+                "FROM archive_deliveries"
+            ).fetchone()
+            self.assertEqual(tuple(preserved), (41, valid_id, "receipt", "local_mirror"))
+            quarantined = conn.execute(
+                "SELECT legacy_delivery_id, reason_code FROM archive_delivery_quarantine"
+            ).fetchone()
+            self.assertEqual(tuple(quarantined), (42, "orphan_transcript"))
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO archive_deliveries "
+                    "(transcript_row_id, status, archive_source, source_aliases, "
+                    "publication_scope) VALUES (999999, 'pending', 'iCloud', '[]', "
+                    "'local_mirror')"
+                )
+        finally:
+            conn.close()
+
+    def test_archive_current_schema_sweeps_orphans_inserted_with_fk_disabled(self) -> None:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute(
+                """
+                INSERT INTO archive_deliveries (
+                    transcript_row_id, archive_source, source_aliases, status
+                ) VALUES (999999, 'iCloud', '[]', 'pending')
+                """
+            )
+            orphan_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.init_db()
+
+        conn = transcript_log._get_conn()
+        try:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT id FROM archive_deliveries WHERE id = ?", (orphan_id,)
+                ).fetchone()
+            )
+            quarantined = conn.execute(
+                "SELECT legacy_delivery_id, reason_code "
+                "FROM archive_delivery_quarantine WHERE legacy_delivery_id = ?",
+                (orphan_id,),
+            ).fetchone()
+            self.assertEqual(tuple(quarantined), (orphan_id, "orphan_transcript"))
+        finally:
+            conn.close()
+
+    def test_recoverable_audio_replaces_prior_unavailable_archive_marker(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="recovered-audio", source="iCloud", transcript="recovered"
+        )
+        transcript_log.record_archive_unavailable(
+            int(row_id),
+            availability_status="unavailable",
+            reason_code="missing_audio_source",
+        )
+        staged_path = Path(self.db_dir) / "recovered.m4a"
+        staged_path.write_bytes(b"audio")
+        staged = StagedAudio(
+            staged_path, hashlib.sha256(b"audio").hexdigest(), 5, ".m4a"
+        )
+
+        transcript_log.queue_archive_delivery(
+            int(row_id), staged, {"source": "iCloud"}
+        )
+
+        pending = transcript_log.get_pending_archive_deliveries(limit=1)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["availability_status"], "available")
+        self.assertIsNone(pending[0]["unavailable_reason"])
 
     def test_insert_result_reports_database_failure(self) -> None:
         with patch.object(
@@ -1217,8 +1338,9 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(row, (transcript_row_id, "retry after migration failure"))
 
     def test_init_db_rejects_orphan_legacy_delivery_without_partial_migration(self) -> None:
-        conn = transcript_log._get_conn()
+        conn = sqlite3.connect(str(self.db_path))
         try:
+            conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("DROP TABLE slack_deliveries")
             conn.execute(
                 """

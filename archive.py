@@ -64,6 +64,13 @@ def _mkdir_private(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _safe_original_name(value: str | None, fallback: str) -> str:
+    name = str(value or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name or name in {".", ".."}:
+        name = fallback
+    return name[:255]
+
+
 def _source_signature(path: Path) -> tuple[int, int, int, int]:
     info = path.stat()
     return info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino
@@ -241,6 +248,8 @@ def publish_archive(
     backend: str | None = None,
     model: str | None = None,
     quality_status: str | None = None,
+    publication_generation: int = 1,
+    alias_set_sha256: str | None = None,
     on_replace: Callable[[Path], None] | None = None,
 ) -> ArchiveReceipt:
     """Publish audio and Markdown atomically, then expose the JSON manifest last."""
@@ -278,12 +287,24 @@ def publish_archive(
     )
     markdown_sha256 = hashlib.sha256(markdown).hexdigest()
     aliases = sorted({str(alias) for alias in source_aliases if str(alias)} | {source})
+    aliases_json = json.dumps(aliases, separators=(",", ":"), ensure_ascii=False)
+    computed_alias_hash = hashlib.sha256(aliases_json.encode("utf-8")).hexdigest()
+    if alias_set_sha256 is not None and alias_set_sha256 != computed_alias_hash:
+        raise ArchivePublishError("alias_set_hash_mismatch")
+    alias_set_sha256 = computed_alias_hash
+    basename = f"{basename}__g{publication_generation:04d}__a{alias_set_sha256[:12]}"
+    audio_path = day_dir / f"{basename}{staged.extension}"
+    markdown_path = day_dir / f"{basename}.md"
+    manifest_path = day_dir / f"{basename}.json"
     manifest: dict[str, Any] = {
         "schema_version": ARCHIVE_SCHEMA_VERSION,
         "canonical_transcript_id": transcript_id,
         "source": source,
         "source_aliases": aliases,
-        "original_name": original_name or staged.path.name,
+        "alias_set_sha256": alias_set_sha256,
+        "publication_generation": publication_generation,
+        "publication_scope": "local_mirror",
+        "original_name": _safe_original_name(original_name, staged.path.name),
         "recorded_at": captured_text,
         "ingested_at": ingested_text,
         "duration_seconds": duration_seconds,
@@ -382,6 +403,63 @@ def validate_archive(manifest_path: Path) -> bool:
         return False
 
 
+def validate_local_mirror_receipt(row: dict[str, Any]) -> bool:
+    """Bind a valid local trio to the canonical delivery generation and receipt."""
+    try:
+        manifest_path = Path(str(row["destination_manifest_path"]))
+        if not validate_archive(manifest_path):
+            return False
+        if sha256_file(manifest_path) != str(row["receipt_sha256"]):
+            return False
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return (
+            manifest.get("canonical_transcript_id")
+            == int(row["transcript_row_id"])
+            and manifest.get("publication_generation")
+            == int(row["publication_generation"])
+            and manifest.get("alias_set_sha256") == row["alias_set_sha256"]
+            and manifest.get("publication_scope") == "local_mirror"
+            and row.get("publication_scope") == "local_mirror"
+        )
+    except (KeyError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def preserve_invalid_local_mirror(
+    row: dict[str, Any], mirror_root: Path
+) -> list[Path]:
+    """Move conflicting local-mirror material into a private recoverable area."""
+    root = Path(mirror_root).resolve()
+    conflict_dir = (
+        root
+        / ".penny-conflicts"
+        / f"p{int(row['transcript_row_id']):08d}"
+        / f"g{int(row.get('publication_generation') or 1):04d}-{uuid.uuid4().hex}"
+    )
+    moved: list[Path] = []
+    for key in (
+        "destination_audio_path",
+        "destination_markdown_path",
+        "destination_manifest_path",
+    ):
+        raw_path = row.get(key)
+        if not raw_path:
+            continue
+        source = Path(str(raw_path))
+        resolved = source.resolve()
+        if not resolved.is_relative_to(root):
+            raise ArchivePublishError("local_mirror_path_outside_root")
+        if not source.exists():
+            continue
+        _mkdir_private(conflict_dir)
+        destination = conflict_dir / source.name
+        os.replace(source, destination)
+        fsync_directory(source.parent)
+        fsync_directory(conflict_dir)
+        moved.append(destination)
+    return moved
+
+
 def process_archive_delivery(row: dict[str, Any], mirror_root: Path) -> ArchiveReceipt:
     staged = StagedAudio(
         Path(row["local_object_path"]),
@@ -397,12 +475,19 @@ def process_archive_delivery(row: dict[str, Any], mirror_root: Path) -> ArchiveR
         source=str(row["archive_source"] or row["source"]),
         source_aliases=aliases,
         original_name=row.get("original_name"),
-        captured_at=row.get("recorded_at") or row.get("created_at"),
+        captured_at=(
+            row.get("archive_recorded_at")
+            or row.get("recorded_at")
+            or row.get("canonical_recorded_at")
+            or row.get("created_at")
+        ),
         ingested_at=row.get("ingested_at") or row.get("created_at"),
         duration_seconds=row.get("archive_duration_seconds"),
         mime_type=row.get("mime_type"),
         backend=row.get("transcription_backend"),
         model=row.get("transcription_model"),
         quality_status=row.get("quality_status"),
+        publication_generation=int(row.get("publication_generation") or 1),
+        alias_set_sha256=row.get("alias_set_sha256"),
         mirror_root=mirror_root,
     )

@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, request, jsonify
@@ -21,6 +22,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import get_config
+from archive import SourceChangedError, stage_audio
 from ingress_auth import MAX_INGEST_TEXT_BYTES, authorize_bearer
 from core import (
     setup_logging,
@@ -33,6 +35,8 @@ from transcript_log import (
     get_transcript_by_hash,
     init_db,
     insert_transcript_result,
+    queue_archive_delivery,
+    record_archive_unavailable,
 )
 
 cfg = get_config()
@@ -86,6 +90,13 @@ def _require_ingest_auth():
     return None
 
 
+def _safe_upload_name(value: str | None, fallback: str = "upload.tmp") -> str:
+    name = str(value or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name or name in {".", ".."}:
+        name = fallback
+    return name[:255]
+
+
 @app.errorhandler(RequestEntityTooLarge)
 def request_too_large(_error):
     return jsonify({"error": "request too large"}), 413
@@ -121,9 +132,9 @@ def upload():
 
     suffix = ".tmp"
     if audio_file:
-        fname = audio_file.filename or ""
+        fname = _safe_upload_name(audio_file.filename)
         if "." in fname:
-            suffix = "." + fname.rsplit(".", 1)[-1]
+            suffix = "." + fname.rsplit(".", 1)[-1].lower()
         log.info("Upload received: %s (field=%s, content-type=%s)", fname, next((k for k, v in request.files.items() if v == audio_file), "?"), request.content_type)
     else:
         log.info("Upload received: raw body %d bytes, content-type=%s", len(raw_body), request.content_type)
@@ -138,17 +149,32 @@ def upload():
 
     try:
         file_size = temp_path.stat().st_size
-        with open(temp_path, "rb") as _f:
-            magic = _f.read(12).hex()
-        log.info("File saved: %d bytes, magic=%s, path=%s", file_size, magic, temp_path)
+        log.info("Upload file materialized (%d bytes)", file_size)
         if file_size > MAX_FILE_SIZE:
             size_mb = file_size / (1024 * 1024)
             max_mb = cfg.voice_memos.max_file_size_mb
-            log.warning("Rejected upload %s (%.1fMB > %sMB)", audio_file.filename, size_mb, max_mb)
+            log.warning("Rejected upload %s (%.1fMB > %sMB)", fname, size_mb, max_mb)
             return jsonify({"error": f"Audio file too large ({size_mb:.1f}MB > {max_mb}MB)"}), 413
 
         file_hash = get_file_hash(temp_path)
-        transcription = transcribe(temp_path)
+        staged = stage_audio(temp_path, cfg.archive.object_root)
+        if (
+            len(file_hash) == 32
+            and all(character in "0123456789abcdef" for character in file_hash.lower())
+            and get_file_hash(staged.path) != file_hash.lower()
+        ):
+            raise SourceChangedError("upload_source_changed")
+        ingested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        archive_metadata = {
+            "source": "Shortcut",
+            "source_alias": fname if audio_file else "raw-upload",
+            "original_name": fname if audio_file else f"raw-upload{suffix}",
+            "ingested_at": ingested_at,
+            "mime_type": audio_file.mimetype if audio_file else request.mimetype,
+            "backend": "mlx-whisper",
+            "model": cfg.voice_memos.whisper_model,
+        }
+        transcription = transcribe(staged.path)
         if not transcription.quality.passed:
             quality_detail = transcription.quality_detail or (
                 f"attempt_{transcription.attempts}="
@@ -167,13 +193,30 @@ def upload():
                 quality_status="needs_review",
                 quality_detail=quality_detail,
                 enqueue_slack=False,
+                audio_path=str(staged.path),
+                archive_staged=staged,
+                archive_metadata={
+                    **archive_metadata,
+                    "quality_status": "needs_review",
+                },
             )
             if result.outcome is InsertOutcome.FAILED:
                 log.error("Upload persistence unavailable")
                 return jsonify({"error": "upload unavailable"}), 503
-            if result.outcome is InsertOutcome.DUPLICATE and get_transcript_by_hash(file_hash) is None:
-                log.error("Upload duplicate has no canonical row")
-                return jsonify({"error": "upload unavailable"}), 503
+            if result.outcome is InsertOutcome.DUPLICATE:
+                existing = get_transcript_by_hash(file_hash)
+                if existing is None:
+                    log.error("Upload duplicate has no canonical row")
+                    return jsonify({"error": "upload unavailable"}), 503
+                try:
+                    queue_archive_delivery(
+                        int(existing["id"]),
+                        staged,
+                        {**archive_metadata, "quality_status": "needs_review"},
+                    )
+                except Exception as exc:
+                    log.error("Upload archive queue unavailable (%s)", type(exc).__name__)
+                    return jsonify({"error": "upload unavailable"}), 503
             return jsonify({"error": "Transcript needs review"}), 422
 
         transcript = transcription.text
@@ -184,6 +227,9 @@ def upload():
             source="Shortcut",
             transcript=transcript,
             enqueue_slack=False,
+            audio_path=str(staged.path),
+            archive_staged=staged,
+            archive_metadata={**archive_metadata, "quality_status": "passed"},
         )
         if result.outcome is InsertOutcome.FAILED:
             log.error("Upload persistence unavailable")
@@ -194,6 +240,15 @@ def upload():
                 log.error("Upload duplicate has no canonical row")
                 return jsonify({"error": "upload unavailable"}), 503
             row_id = int(existing["id"])
+            try:
+                queue_archive_delivery(
+                    row_id,
+                    staged,
+                    {**archive_metadata, "quality_status": existing.get("quality_status") or "passed"},
+                )
+            except Exception as exc:
+                log.error("Upload archive queue unavailable (%s)", type(exc).__name__)
+                return jsonify({"error": "upload unavailable"}), 503
             if existing.get("status") in {"routed", "processed"}:
                 route_result = {"skip": True, "reason": "duplicate"}
             else:
@@ -260,6 +315,7 @@ def ingest():
             source=source,
             transcript=text,
             enqueue_slack=False,
+            archive_unavailable_reason="no_raw_audio",
         )
         if result.outcome is InsertOutcome.FAILED:
             log.error("Ingest persistence unavailable")
@@ -270,6 +326,15 @@ def ingest():
                 log.error("Ingest duplicate has no canonical row")
                 return jsonify({"error": "ingest unavailable"}), 503
             row_id = int(existing["id"])
+            try:
+                record_archive_unavailable(
+                    row_id,
+                    availability_status="not_applicable",
+                    reason_code="no_raw_audio",
+                )
+            except Exception as exc:
+                log.error("Ingest archive applicability unavailable (%s)", type(exc).__name__)
+                return jsonify({"error": "ingest unavailable"}), 503
             if existing.get("status") in {"routed", "processed"}:
                 route_result = {"skip": True, "reason": "duplicate"}
             else:
