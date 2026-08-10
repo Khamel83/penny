@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 logging.basicConfig(
@@ -23,12 +25,14 @@ BACKUP_DIR = "~/backups/penny/"
 
 def dump_transcripts() -> list[dict]:
     if not TRANSCRIPT_DB.exists():
-        log.error("Database not found: %s", TRANSCRIPT_DB)
-        sys.exit(1)
+        log.error("transcript export database unavailable")
+        raise RuntimeError("database_unavailable")
 
     conn = None
     try:
-        conn = sqlite3.connect(str(TRANSCRIPT_DB), timeout=5.0)
+        conn = sqlite3.connect(
+            f"file:{TRANSCRIPT_DB.resolve()}?mode=ro", uri=True, timeout=5.0
+        )
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """SELECT id, content_hash, source, transcript, audio_path,
@@ -38,21 +42,37 @@ def dump_transcripts() -> list[dict]:
                ORDER BY id ASC"""
         ).fetchall()
         return [dict(row) for row in rows]
-    except Exception as e:
-        log.error("Failed to read database: %s", e)
-        sys.exit(1)
+    except (OSError, sqlite3.Error) as e:
+        log.error("transcript export database unavailable")
+        raise RuntimeError("database_unavailable") from e
     finally:
         if conn:
             conn.close()
 
 
-def export_json(records: list[dict]) -> None:
-    EXPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    EXPORT_FILE.write_text(
-        json.dumps(records, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    log.info("Exported %d transcripts to %s", len(records), EXPORT_FILE)
+def export_json(records: list[dict], destination: Path | None = None) -> Path:
+    """Write the human-readable export atomically and return its path."""
+    destination = Path(destination or EXPORT_FILE).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(records, indent=2, ensure_ascii=False).encode("utf-8")
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.partial")
+    try:
+        with temporary.open("wb") as writer:
+            writer.write(payload)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(temporary, destination)
+        with destination.open("rb") as reader:
+            os.fsync(reader.fileno())
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    log.info("exported %d transcript(s)", len(records))
+    return destination
 
 
 def rsync_to_homelab() -> bool:
@@ -70,21 +90,25 @@ def rsync_to_homelab() -> bool:
             timeout=30,
         )
         if result.returncode != 0:
-            log.error("rsync failed: %s", result.stderr)
+            log.error("transcript export sync failed")
             return False
-        log.info("Synced to %s:%s", BACKUP_HOST, BACKUP_DIR)
+        log.info("transcript export synced")
         return True
-    except Exception as e:
-        log.error("rsync error: %s", e)
+    except (OSError, subprocess.SubprocessError):
+        log.error("transcript export sync failed")
         return False
 
 
-def main() -> None:
-    records = dump_transcripts()
-    log.info("Read %d transcript(s) from database", len(records))
-    export_json(records)
-    rsync_to_homelab()
+def main() -> int:
+    try:
+        records = dump_transcripts()
+        export_json(records)
+        if not rsync_to_homelab():
+            return 1
+    except (RuntimeError, OSError, ValueError):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

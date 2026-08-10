@@ -2808,9 +2808,9 @@ def get_maya_delivery_health() -> dict[str, int]:
                 SUM(CASE
                     WHEN maya_delivery_status = 'pending'
                          AND {eligible_predicate}
-                         AND (
+                        AND (
                               maya_next_attempt_at IS NULL
-                              OR maya_next_attempt_at <= datetime('now')
+                              OR julianday(maya_next_attempt_at) <= julianday('now')
                          )
                     THEN 1 ELSE 0 END
                 ) AS due_count,

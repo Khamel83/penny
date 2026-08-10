@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/macmini/penny/venv/bin/python3</string>
-        <string>/Users/macmini/penny/scripts/export_transcripts.py</string>
+        <string>/Users/macmini/penny/scripts/backup_penny.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
