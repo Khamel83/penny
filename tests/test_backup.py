@@ -42,6 +42,12 @@ class BackupTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self._init_db()
 
+    def test_default_restore_scratch_is_outside_live_penny_root(self) -> None:
+        live_root = Path("~/.penny").expanduser().resolve()
+        scratch = backup_penny.DEFAULT_SCRATCH_ROOT.resolve()
+        self.assertNotEqual(scratch, live_root)
+        self.assertNotIn(live_root, scratch.parents)
+
     def _init_db(self) -> None:
         self.db.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db)

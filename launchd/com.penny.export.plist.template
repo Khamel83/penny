@@ -28,7 +28,7 @@
         <key>PENNY_BACKUP_VERIFICATION_RECEIPT</key>
         <string>/Users/macmini/.penny/backup/last_verification.json</string>
         <key>PENNY_BACKUP_SCRATCH_ROOT</key>
-        <string>/Users/macmini/.penny/backup-scratch</string>
+        <string>/Users/macmini/Library/Caches/Penny/backup-scratch</string>
     </dict>
     <key>StartInterval</key>
     <integer>21600</integer>

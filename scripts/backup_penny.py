@@ -36,6 +36,7 @@ from backup import (  # noqa: E402
 DEFAULT_DB = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_ARCHIVE_ROOT = Path("~/.penny/archive/objects").expanduser()
 DEFAULT_BACKUP_ROOT = Path("~/.penny/backup").expanduser()
+DEFAULT_SCRATCH_ROOT = Path("~/Library/Caches/Penny/backup-scratch").expanduser()
 DEFAULT_REMOTE = "homelab:~/backups/penny/"
 DEFAULT_VERIFICATION_RECEIPT = DEFAULT_BACKUP_ROOT / "last_verification.json"
 _BACKUP_SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
@@ -306,7 +307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         receipt = create_backup_set(args.db, args.archive_root, args.backup_root, args.now)
         scratch_root = Path(
-            os.environ.get("PENNY_BACKUP_SCRATCH_ROOT", "~/.penny/backup-scratch")
+            os.environ.get("PENNY_BACKUP_SCRATCH_ROOT", str(DEFAULT_SCRATCH_ROOT))
         ).expanduser()
         verification = verify_backup_set(receipt.set_path, scratch_root)
         if not verification.valid:
