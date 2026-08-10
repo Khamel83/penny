@@ -104,12 +104,13 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             conn.commit()
             conn.close()
 
-            # Patch the db path in watcher
+            # Keep the synthetic source independent of any live/test-suite
+            # watermark left in the process-wide transcript ledger.
             import watcher
-            original_db = watcher.CLOUDRECORDINGS_DB
-            watcher.CLOUDRECORDINGS_DB = db_path
 
-            try:
+            with patch.object(watcher, "CLOUDRECORDINGS_DB", db_path), patch.object(
+                watcher, "get_source_watermark", return_value=0
+            ):
                 # Run many queries - if connections leak, db will be locked
                 for _ in range(50):
                     result = watcher.get_new_recordings()
@@ -121,9 +122,6 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
                 conn2.execute("INSERT INTO ZCLOUDRECORDING VALUES (2, 'Test2', 0, 1.0, 'test2.m4a')")
                 conn2.commit()
                 conn2.close()
-
-            finally:
-                watcher.CLOUDRECORDINGS_DB = original_db
 
     def test_get_recordings_by_pk_refreshes_existing_metadata(self):
         """Already-seen recordings can be refreshed after ZPATH appears later."""
