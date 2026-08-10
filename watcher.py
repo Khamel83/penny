@@ -103,6 +103,33 @@ VOICE_MEMOS_RESPONSIVENESS_SCRIPT = (
 VOICE_MEMO_UNRESPONSIVE_LIMIT = 3
 _voicememos_unresponsive_streak = 0
 
+_DEPENDENCY_ISSUE_CODES = frozenset(
+    {
+        "ffmpeg_not_working",
+        "ffmpeg_unavailable",
+        "mlx_whisper_unavailable",
+        "offline_mode_required",
+        "whisper_model_unavailable",
+        "requests_unavailable",
+        "voice_memos_directory_unavailable",
+        "telegram_credentials_missing",
+        "openrouter_api_key_missing",
+        "voice_memos_database_unreadable",
+    }
+)
+
+
+def _bounded_dependency_issue(issue: object) -> str:
+    """Return only a known startup code plus an optional exception class."""
+    base, separator, detail = str(issue).partition(":")
+    if base not in _DEPENDENCY_ISSUE_CODES:
+        return "unclassified_dependency_issue"
+    if not separator:
+        return base
+    if detail.isidentifier() and len(detail) <= 100:
+        return f"{base}:{detail}"
+    return base
+
 
 # ===== Dependencies =====
 
@@ -115,41 +142,37 @@ def check_dependencies() -> tuple[List[str], List[str]]:
     try:
         result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
         if result.returncode != 0:
-            errors.append("ffmpeg found but not working")
+            errors.append("ffmpeg_not_working")
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        errors.append(f"ffmpeg not found: {e}")
+        errors.append(f"ffmpeg_unavailable:{type(e).__name__}")
 
     try:
         import mlx_whisper  # noqa: F401
     except ImportError:
-        errors.append("mlx_whisper not installed")
+        errors.append("mlx_whisper_unavailable")
 
     if os.environ.get("HF_HUB_OFFLINE") != "1":
-        errors.append("HF_HUB_OFFLINE must equal 1 for local transcription")
+        errors.append("offline_mode_required")
     try:
         resolve_whisper_model(cfg.voice_memos.whisper_model_path)
     except ModelUnavailableError as exc:
-        errors.append(f"pinned Whisper model unavailable ({exc})")
+        errors.append(f"whisper_model_unavailable:{type(exc).__name__}")
 
     try:
         import requests  # noqa: F401
     except ImportError:
-        errors.append("requests not installed")
+        errors.append("requests_unavailable")
 
     if not VOICE_MEMOS_DIR.exists():
-        errors.append(f"Voice Memos directory not found: {VOICE_MEMOS_DIR}")
+        errors.append("voice_memos_directory_unavailable")
 
     if cfg.notifications.telegram_enabled and (
         not cfg.telegram_bot_token or not cfg.telegram_chat_id
     ):
-        errors.append(
-            "Telegram is enabled but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID is missing"
-        )
+        errors.append("telegram_credentials_missing")
 
     if not cfg.openrouter_api_key:
-        warnings.append(
-            "OPENROUTER_API_KEY not set — classification falls back to Inbox"
-        )
+        warnings.append("openrouter_api_key_missing")
 
     if CLOUDRECORDINGS_DB.exists():
         conn = None
@@ -157,7 +180,7 @@ def check_dependencies() -> tuple[List[str], List[str]]:
             conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
             conn.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING")
         except Exception as e:
-            errors.append(f"Database corrupted or unreadable: {e}")
+            errors.append(f"voice_memos_database_unreadable:{type(e).__name__}")
         finally:
             if conn:
                 conn.close()
@@ -204,12 +227,17 @@ def _voicememos_responsive() -> bool:
             timeout=8,
         )
         if result.returncode != 0:
-            detail = (result.stderr or "").strip().replace("\n", " ")[:200]
-            log.warning("VoiceMemos responsiveness probe failed: %s", detail)
+            log.warning(
+                "VoiceMemos responsiveness probe failed (exit=%s)",
+                result.returncode,
+            )
             return False
         return True
     except Exception as e:
-        log.warning("VoiceMemos responsiveness probe errored: %s", e)
+        log.warning(
+            "VoiceMemos responsiveness probe errored (class=%s)",
+            type(e).__name__,
+        )
         return False
 
 
@@ -248,7 +276,10 @@ def _cloud_recording_snapshot() -> dict[str, Any]:
         )
     except Exception as e:
         snapshot.update(db_ok=False, record_count=0, latest_pk=0, latest_date=None)
-        log.warning("VoiceMemos sync database probe failed: %s", e)
+        log.warning(
+            "VoiceMemos sync database probe failed (class=%s)",
+            type(e).__name__,
+        )
     finally:
         if connection:
             connection.close()
@@ -261,7 +292,7 @@ def _cloud_recording_snapshot() -> dict[str, Any]:
     except FileNotFoundError:
         pass
     except OSError as e:
-        log.warning("VoiceMemos WAL probe failed: %s", e)
+        log.warning("VoiceMemos WAL probe failed (class=%s)", type(e).__name__)
     return snapshot
 
 
@@ -377,7 +408,7 @@ def set_last_seen_pk(pk: int) -> None:
 
 def get_new_recordings() -> List[Dict[str, Any]]:
     if not CLOUDRECORDINGS_DB.exists():
-        log.warning("Database not found: %s", CLOUDRECORDINGS_DB)
+        log.warning("VoiceMemos sync database unavailable")
         return []
 
     last_pk = get_last_seen_pk()
@@ -397,7 +428,7 @@ def get_new_recordings() -> List[Dict[str, Any]]:
         )
         return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        log.error("Database query failed: %s", e)
+        log.error("Database query failed (class=%s)", type(e).__name__)
         return []
     finally:
         if conn:
@@ -425,7 +456,7 @@ def get_recordings_by_pk(recording_pks: List[int]) -> Dict[int, Dict[str, Any]]:
         )
         return {int(row["Z_PK"]): dict(row) for row in cursor.fetchall()}
     except Exception as e:
-        log.error("Database refresh query failed: %s", e)
+        log.error("Database refresh query failed (class=%s)", type(e).__name__)
         return {}
     finally:
         if conn:
@@ -585,7 +616,7 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
             ))
         ]
     except Exception as e:
-        log.error("File scan failed: %s", e)
+        log.error("File scan failed (class=%s)", type(e).__name__)
         return []
 
     all_files.sort(key=_safe_mtime, reverse=True)
@@ -603,7 +634,10 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
         except FileNotFoundError:
             continue
         except Exception as e:
-            log.warning("Could not hash %s during scan: %s", audio_file.name, e)
+            log.warning(
+                "Could not hash Voice Memo during scan (class=%s)",
+                type(e).__name__,
+            )
             continue
 
         if not is_already_logged(file_hash) or needs_archive_delivery(file_hash):
@@ -677,7 +711,7 @@ def _process_audio_file(
         character in "0123456789abcdef" for character in file_hash.lower()
     ):
         if staged_md5 != file_hash.lower():
-            raise SourceChangedError(audio_path.name)
+            raise SourceChangedError("source_changed")
     ingested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def metadata(
@@ -727,9 +761,9 @@ def _process_audio_file(
     file_size = staged.byte_length
     if file_size > MAX_FILE_SIZE:
         log.warning(
-            "Skipping %s (%.1fMB) — too large",
-            audio_path.name,
+            "Skipping oversized Voice Memo (size_mb=%.1f, PK=%s)",
             file_size / (1024 * 1024),
+            recording_pk,
         )
         result = insert_transcript_result(
             content_hash=file_hash,
@@ -746,12 +780,18 @@ def _process_audio_file(
             archive_metadata=metadata("skipped_too_large"),
         )
         if result.outcome is InsertOutcome.FAILED:
-            log.error("Could not durably record oversized file: %s", audio_path.name)
+            log.error(
+                "Could not durably record oversized Voice Memo (PK=%s)",
+                recording_pk,
+            )
             return False
         if result.outcome is InsertOutcome.DUPLICATE:
             existing = get_transcript_by_hash(file_hash)
             if existing is None:
-                log.error("Oversized file duplicate has no canonical row: %s", audio_path.name)
+                log.error(
+                    "Oversized Voice Memo duplicate has no canonical row (PK=%s)",
+                    recording_pk,
+                )
                 return False
             row_id = int(existing["id"])
         else:
@@ -773,7 +813,7 @@ def _process_audio_file(
 
     existing = get_transcript_by_hash(file_hash)
     if existing is not None:
-        log.info("Already logged: %s", audio_path.name)
+        log.info("Voice Memo already logged (PK=%s)", recording_pk)
         row_id = int(existing["id"])
         if not persist_archive(
             row_id, str(existing.get("quality_status") or "unknown"), existing
@@ -824,9 +864,8 @@ def _process_audio_file(
             f"{transcription.quality.reason or 'unknown_quality_failure'}"
         )
         log.warning(
-            "Transcript needs review for %s (reason=%s)",
-            audio_path.name,
-            transcription.quality.reason,
+            "Voice Memo transcript needs review (PK=%s)",
+            recording_pk,
         )
         result = insert_transcript_result(
             content_hash=file_hash,
@@ -850,12 +889,18 @@ def _process_audio_file(
             ),
         )
         if result.outcome is InsertOutcome.FAILED:
-            log.error("Could not durably retain quality-review transcript: %s", audio_path.name)
+            log.error(
+                "Could not durably retain quality-review transcript (PK=%s)",
+                recording_pk,
+            )
             return False
         if result.outcome is InsertOutcome.DUPLICATE:
             existing = get_transcript_by_hash(file_hash)
             if existing is None:
-                log.error("Quality-review duplicate has no canonical row: %s", audio_path.name)
+                log.error(
+                    "Quality-review duplicate has no canonical row (PK=%s)",
+                    recording_pk,
+                )
                 return False
             row_id = int(existing["id"])
         else:
@@ -895,13 +940,15 @@ def _process_audio_file(
         ),
     )
     if result.outcome is InsertOutcome.FAILED:
-        log.error("Could not durably record transcript: %s", audio_path.name)
+        log.error("Could not durably record transcript (PK=%s)", recording_pk)
         return False
 
     if result.outcome is InsertOutcome.DUPLICATE:
         existing = get_transcript_by_hash(file_hash)
         if existing is None:
-            log.error("Transcript duplicate has no canonical row: %s", audio_path.name)
+            log.error(
+                "Transcript duplicate has no canonical row (PK=%s)", recording_pk
+            )
             return False
         row_id = int(existing["id"])
         if not persist_archive(row_id, "passed", existing):
@@ -951,8 +998,6 @@ def process_recording(
     recording: Dict[str, Any], *, already_upserted: bool = False
 ) -> bool:
     pk = int(recording["Z_PK"])
-    label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
-    raw_path = str(recording.get("ZPATH") or "")
     duration_seconds, duration_invalid = _recording_duration_or_invalid(recording)
     recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
     if timestamp_invalid or duration_invalid:
@@ -969,13 +1014,12 @@ def process_recording(
         duration_seconds=duration_seconds,
     ):
         return False
-    log.info("Processing %s (PK=%s)", label, pk)
+    log.info("Processing Voice Memo (PK=%s)", pk)
 
     audio_path = _find_audio_path_for_recording(recording)
     if not audio_path or not audio_path.exists():
         log.error(
-            "File not found for %s (PK=%s); will retry via later DB poll or disk scan",
-            label,
+            "Voice Memo file unavailable (PK=%s); will retry later",
             pk,
         )
         mark_voice_memo_waiting_for_file(pk, "file not downloaded yet")
@@ -1006,16 +1050,18 @@ def process_recording(
 def process_file(audio_path: Path, *, file_hash: str | None = None) -> bool:
     try:
         log.info(
-            "Processing file: %s (%.1fMB)",
-            audio_path.name,
+            "Processing Voice Memo disk candidate (size_mb=%.1f)",
             audio_path.stat().st_size / (1024 * 1024),
         )
         return _process_audio_file(audio_path, file_hash=file_hash)
     except FileNotFoundError:
-        log.warning("File disappeared before processing: %s", audio_path)
+        log.warning("Voice Memo disk candidate disappeared before processing")
         return False
     except Exception as e:
-        log.error("Error processing %s: %s", audio_path.name, e, exc_info=True)
+        log.error(
+            "Voice Memo disk candidate processing failed (class=%s)",
+            type(e).__name__,
+        )
         return False
 
 
@@ -1058,7 +1104,9 @@ def _ensure_voicememos_running() -> None:
         if refresh.returncode != 0:
             log.warning("VoiceMemos sync refresh failed (exit=%s)", refresh.returncode)
     except Exception as e:
-        log.warning("Could not check/launch VoiceMemos: %s", e)
+        log.warning(
+            "Could not check/launch VoiceMemos (class=%s)", type(e).__name__
+        )
 
 
 def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
@@ -1130,7 +1178,7 @@ def _process_slack_outbox() -> None:
         if delivered:
             log.info("Delivered %s transcript(s) to Slack", delivered)
     except Exception as e:
-        log.error("Slack outbox processing failed: %s", e, exc_info=True)
+        log.error("Slack outbox processing failed (class=%s)", type(e).__name__)
 
 
 def _process_maya_outbox() -> None:
@@ -1139,7 +1187,7 @@ def _process_maya_outbox() -> None:
         if delivered:
             log.info("Delivered %s transcript(s) to Maya", delivered)
     except Exception as e:
-        log.error("Maya outbox processing failed: %s", e, exc_info=True)
+        log.error("Maya outbox processing failed (class=%s)", type(e).__name__)
 
 
 def _process_archive_outbox() -> None:
@@ -1425,11 +1473,7 @@ def _retry_voice_memo_recordings(limit: int) -> None:
 def _retry_pending_routes(limit: int) -> None:
     pending = get_pending(limit=limit)
     for row in pending:
-        log.info(
-            "Retrying pending transcript id=%s (source=%s)",
-            row["id"],
-            row["source"],
-        )
+        log.info("Retrying pending transcript id=%s", row["id"])
         try:
             classify_and_route(
                 row["transcript"],
@@ -1475,22 +1519,26 @@ def main() -> None:
 
     errors, warnings = check_dependencies()
     if warnings:
+        log.warning("Startup dependency warning count=%s", len(warnings))
         for warning in warnings:
-            log.warning("Startup warning: %s", warning)
+            log.warning(
+                "Startup dependency warning code=%s",
+                _bounded_dependency_issue(warning),
+            )
     if errors:
-        log.error("DEPENDENCY CHECK FAILED:")
+        log.error("Dependency check failed (count=%s)", len(errors))
         for error in errors:
-            log.error("  - %s", error)
+            log.error(
+                "Startup dependency error code=%s",
+                _bounded_dependency_issue(error),
+            )
         log.error("Service may not function properly until these are fixed.")
 
     if not VOICE_MEMOS_DIR.exists():
-        log.error("Voice Memos directory not found: %s", VOICE_MEMOS_DIR)
+        log.error("Voice Memos directory unavailable")
         sys.exit(1)
 
-    log.info("  Watching: %s", VOICE_MEMOS_DIR)
-    log.info("  Database: %s", CLOUDRECORDINGS_DB)
     log.info("  Poll interval: %ss", POLL_INTERVAL)
-    log.info("  LLM model: %s", cfg.llm.model)
     log.info("  Last seen PK: %s", get_last_seen_pk())
 
     log.info("Running initial scan...")
@@ -1522,7 +1570,7 @@ def main() -> None:
             log.info("Shutting down...")
             break
         except Exception as e:
-            log.error("Error in poll loop: %s", e, exc_info=True)
+            log.error("Error in poll loop (class=%s)", type(e).__name__)
             time.sleep(POLL_INTERVAL)
 
 

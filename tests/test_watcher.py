@@ -45,6 +45,10 @@ def _inserted(row_id: int) -> TranscriptInsertResult:
     return TranscriptInsertResult(InsertOutcome.INSERTED, row_id=row_id)
 
 
+def _render_log_calls(*log_mocks: object) -> str:
+    return " ".join(str(getattr(mock, "mock_calls", [])) for mock in log_mocks)
+
+
 class WatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
@@ -1366,6 +1370,377 @@ class WatcherTests(unittest.TestCase):
 
         self.assertNotIn(sentinel, str(error_log.call_args))
         self.assertIn("RuntimeError", str(error_log.call_args))
+
+    def test_process_file_logs_no_filename_path_exception_text_or_traceback(
+        self,
+    ) -> None:
+        filename = "PRIVATE_VOICE_MEMO_FILENAME_SENTINEL.m4a"
+        audio_path = Path(self.db_dir) / filename
+        audio_path.write_bytes(b"private audio")
+        exception_text = (
+            f"PROVIDER_EXCEPTION_TEXT_SENTINEL at {audio_path} with private detail"
+        )
+
+        with (
+            patch.object(
+                watcher,
+                "_process_audio_file",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher.log, "info") as info_log,
+            patch.object(watcher.log, "warning") as warning_log,
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            self.assertFalse(watcher.process_file(audio_path))
+
+        rendered = _render_log_calls(info_log, warning_log, error_log)
+        self.assertNotIn(filename, rendered)
+        self.assertNotIn(str(audio_path), rendered)
+        self.assertNotIn(exception_text, rendered)
+        self.assertNotIn("exc_info", rendered)
+        self.assertIn("RuntimeError", rendered)
+
+    def test_process_recording_logs_pk_without_label_or_raw_path(self) -> None:
+        label = "PRIVATE_VOICE_MEMO_LABEL_SENTINEL"
+        raw_path = "PRIVATE_VOICE_MEMO_RAW_PATH_SENTINEL.m4a"
+        recording = {
+            "Z_PK": 818,
+            "ZCUSTOMLABEL": label,
+            "ZPATH": raw_path,
+            "ZDATE": None,
+            "ZDURATION": None,
+        }
+
+        with (
+            patch.object(watcher, "_find_audio_path_for_recording", return_value=None),
+            patch.object(watcher, "mark_voice_memo_waiting_for_file"),
+            patch.object(watcher, "mark_voice_memo_retryable"),
+            patch.object(watcher.log, "info") as info_log,
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            self.assertFalse(
+                watcher.process_recording(recording, already_upserted=True)
+            )
+
+        rendered = _render_log_calls(info_log, error_log)
+        self.assertNotIn(label, rendered)
+        self.assertNotIn(raw_path, rendered)
+        self.assertIn("818", rendered)
+
+    def test_source_database_logs_no_private_path_or_exception_text(self) -> None:
+        db_path = Path(self.db_dir) / "PRIVATE_CLOUD_DB_PATH_SENTINEL.sqlite"
+        exception_text = f"PRIVATE_SQLITE_EXCEPTION_SENTINEL at {db_path}"
+
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", db_path),
+            patch.object(watcher.log, "warning") as warning_log,
+        ):
+            self.assertEqual(watcher.get_new_recordings(), [])
+
+        missing_rendered = _render_log_calls(warning_log)
+        self.assertNotIn(db_path.name, missing_rendered)
+        self.assertNotIn(str(db_path), missing_rendered)
+
+        db_path.touch()
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", db_path),
+            patch.object(
+                watcher.sqlite3,
+                "connect",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            self.assertEqual(watcher.get_new_recordings(), [])
+
+        failed_rendered = _render_log_calls(error_log)
+        self.assertNotIn(db_path.name, failed_rendered)
+        self.assertNotIn(str(db_path), failed_rendered)
+        self.assertNotIn(exception_text, failed_rendered)
+        self.assertIn("RuntimeError", failed_rendered)
+
+    def test_source_health_probes_log_only_exit_and_error_classes(self) -> None:
+        db_path = Path(self.db_dir) / "PRIVATE_HEALTH_DB_PATH_SENTINEL.sqlite"
+        db_path.touch()
+        exception_text = f"PRIVATE_HEALTH_EXCEPTION_SENTINEL at {db_path}"
+        provider_text = "PRIVATE_APPLE_EVENT_PROVIDER_TEXT_SENTINEL"
+
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", db_path),
+            patch.object(
+                watcher.sqlite3,
+                "connect",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher.log, "warning") as database_log,
+        ):
+            snapshot = watcher._cloud_recording_snapshot()
+
+        self.assertFalse(snapshot["db_ok"])
+        database_rendered = _render_log_calls(database_log)
+        self.assertNotIn(db_path.name, database_rendered)
+        self.assertNotIn(str(db_path), database_rendered)
+        self.assertNotIn(exception_text, database_rendered)
+        self.assertIn("RuntimeError", database_rendered)
+
+        failed_probe = SimpleNamespace(
+            returncode=17,
+            stdout="",
+            stderr=provider_text,
+        )
+        with (
+            patch.object(watcher.subprocess, "run", return_value=failed_probe),
+            patch.object(watcher.log, "warning") as provider_log,
+        ):
+            self.assertFalse(watcher._voicememos_responsive())
+
+        provider_rendered = _render_log_calls(provider_log)
+        self.assertNotIn(provider_text, provider_rendered)
+        self.assertIn("17", provider_rendered)
+
+    def test_disk_scan_logs_no_filename_path_or_exception_text(self) -> None:
+        voice_root = Path(self.db_dir) / "private-voice-root"
+        voice_root.mkdir()
+        filename = "PRIVATE_SCAN_FILENAME_SENTINEL.m4a"
+        audio_path = voice_root / filename
+        audio_path.write_bytes(b"private audio")
+        exception_text = f"PRIVATE_HASH_EXCEPTION_SENTINEL at {audio_path}"
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(
+                watcher,
+                "get_file_hash",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher.log, "warning") as warning_log,
+        ):
+            self.assertEqual(watcher.scan_for_unprocessed_files(), [])
+
+        rendered = _render_log_calls(warning_log)
+        self.assertNotIn(filename, rendered)
+        self.assertNotIn(str(audio_path), rendered)
+        self.assertNotIn(exception_text, rendered)
+        self.assertIn("RuntimeError", rendered)
+
+    def test_outbox_logs_no_provider_exception_text_or_tracebacks(self) -> None:
+        slack_text = "PRIVATE_SLACK_PROVIDER_EXCEPTION_SENTINEL"
+        maya_text = "PRIVATE_MAYA_PROVIDER_EXCEPTION_SENTINEL"
+
+        with (
+            patch.object(
+                watcher,
+                "process_pending_slack",
+                side_effect=RuntimeError(slack_text),
+            ),
+            patch.object(
+                watcher,
+                "process_pending_maya_deliveries",
+                side_effect=RuntimeError(maya_text),
+            ),
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher._process_slack_outbox()
+            watcher._process_maya_outbox()
+
+        rendered = _render_log_calls(error_log)
+        self.assertNotIn(slack_text, rendered)
+        self.assertNotIn(maya_text, rendered)
+        self.assertNotIn("exc_info", rendered)
+        self.assertGreaterEqual(rendered.count("RuntimeError"), 2)
+
+    def test_retry_logs_id_without_source_or_exception_text(self) -> None:
+        source = "PRIVATE_RETRY_SOURCE_PROVIDER_SENTINEL"
+        exception_text = "PRIVATE_RETRY_EXCEPTION_TEXT_SENTINEL"
+        pending_row = {
+            "id": 913,
+            "source": source,
+            "transcript": "route this",
+            "duration_seconds": None,
+        }
+
+        with (
+            patch.object(watcher, "get_pending", return_value=[pending_row]),
+            patch.object(
+                watcher,
+                "classify_and_route",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher.log, "info") as info_log,
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher._retry_pending_routes(limit=1)
+
+        rendered = _render_log_calls(info_log, error_log)
+        self.assertNotIn(source, rendered)
+        self.assertNotIn(exception_text, rendered)
+        self.assertIn("913", rendered)
+        self.assertIn("RuntimeError", rendered)
+
+    def test_startup_logs_no_paths_model_or_unbounded_dependency_text(self) -> None:
+        voice_root = Path(self.db_dir) / "PRIVATE_STARTUP_VOICE_PATH_SENTINEL"
+        voice_root.mkdir()
+        cloud_db = voice_root / "PRIVATE_STARTUP_DB_FILENAME_SENTINEL.sqlite"
+        warning_text = "PRIVATE_STARTUP_WARNING_TEXT_SENTINEL"
+        error_text = "PRIVATE_STARTUP_ERROR_TEXT_SENTINEL"
+        model_text = "PRIVATE_MODEL_PROVIDER_SENTINEL"
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher, "CLOUDRECORDINGS_DB", cloud_db),
+            patch.object(watcher.cfg.llm, "model", model_text),
+            patch.object(watcher, "init_db"),
+            patch.object(
+                watcher,
+                "check_dependencies",
+                return_value=([error_text], [warning_text]),
+            ),
+            patch.object(watcher, "get_last_seen_pk", return_value=42),
+            patch.object(watcher, "_ensure_voicememos_running"),
+            patch.object(watcher, "_process_ingest_pass"),
+            patch.object(watcher, "update_health_check"),
+            patch.object(watcher.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            patch.object(watcher.log, "info") as info_log,
+            patch.object(watcher.log, "warning") as warning_log,
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher.main()
+
+        rendered = _render_log_calls(info_log, warning_log, error_log)
+        for private_value in (
+            voice_root.name,
+            str(voice_root),
+            cloud_db.name,
+            str(cloud_db),
+            warning_text,
+            error_text,
+            model_text,
+        ):
+            self.assertNotIn(private_value, rendered)
+        self.assertIn("42", rendered)
+
+    def test_poll_loop_logs_exception_class_without_text_or_traceback(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-root"
+        voice_root.mkdir()
+        exception_text = "PRIVATE_POLL_EXCEPTION_TEXT_SENTINEL"
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher, "init_db"),
+            patch.object(watcher, "check_dependencies", return_value=([], [])),
+            patch.object(watcher, "get_last_seen_pk", return_value=42),
+            patch.object(watcher, "_ensure_voicememos_running"),
+            patch.object(
+                watcher,
+                "_process_ingest_pass",
+                side_effect=[None, RuntimeError(exception_text)],
+            ),
+            patch.object(watcher, "update_health_check"),
+            patch.object(
+                watcher.time,
+                "sleep",
+                side_effect=[None, None, None, KeyboardInterrupt],
+            ),
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher.main()
+
+        rendered = _render_log_calls(error_log)
+        self.assertNotIn(exception_text, rendered)
+        self.assertNotIn("exc_info", rendered)
+        self.assertIn("RuntimeError", rendered)
+
+    def test_audio_pipeline_logs_pk_without_filename_or_quality_detail(self) -> None:
+        filename = "PRIVATE_PIPELINE_FILENAME_SENTINEL.m4a"
+        audio_path = Path(self.db_dir) / filename
+        audio_path.write_bytes(b"private audio")
+        quality_detail = "PRIVATE_TRANSCRIPTION_PROVIDER_DETAIL_SENTINEL"
+        staged = StagedAudio(audio_path, "a" * 64, audio_path.stat().st_size, ".m4a")
+
+        with (
+            patch.object(watcher, "stage_audio", return_value=staged),
+            patch.object(watcher, "get_file_hash", return_value="pipeline-md5"),
+            patch.object(watcher, "get_transcript_by_hash", return_value=None),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "private transcript",
+                    QualityResult(False, quality_detail),
+                    1,
+                    quality_detail,
+                ),
+            ),
+            patch.object(
+                watcher,
+                "insert_transcript_result",
+                return_value=TranscriptInsertResult(
+                    InsertOutcome.FAILED,
+                    error_code="database_unavailable",
+                ),
+            ),
+            patch.object(watcher.log, "warning") as warning_log,
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            self.assertFalse(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="pipeline-hash",
+                    recording_pk=927,
+                )
+            )
+
+        rendered = _render_log_calls(warning_log, error_log)
+        self.assertNotIn(filename, rendered)
+        self.assertNotIn(str(audio_path), rendered)
+        self.assertNotIn(quality_detail, rendered)
+        self.assertIn("927", rendered)
+
+    def test_archive_backfill_logs_id_and_class_without_source_details(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-root"
+        voice_root.mkdir()
+        filename = "PRIVATE_BACKFILL_FILENAME_SENTINEL.m4a"
+        audio_path = voice_root / filename
+        audio_path.write_bytes(b"private audio")
+        exception_text = f"PRIVATE_BACKFILL_EXCEPTION_SENTINEL at {audio_path}"
+        candidate = {
+            "transcript_row_id": 941,
+            "transcript_audio_path": None,
+            "voice_audio_path": str(audio_path),
+            "audio_sha256": None,
+            "source": "iCloud",
+            "transcript": "private transcript",
+            "recorded_at": None,
+            "created_at": None,
+            "duration_seconds": None,
+            "transcription_backend": None,
+            "transcription_model": None,
+            "quality_status": "passed",
+        }
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(
+                watcher,
+                "get_archive_backfill_candidates",
+                return_value=[candidate],
+            ),
+            patch.object(
+                watcher,
+                "stage_audio",
+                side_effect=RuntimeError(exception_text),
+            ),
+            patch.object(watcher, "record_archive_backfill_failure"),
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher._reconcile_archive_backfill(limit=1)
+
+        rendered = _render_log_calls(error_log)
+        self.assertNotIn(filename, rendered)
+        self.assertNotIn(str(audio_path), rendered)
+        self.assertNotIn(exception_text, rendered)
+        self.assertIn("941", rendered)
+        self.assertIn("RuntimeError", rendered)
 
     def test_retry_pending_routes_does_not_let_review_rows_consume_limit(self) -> None:
         transcript_log.insert_transcript(
