@@ -1,6 +1,7 @@
 import sys
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -18,6 +19,8 @@ def _verified_model(tmp_path: Path) -> Path:
     weights = model / "weights.npz"
     config.write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
     weights.write_bytes(b"test weights")
+    os.chmod(config, 0o400)
+    os.chmod(weights, 0o400)
     files = []
     for path in (config, weights):
         files.append(
@@ -40,6 +43,22 @@ def _verified_model(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    os.chmod(model / "manifest.json", 0o400)
+    os.chmod(model, 0o700)
+    (model / ".penny-committed").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository": WHISPER_MODEL_REPOSITORY,
+                "revision": WHISPER_MODEL_REVISION,
+                "manifest_sha256": hashlib.sha256(
+                    (model / "manifest.json").read_bytes()
+                ).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(model / ".penny-committed", 0o400)
     return model
 
 

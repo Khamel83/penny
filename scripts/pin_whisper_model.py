@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
 import uuid
@@ -30,7 +31,12 @@ from config import (  # noqa: E402
     WHISPER_MODEL_REPOSITORY,
     WHISPER_MODEL_REVISION,
 )
-from transcript_quality import ModelReceipt, ModelUnavailableError, verify_pinned_model  # noqa: E402
+from transcript_quality import (  # noqa: E402
+    MODEL_COMMIT_MARKER,
+    ModelReceipt,
+    ModelUnavailableError,
+    verify_pinned_model,
+)
 
 
 class ModelProvisionError(RuntimeError):
@@ -83,6 +89,24 @@ def _absolute_directory(path: Path | str, *, label: str) -> Path:
     if not value.is_absolute():
         raise ModelProvisionError(f"{label}_must_be_absolute")
     return value
+
+
+def _reject_symlink_components(path: Path) -> None:
+    """Check every existing destination component without following links."""
+    current = Path(path.anchor)
+    for component in path.parts:
+        if component == path.anchor:
+            continue
+        current /= component
+        try:
+            component_stat = os.lstat(current)
+        except FileNotFoundError:
+            # All later components are necessarily absent beneath this path.
+            break
+        except OSError as exc:
+            raise ModelProvisionError("destination_component_unreadable") from exc
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise ModelProvisionError("destination_parent_symlink")
 
 
 def _copy_file_dereferenced(source: Path, destination: Path) -> None:
@@ -142,6 +166,10 @@ def _copy_snapshot(source: Path, staging: Path) -> list[dict[str, object]]:
     except OSError as exc:
         raise ModelProvisionError("snapshot_unreadable") from exc
     for entry in entries:
+        if entry.name in {"manifest.json", MODEL_COMMIT_MARKER}:
+            # These are Penny-owned publication metadata, never source-model
+            # assets.  A cached snapshot cannot smuggle a stale commit gate.
+            continue
         relative = entry.relative_to(source_root)
         target = staging / relative
         if entry.is_symlink():
@@ -176,7 +204,7 @@ def _copy_snapshot(source: Path, staging: Path) -> list[dict[str, object]]:
                 os.chmod(path, 0o700)
             except OSError as exc:
                 raise ModelProvisionError(f"staging_permissions_failed:{path.name}") from exc
-        if path.is_file() and path.name != "manifest.json":
+        if path.is_file() and path.name not in {"manifest.json", MODEL_COMMIT_MARKER}:
             files.append(
                 {
                     "path": path.relative_to(staging).as_posix(),
@@ -240,6 +268,38 @@ def _write_manifest(
         raise ModelProvisionError("manifest_write_failed") from exc
 
 
+def _write_commit_marker(
+    target: Path,
+    *,
+    repository: str,
+    revision: str,
+) -> None:
+    """Seal a fully verified target; runtime rejects unsealed directories."""
+    manifest_path = target / "manifest.json"
+    marker_path = target / MODEL_COMMIT_MARKER
+    temporary = target / f".{MODEL_COMMIT_MARKER}.{uuid.uuid4().hex}.partial"
+    marker = {
+        "schema_version": 1,
+        "repository": repository,
+        "revision": revision,
+        "manifest_sha256": _sha256(manifest_path),
+    }
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            os.chmod(temporary, 0o400)
+            json.dump(marker, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker_path)
+        os.chmod(marker_path, 0o400)
+        _fsync_directory(target)
+    except OSError as exc:
+        raise ModelProvisionError("commit_marker_write_failed") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def provision_pinned_model(
     *,
     repository: str = WHISPER_MODEL_REPOSITORY,
@@ -261,12 +321,7 @@ def provision_pinned_model(
     if target.name != revision:
         raise ModelProvisionError("destination_must_end_with_revision")
     target_parent = target.parent
-    try:
-        parent_resolved = target_parent.resolve(strict=True)
-    except OSError:
-        parent_resolved = target_parent
-    if parent_resolved != target_parent:
-        raise ModelProvisionError("destination_parent_symlink")
+    _reject_symlink_components(target)
     target_parent.mkdir(parents=True, exist_ok=True)
     if target.exists() or target.is_symlink():
         try:
@@ -322,6 +377,7 @@ def provision_pinned_model(
                 revision,
                 expected_repository=repository,
                 require_directory_name=False,
+                require_commit_marker=False,
             )
         except (ModelUnavailableError, OSError) as exc:
             raise ModelProvisionError("staged_model_verification_failed") from exc
@@ -333,7 +389,20 @@ def provision_pinned_model(
             raise ModelProvisionError("publish_failed") from exc
         _fsync_directory(target_parent)
         try:
-            return verify_pinned_model(target, revision, expected_repository=repository)
+            receipt = verify_pinned_model(
+                target,
+                revision,
+                expected_repository=repository,
+                require_commit_marker=False,
+            )
+            # This is the final publication step.  If anything before this
+            # marker fails, runtime verification rejects the unsealed target.
+            _write_commit_marker(
+                target,
+                repository=repository,
+                revision=revision,
+            )
+            return receipt
         except Exception as exc:
             # Preserve the failed artifact for diagnosis without leaving an
             # invalid directory at the path future runtimes trust.

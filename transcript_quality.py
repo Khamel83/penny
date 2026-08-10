@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import unicodedata
 
 from config import (
@@ -31,8 +32,10 @@ _WEIGHT_FILENAMES = {
     "model.safetensors",
     "pytorch_model.bin",
 }
+MODEL_COMMIT_MARKER = ".penny-committed"
 _MODEL_VERIFICATION_CACHE: dict[
-    tuple[str, str, str], tuple[tuple[tuple[str, int, int, int], ...], "ModelReceipt"]
+    tuple[str, str, str],
+    tuple[tuple[tuple[str, int, int, int, int, int, int], ...], "ModelReceipt"],
 ] = {}
 
 
@@ -64,6 +67,7 @@ class ModelReceipt:
     weights_sha256: str
     manifest_sha256: str
     files: tuple[ModelFileReceipt, ...]
+    directories: tuple[str, ...] = ()
 
     @property
     def repo_id(self) -> str:
@@ -92,6 +96,7 @@ class ModelReceipt:
             "weights_size": self.weights_size,
             "weights_sha256": self.weights_sha256,
             "manifest_sha256": self.manifest_sha256,
+            "directories": list(self.directories),
             "files": [
                 {
                     "path": file.relative_path,
@@ -141,7 +146,7 @@ def _safe_manifest_path(value: object) -> str:
     if candidate.is_absolute() or ".." in candidate.parts:
         raise _model_error("model_manifest_path_escape")
     normalized = candidate.as_posix()
-    if normalized in {"", ".", "manifest.json"}:
+    if normalized in {"", ".", "manifest.json", MODEL_COMMIT_MARKER}:
         raise _model_error("model_manifest_invalid_path")
     return normalized
 
@@ -166,34 +171,65 @@ def _absolute_model_path(value: str | Path) -> Path:
 
 
 def _validate_model_tree(path: Path) -> None:
-    if not path.is_dir() or path.is_symlink():
+    try:
+        root_stat = path.lstat()
+    except OSError as exc:
+        raise _model_error("model_path_missing") from exc
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
         raise _model_error("model_path_not_directory")
+    if stat.S_IMODE(root_stat.st_mode) != 0o700:
+        raise _model_error("model_directory_permissions")
     try:
         entries = list(path.rglob("*"))
     except OSError as exc:
         raise _model_error("model_tree_unreadable") from exc
     for entry in entries:
-        if entry.is_symlink():
+        try:
+            entry_stat = entry.lstat()
+        except OSError as exc:
+            raise _model_error("model_tree_unreadable") from exc
+        if stat.S_ISLNK(entry_stat.st_mode):
             raise _model_error("model_tree_symlink")
-        if not entry.is_file() and not entry.is_dir():
+        if stat.S_ISDIR(entry_stat.st_mode):
+            if stat.S_IMODE(entry_stat.st_mode) != 0o700:
+                raise _model_error("model_directory_permissions")
+        elif stat.S_ISREG(entry_stat.st_mode):
+            if stat.S_IMODE(entry_stat.st_mode) != 0o400:
+                raise _model_error("model_file_permissions")
+            if entry_stat.st_nlink != 1:
+                raise _model_error("model_file_link_count")
+        else:
             raise _model_error("model_tree_invalid_entry")
 
 
 def _model_cache_signature(
     path: Path,
     receipt: ModelReceipt | None = None,
-) -> tuple[tuple[str, int, int, int], ...]:
+) -> tuple[tuple[str, int, int, int, int, int, int], ...]:
     """Return cheap metadata used to avoid rehashing a stable model per memo."""
-    targets = [path, path / "manifest.json"]
+    targets = [path, path / "manifest.json", path / MODEL_COMMIT_MARKER]
     if receipt is not None:
+        targets.extend(path / relative for relative in receipt.directories)
         targets.extend(path / item.relative_path for item in receipt.files)
-    signature: list[tuple[str, int, int, int]] = []
+    signature: list[tuple[str, int, int, int, int, int, int]] = []
     for target in targets:
         try:
-            stat = target.stat()
+            target_stat = target.lstat()
         except OSError:
             return ()
-        signature.append((str(target), stat.st_ino, stat.st_size, stat.st_mtime_ns))
+        if stat.S_ISLNK(target_stat.st_mode):
+            return ()
+        signature.append(
+            (
+                str(target),
+                target_stat.st_ino,
+                target_stat.st_size,
+                target_stat.st_mtime_ns,
+                target_stat.st_ctime_ns,
+                stat.S_IMODE(target_stat.st_mode),
+                target_stat.st_nlink,
+            )
+        )
     return tuple(signature)
 
 
@@ -203,6 +239,7 @@ def verify_pinned_model(
     *,
     expected_repository: str = WHISPER_MODEL_REPOSITORY,
     require_directory_name: bool = True,
+    require_commit_marker: bool = True,
 ) -> ModelReceipt:
     """Verify a provisioned model without importing MLX or touching the network.
 
@@ -280,7 +317,7 @@ def verify_pinned_model(
     actual_files = {
         entry.relative_to(model_path).as_posix()
         for entry in model_path.rglob("*")
-        if entry.is_file() and entry.name != "manifest.json"
+        if entry.is_file() and entry.name not in {"manifest.json", MODEL_COMMIT_MARKER}
     }
     if actual_files - set(inventory) != set():
         raise _model_error("model_manifest_unlisted_file")
@@ -319,6 +356,28 @@ def verify_pinned_model(
         raise _model_error("model_weights_invalid")
     weights = inventory[weights_path]
     manifest_sha256 = _sha256_file(manifest_path)
+    if require_commit_marker:
+        marker_path = model_path / MODEL_COMMIT_MARKER
+        if marker_path.is_symlink() or not marker_path.is_file():
+            raise _model_error("model_commit_marker_missing")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise _model_error("model_commit_marker_invalid") from exc
+        if not isinstance(marker, dict):
+            raise _model_error("model_commit_marker_invalid")
+        if (
+            marker.get("schema_version") != 1
+            or marker.get("repository") != repository
+            or marker.get("revision") != revision
+            or marker.get("manifest_sha256") != manifest_sha256
+        ):
+            raise _model_error("model_commit_marker_mismatch")
+    directories = tuple(
+        entry.relative_to(model_path).as_posix()
+        for entry in model_path.rglob("*")
+        if entry.is_dir()
+    )
     return ModelReceipt(
         path=model_path,
         repository=repository,
@@ -329,6 +388,7 @@ def verify_pinned_model(
         weights_sha256=weights.sha256,
         manifest_sha256=manifest_sha256,
         files=tuple(inventory[key] for key in sorted(inventory)),
+        directories=tuple(sorted(directories)),
     )
 
 

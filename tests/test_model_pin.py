@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,8 +34,9 @@ def _sha256(path: Path) -> str:
 def _write_manifest(model: Path) -> None:
     files = []
     for path in sorted(model.rglob("*")):
-        if not path.is_file() or path.name == "manifest.json":
+        if not path.is_file() or path.name in {"manifest.json", ".penny-committed"}:
             continue
+        os.chmod(path, 0o400)
         relative = path.relative_to(model).as_posix()
         files.append(
             {
@@ -54,6 +56,18 @@ def _write_manifest(model: Path) -> None:
     (model / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    os.chmod(model / "manifest.json", 0o400)
+    os.chmod(model, 0o700)
+    marker = {
+        "schema_version": 1,
+        "repository": WHISPER_MODEL_REPOSITORY,
+        "revision": WHISPER_MODEL_REVISION,
+        "manifest_sha256": _sha256(model / "manifest.json"),
+    }
+    (model / ".penny-committed").write_text(
+        json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.chmod(model / ".penny-committed", 0o400)
 
 
 def _fake_model(tmp_path: Path) -> Path:
@@ -65,6 +79,20 @@ def _fake_model(tmp_path: Path) -> Path:
     (model / "weights.npz").write_bytes(b"fake model weights")
     _write_manifest(model)
     return model
+
+
+def _tamper_weights(model: Path) -> None:
+    path = model / "weights.npz"
+    os.chmod(path, 0o600)
+    path.write_bytes(b"tampered")
+    os.chmod(path, 0o400)
+
+
+def _tamper_config(model: Path) -> None:
+    path = model / "config.json"
+    os.chmod(path, 0o600)
+    path.write_text(json.dumps({"model_type": "not-whisper"}), encoding="utf-8")
+    os.chmod(path, 0o400)
 
 
 def test_verify_pinned_model_returns_stable_receipt(tmp_path: Path):
@@ -85,10 +113,8 @@ def test_verify_pinned_model_returns_stable_receipt(tmp_path: Path):
 @pytest.mark.parametrize(
     "mutator",
     [
-        lambda model: (model / "weights.npz").write_bytes(b"tampered"),
-        lambda model: (model / "config.json").write_text(
-            json.dumps({"model_type": "not-whisper"}), encoding="utf-8"
-        ),
+        _tamper_weights,
+        _tamper_config,
         lambda model: (model / "manifest.json").unlink(),
     ],
 )
@@ -107,6 +133,32 @@ def test_verify_pinned_model_rejects_symlinked_asset(tmp_path: Path):
     (model / "weights.npz").unlink()
     (model / "weights.npz").symlink_to(outside)
 
+    with pytest.raises(ModelUnavailableError):
+        verify_pinned_model(model, WHISPER_MODEL_REVISION)
+
+
+def test_verify_pinned_model_requires_private_read_only_single_link_assets(tmp_path: Path):
+    model = _fake_model(tmp_path)
+    os.chmod(model / "weights.npz", 0o600)
+    with pytest.raises(ModelUnavailableError):
+        verify_pinned_model(model, WHISPER_MODEL_REVISION)
+
+    os.chmod(model / "weights.npz", 0o400)
+    hardlink = model / "weights-hardlink.npz"
+    os.link(model / "weights.npz", hardlink)
+    with pytest.raises(ModelUnavailableError):
+        verify_pinned_model(model, WHISPER_MODEL_REVISION)
+
+
+def test_verify_pinned_model_rejects_special_files_and_non_private_dirs(tmp_path: Path):
+    model = _fake_model(tmp_path)
+    os.chmod(model, 0o755)
+    with pytest.raises(ModelUnavailableError):
+        verify_pinned_model(model, WHISPER_MODEL_REVISION)
+
+    os.chmod(model, 0o700)
+    fifo = model / "unexpected.fifo"
+    os.mkfifo(fifo)
     with pytest.raises(ModelUnavailableError):
         verify_pinned_model(model, WHISPER_MODEL_REVISION)
 
@@ -257,9 +309,71 @@ def test_runtime_resolution_reuses_verified_receipt_until_assets_change(tmp_path
     resolve_whisper_model(str(model))
     assert first_count > 0
     assert hash_calls == first_count
-    (model / "weights.npz").write_bytes(b"tampered")
+    weights = model / "weights.npz"
+    os.chmod(weights, 0o600)
+    weights.write_bytes(b"tampered")
+    os.chmod(weights, 0o400)
     with pytest.raises(ModelUnavailableError):
         resolve_whisper_model(str(model))
+
+
+def test_runtime_cache_rejects_same_length_tamper_with_restored_mtime(
+    tmp_path: Path,
+):
+    model = _fake_model(tmp_path)
+    clear_model_verification_cache()
+    resolve_whisper_model(str(model))
+    weights = model / "weights.npz"
+    before = weights.stat()
+    os.chmod(weights, 0o600)
+    weights.write_bytes(b"tampered model weights")
+    os.utime(weights, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.chmod(weights, 0o400)
+
+    with pytest.raises(ModelUnavailableError):
+        resolve_whisper_model(str(model))
+
+
+def test_provision_rejects_symlink_ancestor_before_mkdir(tmp_path: Path):
+    source = _fake_snapshot(tmp_path)
+    outside = tmp_path / "outside"
+    link = tmp_path / "owned"
+    link.symlink_to(outside, target_is_directory=True)
+    destination = link / "missing" / WHISPER_MODEL_REVISION
+
+    with pytest.raises(ModelProvisionError, match="destination_parent_symlink"):
+        provision_pinned_model(destination=destination, snapshot_path=source)
+    assert not outside.exists()
+
+
+def test_post_publish_failure_without_quarantine_stays_unaccepted(
+    tmp_path: Path, monkeypatch
+):
+    source = _fake_snapshot(tmp_path)
+    destination = tmp_path / "owned" / WHISPER_MODEL_REVISION
+    import pin_whisper_model as pin
+
+    real_verify = pin.verify_pinned_model
+    real_replace = pin.os.replace
+
+    def fail_only_after_publish(path, *args, **kwargs):
+        if Path(path).name == WHISPER_MODEL_REVISION:
+            raise ModelUnavailableError("synthetic_post_publish_failure")
+        return real_verify(path, *args, **kwargs)
+
+    def fail_quarantine(src, dst):
+        if Path(dst).name.startswith(f".{WHISPER_MODEL_REVISION}.invalid-"):
+            raise OSError("synthetic quarantine failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pin, "verify_pinned_model", fail_only_after_publish)
+    monkeypatch.setattr(pin.os, "replace", fail_quarantine)
+    with pytest.raises(ModelProvisionError, match="published_model_verification_failed"):
+        provision_pinned_model(destination=destination, snapshot_path=source)
+    assert destination.exists()
+    assert not (destination / ".penny-committed").exists()
+    with pytest.raises(ModelUnavailableError):
+        verify_pinned_model(destination, WHISPER_MODEL_REVISION)
 
 
 def test_package_and_runtime_contract_are_exact():
