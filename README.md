@@ -101,10 +101,9 @@ by boundary. The relevant names are `PENNY_INGEST_TOKEN` for upload/ingest,
 `MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. The callback/Hermes
 secret reuse is a known transitional gap; do not describe those boundaries as
 independently credentialed until a later change proves it. Values must never be
-committed, printed, or copied into Doctor output. The tracked webhook template
-currently requests a non-loopback bind for its LAN use case; it must converge to
-loopback or an explicitly protected non-loopback policy, and Doctor fails
-readiness for an unprotected bind.
+committed, printed, or copied into Doctor output. Tracked/runtime webhook
+templates must converge to loopback or an explicitly protected non-loopback
+policy, and Doctor fails readiness for an unprotected bind.
 
 Current service logging still has a redaction follow-up: some provider URLs or
 exception details may appear in ordinary logs. Doctor output and deployment

@@ -114,10 +114,9 @@ never replace the live database or delete evidence to make readiness green.
 - `503`: persistence or readiness boundary is unavailable; retry only after the
   canonical state is inspected.
 
-The target webhook policy is loopback. The current tracked template requests a
-non-loopback LAN bind and must converge to loopback or an explicitly protected
-non-loopback policy; Doctor reports an unprotected bind as unready. Authentication
-and content limits still apply.
+The target webhook policy is loopback. Tracked/runtime templates must converge
+to loopback or an explicitly protected non-loopback policy; Doctor reports an
+unprotected bind as unready. Authentication and content limits still apply.
 
 Missing or wrong credentials must produce `401`; valid-token routing is covered
 by hermetic tests. No live canary is implied by this document.

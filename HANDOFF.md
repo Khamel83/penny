@@ -104,9 +104,9 @@ replay, send, share, purchase, deploy, or change credentials from a health check
 
 ## Transitional gaps
 
-The current tracked webhook template still needs to converge to loopback or an
-explicitly protected non-loopback bind; Doctor treats an unprotected bind as
-unready. The callback credential is also reused by the transitional Hermes
+Tracked/runtime webhook templates must converge to loopback or an explicitly
+protected non-loopback bind; Doctor treats an unprotected bind as unready. The
+callback credential is also reused by the transitional Hermes
 notification path, and ordinary logging still has a redaction follow-up.
 
 ## Future gates
