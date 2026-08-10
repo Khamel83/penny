@@ -142,14 +142,35 @@ class BackupTests(unittest.TestCase):
         scratch.mkdir()
         marker = scratch / "keep.txt"
         marker.write_text("keep", encoding="utf-8")
-        extra = receipt.backup_root / "objects" / "sha256" / "ff" / ("f" * 64 + ".m4a")
+        extra_data = b"extra shared object"
+        extra_hash = hashlib.sha256(extra_data).hexdigest()
+        extra = receipt.backup_root / "objects" / "sha256" / extra_hash[:2] / (extra_hash + ".m4a")
         extra.parent.mkdir(parents=True, exist_ok=True)
-        extra.write_bytes(b"extra")
+        extra.write_bytes(extra_data)
+        extra.chmod(0o400)
         result = verify_backup_set(receipt.set_path, scratch)
         self.assertTrue(result.valid, result.errors)
         self.assertTrue(any("extra_object" in warning for warning in result.warnings))
         self.assertTrue(marker.exists())
         self.assertTrue(extra.exists())
+
+    def test_valid_shared_object_omitted_from_both_catalogs_is_warning_only(self) -> None:
+        source = self._add_object()
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        object_relative = f"objects/sha256/{source.parent.name}/{source.name}"
+        catalog = json.loads(receipt.catalog_path.read_text(encoding="utf-8"))
+        catalog["objects"] = [
+            item for item in catalog["objects"] if item["path"] != object_relative
+        ]
+        catalog["files"] = [
+            item for item in catalog["files"] if item["path"] != object_relative
+        ]
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        receipt.catalog_path.chmod(0o400)
+        result = verify_backup_set(receipt.set_path, self.root / "scratch-shared")
+        self.assertTrue(result.valid, result.errors)
+        self.assertIn("extra_object", result.warnings)
 
     def test_verifier_rejects_nested_or_symlink_scratch(self) -> None:
         self._add_object()
@@ -366,6 +387,44 @@ class BackupTests(unittest.TestCase):
         os.link(object_path, hardlink)
         result = verify_backup_set(receipt.set_path, self.root / "scratch-hardlink")
         self.assertFalse(result.valid)
+
+    def test_verifier_rejects_invalid_extra_objects(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        extra_data = b"bad extra object"
+        extra_hash = hashlib.sha256(extra_data).hexdigest()
+        extra = receipt.backup_root / "objects" / "sha256" / extra_hash[:2] / (extra_hash + ".m4a")
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_bytes(b"wrong bytes")
+        extra.chmod(0o400)
+        self.assertFalse(verify_backup_set(receipt.set_path, self.root / "scratch-extra-hash").valid)
+
+        extra.chmod(0o600)
+        extra.write_bytes(extra_data)
+        extra.chmod(0o644)
+        self.assertFalse(verify_backup_set(receipt.set_path, self.root / "scratch-extra-mode").valid)
+
+        extra.chmod(0o400)
+        hardlink = self.root / "extra-hardlink"
+        os.link(extra, hardlink)
+        self.assertFalse(verify_backup_set(receipt.set_path, self.root / "scratch-extra-link").valid)
+
+    def test_verifier_binds_database_path_to_snapshot_filename(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        catalog = json.loads(receipt.catalog_path.read_text(encoding="utf-8"))
+        catalog["database"]["path"] = "renamed.db"
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        self.assertFalse(verify_backup_set(receipt.set_path, self.root / "scratch-db-path").valid)
+
+    def test_retention_preserves_newest_verified_set_not_corrupt_newest_timestamp(self) -> None:
+        old = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=180))
+        corrupt = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=91))
+        corrupt.catalog_path.chmod(0o600)
+        corrupt.catalog_path.write_text("{}", encoding="utf-8")
+        plan = plan_retention(self.backup, self.now)
+        self.assertEqual(plan.expired_set_ids, ())
+        self.assertEqual(plan.retained_set_ids, (old.set_path.name,))
+        self.assertTrue(any("invalid_set_verification" in warning for warning in plan.warnings))
 
 
 if __name__ == "__main__":

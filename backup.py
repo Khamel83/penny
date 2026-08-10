@@ -17,6 +17,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -563,6 +564,26 @@ def _catalog_sha(value: object) -> str:
     return value
 
 
+def _validate_extra_object(path: Path, backup_root: Path) -> None:
+    """Validate an unlisted object in the shared immutable object pool."""
+    relative = path.relative_to(backup_root).as_posix()
+    parts = relative.split("/")
+    if len(parts) != 4 or parts[:2] != ["objects", "sha256"]:
+        raise BackupError("extra_object_path_invalid")
+    prefix = parts[2]
+    match = _OBJECT_NAME_RE.fullmatch(parts[3])
+    if not _SHA256_PREFIX_RE.fullmatch(prefix) or match is None:
+        raise BackupError("extra_object_path_invalid")
+    digest = match.group("sha")
+    if digest[:2] != prefix:
+        raise BackupError("extra_object_path_invalid")
+    info = _safe_immutable_file(path, label="extra_object")
+    if sha256_file(path) != digest:
+        raise BackupError("extra_object_hash_mismatch")
+    if info.st_size <= 0:
+        raise BackupError("extra_object_empty")
+
+
 def _verify_database(path: Path, expected: dict[str, Any]) -> tuple[int, int | None]:
     _safe_immutable_file(path, label="snapshot")
     if path.stat().st_size != _catalog_size(expected.get("size")):
@@ -682,6 +703,8 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
         database_meta = catalog.get("database")
         if not isinstance(database_meta, dict):
             raise BackupError("catalog_database_invalid")
+        if database_meta.get("path") != "transcripts.db":
+            raise BackupError("catalog_database_path_invalid")
         if database_relative not in file_entries:
             raise BackupError("catalog_database_missing")
         database_size = _catalog_size(database_meta.get("size"))
@@ -732,6 +755,11 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
                     continue
                 relative = candidate.relative_to(backup_root).as_posix()
                 if relative not in listed_objects:
+                    _validate_extra_object(candidate, backup_root)
+                    # Objects are a shared immutable pool.  A valid physical
+                    # object may be absent from this set's catalog because a
+                    # later set references it; retain it and report the
+                    # inventory difference without invalidating the set.
                     warnings.append("extra_object")
 
         return VerificationReceipt(
@@ -789,6 +817,7 @@ def plan_retention(
     sets_root = backup_root / "sets"
     expired: list[str] = []
     retained: list[str] = []
+    valid_expired: list[tuple[datetime, str]] = []
     warnings: list[str] = []
     if not sets_root.exists():
         return RetentionPlan(_utc_text(cutoff_dt), (), (), ())
@@ -808,14 +837,24 @@ def plan_retention(
         except ValueError:
             warnings.append("invalid_set_ignored")
             continue
+        try:
+            with tempfile.TemporaryDirectory(prefix="penny-retention-") as scratch:
+                verification = verify_backup_set(candidate, Path(scratch))
+        except (BackupError, OSError, ValueError, TypeError, OverflowError):
+            verification = None
+        if verification is None or not verification.valid:
+            warnings.append("invalid_set_verification")
+            continue
         if created < cutoff_dt:
             expired.append(candidate.name)
+            valid_expired.append((created, candidate.name))
         else:
             retained.append(candidate.name)
-    if not retained and expired:
-        # Never discard the only valid rollback point.  Keep the newest set
-        # discoverable even when all sets are older than the nominal window.
-        newest = expired.pop()
+    if not retained and valid_expired:
+        # Never discard the only valid rollback point.  Preserve the newest
+        # *verified* set; corrupt/unknown timestamps never enter this choice.
+        _, newest = max(valid_expired)
+        expired.remove(newest)
         retained.append(newest)
     return RetentionPlan(
         cutoff=_utc_text(cutoff_dt),
