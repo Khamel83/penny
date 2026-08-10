@@ -314,6 +314,201 @@ class WatcherTests(unittest.TestCase):
         ):
             self.assertEqual(watcher.scan_for_unprocessed_files(), [(memo, "existing-hash")])
 
+    def test_find_audio_path_rejects_unsafe_source_paths_and_nonregular_files(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos"
+        voice_root.mkdir()
+        safe = voice_root / "safe.m4a"
+        safe.write_bytes(b"safe")
+        outside = Path(self.db_dir) / "outside.m4a"
+        outside.write_bytes(b"outside")
+        symlink = voice_root / "symlink.m4a"
+        symlink.symlink_to(safe)
+        fifo = voice_root / "special.m4a"
+        os.mkfifo(fifo)
+
+        with patch.object(watcher, "VOICE_MEMOS_DIR", voice_root):
+            unsafe_recordings = [
+                {"ZPATH": str(outside), "ZCUSTOMLABEL": "safe"},
+                {"ZPATH": "../outside.m4a", "ZCUSTOMLABEL": "safe"},
+                {"ZPATH": "symlink.m4a", "ZCUSTOMLABEL": "safe"},
+                {"ZPATH": "special.m4a", "ZCUSTOMLABEL": "safe"},
+            ]
+            for recording in unsafe_recordings:
+                with self.subTest(path=recording["ZPATH"]):
+                    self.assertIsNone(watcher._find_audio_path_for_recording(recording))
+
+            self.assertEqual(
+                watcher._find_audio_path_for_recording({"ZPATH": "safe.m4a"}),
+                safe,
+            )
+
+            with (
+                patch.object(watcher, "get_file_hash", return_value="safe-hash"),
+                patch.object(watcher, "is_already_logged", return_value=False),
+            ):
+                self.assertEqual(
+                    watcher.scan_for_unprocessed_files(), [(safe, "safe-hash")]
+                )
+
+    def test_malformed_recording_timestamp_terminalizes_and_batch_continues(self) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        recordings = [
+            {
+                "Z_PK": 601,
+                "ZCUSTOMLABEL": "bad timestamp",
+                "ZPATH": "bad-timestamp.m4a",
+                "ZDATE": 0,
+                "recorded_at": "not-a-timestamp",
+            },
+            {
+                "Z_PK": 602,
+                "ZCUSTOMLABEL": "later memo",
+                "ZPATH": "later.m4a",
+                "ZDATE": 1,
+            },
+        ]
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "process_recording", return_value=True) as process,
+        ):
+            watcher._process_db_batch(recordings)
+
+        process.assert_called_once_with(recordings[1], already_upserted=True)
+        self.assertEqual(state_file.read_text(encoding="utf-8"), "602")
+        conn = transcript_log._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT recording_pk, status, error_message, transcript_row_id,
+                       audio_path
+                FROM voice_memo_ingest
+                ORDER BY recording_pk
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([row["recording_pk"] for row in rows], [601, 602])
+        malformed = rows[0]
+        self.assertEqual(malformed["status"], "failed_terminal")
+        self.assertEqual(malformed["error_message"], "processing_error")
+        self.assertIsNone(malformed["transcript_row_id"])
+        self.assertIsNone(malformed["audio_path"])
+        self.assertNotIn("not-a-timestamp", malformed["error_message"])
+
+    def test_health_check_requires_voice_memos_responsiveness(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=False),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True,
+                    "record_count": 0,
+                    "latest_pk": 0,
+                    "latest_date": None,
+                    "wal_exists": False,
+                    "wal_age_seconds": -1,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 0,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                    "retry_due_count": 0,
+                    "terminal_count": 0,
+                    "terminal_failure_count": 0,
+                    "max_attempt_count": 0,
+                    "source_watermark": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={"pending_count": 0, "failed_count": 0, "health_error": 0},
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "due_count": 0,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 0,
+                    "quality_needs_review_count": 0,
+                    "health_error": 0,
+                },
+            ),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|voicememos_responsive:0|", health)
+
+    def test_health_check_requires_cloud_recording_database_integrity(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": False,
+                    "record_count": 0,
+                    "latest_pk": 0,
+                    "latest_date": None,
+                    "wal_exists": False,
+                    "wal_age_seconds": -1,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 0,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                    "retry_due_count": 0,
+                    "terminal_count": 0,
+                    "terminal_failure_count": 0,
+                    "max_attempt_count": 0,
+                    "source_watermark": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={"pending_count": 0, "failed_count": 0, "health_error": 0},
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "due_count": 0,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 0,
+                    "quality_needs_review_count": 0,
+                    "health_error": 0,
+                },
+            ),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|voice_db_ok:0|", health)
+
     def test_historical_backfill_queues_old_linked_audio_without_retranscription(self) -> None:
         source = Path(self.db_dir) / "historical.m4a"
         source.write_bytes(b"historical audio")

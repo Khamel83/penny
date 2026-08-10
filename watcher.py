@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -277,7 +278,9 @@ def update_health_check() -> None:
         bool(cfg.maya.transcript_url.strip() and cfg.maya.ingest_token.strip())
     )
     watcher_ok = int(
-        not slack_health_error
+        bool(vm_responsive)
+        and bool(cloud_health.get("db_ok"))
+        and not slack_health_error
         and int(slack_health.get("failed_count", 0)) == 0
         and int(slack_health.get("quality_failure_failed_count", 0)) == 0
         and not maya_health_error
@@ -437,6 +440,51 @@ def _recording_timestamp_utc(recording: Dict[str, Any]) -> str | None:
     return recorded_at.isoformat().replace("+00:00", "Z")
 
 
+_RECORDING_TIMESTAMP_ERRORS = (TypeError, ValueError, OverflowError)
+
+
+def _recording_timestamp_or_invalid(
+    recording: Dict[str, Any],
+) -> tuple[str | None, bool]:
+    """Return timestamp plus whether persisted source metadata was invalid."""
+    try:
+        return _recording_timestamp_utc(recording), False
+    except _RECORDING_TIMESTAMP_ERRORS:
+        return None, True
+
+
+def _upsert_recording_metadata(
+    recording: Dict[str, Any], *, recorded_at: str | None
+) -> bool:
+    """Persist source metadata without retaining an invalid timestamp value."""
+    pk = int(recording["Z_PK"])
+    return upsert_voice_memo_recording(
+        pk,
+        label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
+        raw_path=str(recording.get("ZPATH") or ""),
+        duration_seconds=(
+            float(recording.get("ZDURATION"))
+            if recording.get("ZDURATION") is not None
+            else None
+        ),
+        recorded_at=recorded_at,
+    )
+
+
+def _terminalize_invalid_recording_timestamp(
+    recording: Dict[str, Any], *, already_upserted: bool
+) -> bool:
+    """Record bounded terminal state for malformed source timestamp metadata."""
+    pk = int(recording["Z_PK"])
+    if not already_upserted and not _upsert_recording_metadata(
+        recording, recorded_at=None
+    ):
+        return False
+    mark_voice_memo_terminal(pk, "processing_error")
+    log.error("Invalid Voice Memo capture timestamp (PK=%s)", pk)
+    return True
+
+
 def _safe_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -444,10 +492,64 @@ def _safe_mtime(path: Path) -> float:
         return 0.0
 
 
+def _voice_memo_roots() -> tuple[Path, Path] | None:
+    """Return the configured path and its resolved boundary, when available."""
+    voice_base = VOICE_MEMOS_DIR.expanduser()
+    if not voice_base.is_absolute():
+        voice_base = voice_base.absolute()
+    try:
+        voice_root = voice_base.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None
+    if not voice_root.is_dir():
+        return None
+    return voice_base, voice_root
+
+
+def _safe_voice_memo_candidate(
+    candidate: Path, *, voice_base: Path, voice_root: Path
+) -> Optional[Path]:
+    """Return only a regular, non-symlink file rooted in Voice Memos."""
+    try:
+        if candidate.is_symlink():
+            return None
+        current = candidate
+        while current != voice_base and current.parent != current:
+            if current.is_symlink():
+                return None
+            current = current.parent
+    except (OSError, ValueError):
+        return None
+    try:
+        candidate.resolve(strict=True).relative_to(voice_root)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    try:
+        mode = os.lstat(candidate).st_mode
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            return None
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_relative_to(voice_root):
+            return None
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return candidate
+
+
 def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
     """Return list of (path, file_hash) tuples for unprocessed files."""
+    roots = _voice_memo_roots()
+    if roots is None:
+        return []
+    voice_base, voice_root = roots
     try:
-        all_files = list(VOICE_MEMOS_DIR.glob("*.m4a"))
+        all_files = [
+            safe
+            for candidate in voice_base.glob("*.m4a")
+            if (safe := _safe_voice_memo_candidate(
+                candidate, voice_base=voice_base, voice_root=voice_root
+            ))
+        ]
     except Exception as e:
         log.error("File scan failed: %s", e)
         return []
@@ -480,23 +582,47 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
 
 
 def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
+    roots = _voice_memo_roots()
+    if roots is None:
+        return None
+    voice_base, voice_root = roots
+
     raw_path = recording.get("ZPATH")
     label = recording.get("ZCUSTOMLABEL") or ""
 
     if raw_path:
-        audio_path = VOICE_MEMOS_DIR / str(raw_path)
-        if audio_path.exists():
-            return audio_path
-        log.warning("File in DB not found yet: %s", audio_path)
+        source = Path(str(raw_path))
+        if source.is_absolute() or ".." in source.parts:
+            log.warning("Voice Memo source path rejected by boundary")
+            return None
+        else:
+            bounded_source = voice_base / source
+            audio_path = _safe_voice_memo_candidate(
+                bounded_source, voice_base=voice_base, voice_root=voice_root
+            )
+            if audio_path is not None:
+                return audio_path
+            try:
+                exists = os.path.lexists(bounded_source)
+            except (OSError, ValueError):
+                exists = True
+            if exists:
+                log.warning("Voice Memo source file rejected by boundary")
+                return None
+            log.warning("Voice Memo source file unavailable or unsafe")
 
     if label:
         normalized_prefix = str(label)[:10].replace("-", "")
-        for candidate in VOICE_MEMOS_DIR.glob("*.m4a"):
+        for candidate in voice_base.glob("*.m4a"):
             name = candidate.name
             if label in name or (
                 normalized_prefix and name.startswith(normalized_prefix)
             ):
-                return candidate
+                safe = _safe_voice_memo_candidate(
+                    candidate, voice_base=voice_base, voice_root=voice_root
+                )
+                if safe is not None:
+                    return safe
 
     return None
 
@@ -795,13 +921,14 @@ def process_recording(
         if recording.get("ZDURATION") is not None
         else None
     )
-    recorded_at = _recording_timestamp_utc(recording)
-    if not already_upserted and not upsert_voice_memo_recording(
-        pk,
-        label=label,
-        raw_path=raw_path,
-        duration_seconds=duration_seconds,
-        recorded_at=recorded_at,
+    recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
+    if timestamp_invalid:
+        _terminalize_invalid_recording_timestamp(
+            recording, already_upserted=already_upserted
+        )
+        return False
+    if not already_upserted and not _upsert_recording_metadata(
+        recording, recorded_at=recorded_at
     ):
         return False
     log.info("Processing %s (PK=%s)", label, pk)
@@ -903,17 +1030,17 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     max_registered_pk = get_source_watermark("voice_memos")
     for recording in recordings[:FILE_SCAN_PROCESS_LIMIT]:
         pk = int(recording["Z_PK"])
-        persisted = upsert_voice_memo_recording(
-            pk,
-            label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
-            raw_path=str(recording.get("ZPATH") or ""),
-            duration_seconds=(
-                float(recording.get("ZDURATION"))
-                if recording.get("ZDURATION") is not None
-                else None
-            ),
-            recorded_at=_recording_timestamp_utc(recording),
-        )
+        recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
+        if timestamp_invalid:
+            if not _upsert_recording_metadata(recording, recorded_at=None):
+                log.error(
+                    "Stopping discovery batch after durable upsert failure pk=%s", pk
+                )
+                break
+            max_registered_pk = max(max_registered_pk, pk)
+            _terminalize_invalid_recording_timestamp(recording, already_upserted=True)
+            continue
+        persisted = _upsert_recording_metadata(recording, recorded_at=recorded_at)
         if not persisted:
             log.error("Stopping discovery batch after durable upsert failure pk=%s", pk)
             break
@@ -1154,17 +1281,14 @@ def _retry_waiting_for_files(limit: int) -> None:
         pk = int(row["recording_pk"])
         recording = refreshed.get(pk)
         if recording is not None:
-            if not upsert_voice_memo_recording(
-                pk,
-                label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
-                raw_path=str(recording.get("ZPATH") or ""),
-                duration_seconds=(
-                    float(recording.get("ZDURATION"))
-                    if recording.get("ZDURATION") is not None
-                    else None
-                ),
-                recorded_at=_recording_timestamp_utc(recording),
-            ):
+            recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
+            if timestamp_invalid:
+                if _upsert_recording_metadata(recording, recorded_at=None):
+                    _terminalize_invalid_recording_timestamp(
+                        recording, already_upserted=True
+                    )
+                continue
+            if not _upsert_recording_metadata(recording, recorded_at=recorded_at):
                 continue
         else:
             recording = {
@@ -1196,17 +1320,14 @@ def _retry_voice_memo_recordings(limit: int) -> None:
                 "recorded_at": row.get("recorded_at"),
             }
         else:
-            if not upsert_voice_memo_recording(
-                pk,
-                label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
-                raw_path=str(recording.get("ZPATH") or ""),
-                duration_seconds=(
-                    float(recording.get("ZDURATION"))
-                    if recording.get("ZDURATION") is not None
-                    else None
-                ),
-                recorded_at=_recording_timestamp_utc(recording),
-            ):
+            recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
+            if timestamp_invalid:
+                if _upsert_recording_metadata(recording, recorded_at=None):
+                    _terminalize_invalid_recording_timestamp(
+                        recording, already_upserted=True
+                    )
+                continue
+            if not _upsert_recording_metadata(recording, recorded_at=recorded_at):
                 continue
         process_recording(recording, already_upserted=True)
 
