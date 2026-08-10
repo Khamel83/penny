@@ -18,7 +18,9 @@ import json
 import logging
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -769,7 +771,21 @@ def _queue_slack_delivery(
     )
 
 
-def insert_transcript(
+class InsertOutcome(str, Enum):
+    INSERTED = "inserted"
+    DUPLICATE = "duplicate"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class TranscriptInsertResult:
+    outcome: InsertOutcome
+    row_id: int | None = None
+    existing_status: str | None = None
+    error_code: str | None = None
+
+
+def _insert_transcript_transaction(
     content_hash: str,
     source: str,
     transcript: str,
@@ -787,7 +803,7 @@ def insert_transcript(
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
 ) -> int | None:
-    """Insert a transcript. Returns row id if new, None if duplicate."""
+    """Insert a transcript and related outbox rows in one transaction."""
     if quality_status is None:
         quality_status = "needs_review" if ingest_state == "needs_review" else "passed"
     quality_detail = _bounded_quality_detail(quality_detail)
@@ -864,12 +880,83 @@ def insert_transcript(
             return cursor.lastrowid
         conn.commit()
         return None
-    except Exception as e:
-        log.error("Failed to insert transcript: %s", e)
-        return None
     finally:
         if conn:
             conn.close()
+
+
+def insert_transcript_result(**kwargs: Any) -> TranscriptInsertResult:
+    """Insert a transcript while distinguishing duplicate and database failure."""
+    content_hash = str(kwargs["content_hash"])
+    try:
+        row_id = _insert_transcript_transaction(**kwargs)
+        if row_id is not None:
+            return TranscriptInsertResult(InsertOutcome.INSERTED, row_id=int(row_id))
+
+        existing = get_transcript_by_hash(content_hash)
+        if existing is None:
+            return TranscriptInsertResult(
+                InsertOutcome.FAILED,
+                error_code="duplicate_without_canonical_row",
+            )
+        return TranscriptInsertResult(
+            InsertOutcome.DUPLICATE,
+            row_id=int(existing["id"]),
+            existing_status=str(existing["status"]),
+        )
+    except sqlite3.Error:
+        log.error("Failed to insert transcript due to a database error")
+        return TranscriptInsertResult(
+            InsertOutcome.FAILED,
+            error_code="database_unavailable",
+        )
+    except Exception as error:
+        # Preserve the legacy no-raise persistence boundary without exposing details.
+        log.error("Failed to insert transcript due to %s", type(error).__name__)
+        return TranscriptInsertResult(
+            InsertOutcome.FAILED,
+            error_code="database_unavailable",
+        )
+
+
+def insert_transcript(
+    content_hash: str,
+    source: str,
+    transcript: str,
+    audio_path: str | None = None,
+    duration_seconds: float | None = None,
+    ingest_state: str | None = None,
+    discovered_at: str | None = None,
+    file_seen_at: str | None = None,
+    transcription_started_at: str | None = None,
+    transcription_completed_at: str | None = None,
+    error_message: str | None = None,
+    recorded_at: str | None = None,
+    quality_status: str | None = None,
+    quality_detail: str | None = None,
+    maya_delivery_eligible: bool = False,
+    enqueue_slack: bool = True,
+) -> int | None:
+    """Compatibility wrapper returning an id only for a newly inserted row."""
+    result = insert_transcript_result(
+        content_hash=content_hash,
+        source=source,
+        transcript=transcript,
+        audio_path=audio_path,
+        duration_seconds=duration_seconds,
+        ingest_state=ingest_state,
+        discovered_at=discovered_at,
+        file_seen_at=file_seen_at,
+        transcription_started_at=transcription_started_at,
+        transcription_completed_at=transcription_completed_at,
+        error_message=error_message,
+        recorded_at=recorded_at,
+        quality_status=quality_status,
+        quality_detail=quality_detail,
+        maya_delivery_eligible=maya_delivery_eligible,
+        enqueue_slack=enqueue_slack,
+    )
+    return result.row_id if result.outcome is InsertOutcome.INSERTED else None
 
 
 def queue_slack_delivery(transcript_id: int) -> None:

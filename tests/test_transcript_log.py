@@ -68,6 +68,49 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(row["duration_seconds"], 12.5)
         self.assertEqual(row["ingest_state"], "transcribed")
 
+    def test_insert_result_distinguishes_duplicate_from_failure(self) -> None:
+        inserted = transcript_log.insert_transcript_result(
+            content_hash="typed-result", source="test", transcript="first"
+        )
+        duplicate = transcript_log.insert_transcript_result(
+            content_hash="typed-result", source="test", transcript="first"
+        )
+
+        self.assertEqual(inserted.outcome, transcript_log.InsertOutcome.INSERTED)
+        self.assertEqual(duplicate.outcome, transcript_log.InsertOutcome.DUPLICATE)
+        self.assertEqual(duplicate.row_id, inserted.row_id)
+        self.assertEqual(duplicate.existing_status, "pending")
+
+    def test_insert_result_reports_database_failure(self) -> None:
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=sqlite3.OperationalError("locked: /sensitive/path"),
+        ):
+            result = transcript_log.insert_transcript_result(
+                content_hash="db-failure", source="test", transcript="never stored"
+            )
+
+        self.assertEqual(result.outcome, transcript_log.InsertOutcome.FAILED)
+        self.assertIsNone(result.row_id)
+        self.assertEqual(result.error_code, "database_unavailable")
+
+    def test_insert_result_redacts_generic_failure_logs(self) -> None:
+        with patch.object(
+            transcript_log,
+            "_get_conn",
+            side_effect=RuntimeError("sensitive transcript /private/path"),
+        ), patch.object(transcript_log, "log") as log_mock:
+            result = transcript_log.insert_transcript_result(
+                content_hash="generic-failure", source="test", transcript="never stored"
+            )
+
+        self.assertEqual(result.outcome, transcript_log.InsertOutcome.FAILED)
+        self.assertEqual(result.error_code, "database_unavailable")
+        log_mock.error.assert_called_once_with(
+            "Failed to insert transcript due to %s", "RuntimeError"
+        )
+
     def test_voice_memo_insert_queues_verbatim_slack_delivery(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="slack1",

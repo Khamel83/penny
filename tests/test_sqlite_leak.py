@@ -27,6 +27,64 @@ os.environ["OPENROUTER_API_KEY"] = "test-key"
 class SQLiteConnectionLeakTests(unittest.TestCase):
     """Verify sqlite3 connections are closed properly."""
 
+    def test_typed_transcript_insert_closes_connections_on_all_database_paths(self):
+        """Typed insert preserves closure for new, duplicate, and failed writes."""
+        import transcript_log
+
+        class TrackingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+                self.closed = False
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def close(self):
+                self.closed = True
+                self.connection.close()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "transcripts.db"
+            with patch.object(transcript_log, "TRANSCRIPT_DB_PATH", db_path):
+                transcript_log.init_db()
+                real_get_conn = transcript_log._get_conn
+                connections = []
+
+                def tracked_get_conn():
+                    connection = TrackingConnection(real_get_conn())
+                    connections.append(connection)
+                    return connection
+
+                with patch.object(transcript_log, "_get_conn", tracked_get_conn):
+                    inserted = transcript_log.insert_transcript_result(
+                        content_hash="close-inserted", source="test", transcript="first"
+                    )
+                    duplicate = transcript_log.insert_transcript_result(
+                        content_hash="close-inserted", source="test", transcript="first"
+                    )
+
+                self.assertEqual(inserted.outcome.value, "inserted")
+                self.assertEqual(duplicate.outcome.value, "duplicate")
+                self.assertTrue(connections)
+                self.assertTrue(all(connection.closed for connection in connections))
+
+                failed_connection = TrackingConnection(real_get_conn())
+                with patch.object(
+                    transcript_log,
+                    "_get_conn",
+                    return_value=failed_connection,
+                ), patch.object(
+                    failed_connection,
+                    "execute",
+                    side_effect=sqlite3.OperationalError("locked"),
+                ):
+                    failed = transcript_log.insert_transcript_result(
+                        content_hash="close-failed", source="test", transcript="never stored"
+                    )
+
+                self.assertEqual(failed.outcome.value, "failed")
+                self.assertTrue(failed_connection.closed)
+
     def test_connections_closed_after_query(self):
         """Each query should close its connection, not leak it."""
         # Create a temp database that looks like CloudRecordings.db
