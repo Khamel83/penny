@@ -562,6 +562,9 @@ def classify_and_route(
             raise RoutingError(error_message)
         return {"skip": True, "reason": "empty transcript"}
 
+    if row_id is None:
+        raise RoutingError("canonical_id_required")
+
     if row_id is not None:
         update_transcript_stages(
             row_id,
@@ -570,8 +573,7 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
-    # Retain the v1 Maya route for noncanonical callers. Persisted capture paths
-    # pass allow_maya=False and use the independent durable v2 worker instead.
+    # Canonical callers may use the legacy Maya route when explicitly enabled.
     # Maya-originated content is always local to prevent a delivery loop.
     if allow_maya:
         try:

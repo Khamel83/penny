@@ -59,6 +59,17 @@ def _run_osascript(script: str) -> str:
     except (OSError, subprocess.SubprocessError) as exc:
         raise AppleScriptError("provider_error") from exc
     if result.returncode != 0:
+        stderr = str(result.stderr or "").lower()
+        permission_patterns = (
+            "-1743",
+            "not authorized to send apple events",
+            "not authorised to send apple events",
+            "not authorized to send appleevents",
+            "not permitted to send apple events",
+            "automation permission",
+        )
+        if any(pattern in stderr for pattern in permission_patterns):
+            raise AppleScriptError("permission_denied")
         raise AppleScriptError("provider_error")
     return str(result.stdout or "").strip()
 

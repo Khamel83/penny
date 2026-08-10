@@ -70,6 +70,8 @@ APPLE_EFFECT_SAFE_ERROR_CODES = frozenset(
         "invalid_effect",
         "effect_not_found",
         "active_claim",
+        "effect_key_conflict",
+        "migration_invalid_state",
     }
 )
 SLACK_API_ERROR_CODES = frozenset(
@@ -778,8 +780,12 @@ def _create_apple_effects_table(
             lease_expires_at TEXT,
             stale_attempt_at TEXT,
             last_error_code TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            ),
+            updated_at TEXT NOT NULL DEFAULT (
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            ),
             succeeded_at TEXT,
             FOREIGN KEY(transcript_id) REFERENCES transcripts(id),
             CHECK (state != 'succeeded' OR provider_id IS NOT NULL),
@@ -797,6 +803,24 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
     that case rows are copied into the current shape inside the surrounding
     ``BEGIN IMMEDIATE`` migration transaction.
     """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS apple_effect_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            effect_key TEXT NOT NULL,
+            transcript_id INTEGER,
+            effect_type TEXT,
+            requested_target TEXT,
+            payload_sha256 TEXT,
+            state TEXT,
+            provider_id TEXT,
+            actual_target TEXT,
+            reason_code TEXT NOT NULL,
+            quarantined_at TEXT NOT NULL,
+            UNIQUE(effect_key, reason_code)
+        )
+        """
+    )
     existing = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='apple_effects'"
     ).fetchone()
@@ -817,9 +841,24 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
         for row in foreign_keys
     )
     current_columns = _table_columns(conn, "apple_effects") if existing is not None else set()
+    column_defaults = {
+        row[1]: str(row[4] or "")
+        for row in (
+            conn.execute("PRAGMA table_info(apple_effects)").fetchall()
+            if existing is not None else []
+        )
+    }
+    has_iso_defaults = all(
+        "strftime" in column_defaults.get(column, "").lower()
+        for column in ("created_at", "updated_at")
+    )
     if existing is None:
         _create_apple_effects_table(conn)
-    elif not expected.issubset(current_columns) or not has_transcript_fk:
+    elif (
+        not expected.issubset(current_columns)
+        or not has_transcript_fk
+        or not has_iso_defaults
+    ):
         legacy_rows = [
             dict(row) for row in conn.execute("SELECT * FROM apple_effects").fetchall()
         ]
@@ -843,8 +882,23 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
             if conn.execute(
                 "SELECT 1 FROM transcripts WHERE id = ?", (transcript_id,)
             ).fetchone() is None:
-                # Foreign-key enforcement makes an orphan unusable; drop only
-                # the orphaned legacy metadata rather than aborting all startup.
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO apple_effect_quarantine (
+                        effect_key, transcript_id, effect_type, requested_target,
+                        payload_sha256, state, provider_id, actual_target,
+                        reason_code, quarantined_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'orphan_transcript', ?)
+                    """,
+                    (
+                        effect_key[:128], transcript_id, effect_type[:24], requested[:255],
+                        payload_hash if re.fullmatch(r"[0-9a-f]{64}", payload_hash) else None,
+                        str(legacy.get("state") or "reserved")[:24],
+                        str(legacy.get("provider_id") or "")[:255] or None,
+                        str(legacy.get("actual_target") or "")[:255] or None,
+                        _apple_effect_now(),
+                    ),
+                )
                 continue
             if not re.fullmatch(r"[0-9a-f]{64}", payload_hash):
                 payload_hash = hashlib.sha256(effect_key.encode("utf-8")).hexdigest()
@@ -857,6 +911,39 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
             error_code = legacy.get("last_error_code")
             if state == "quarantined" and not error_code:
                 error_code = "migration_invalid_state"
+            if error_code:
+                error_code = _apple_effect_safe_code(str(error_code))
+            try:
+                created_at = _apple_effect_now(legacy.get("created_at"))
+            except (TypeError, ValueError):
+                created_at = _apple_effect_now()
+            try:
+                updated_at = _apple_effect_now(legacy.get("updated_at"))
+            except (TypeError, ValueError):
+                updated_at = created_at
+            try:
+                succeeded_at = (
+                    _apple_effect_now(legacy.get("succeeded_at"))
+                    if legacy.get("succeeded_at") else None
+                )
+            except (TypeError, ValueError):
+                succeeded_at = None
+            if state == "succeeded" and succeeded_at is None:
+                succeeded_at = updated_at
+            try:
+                lease_expires_at = (
+                    _apple_effect_now(legacy.get("lease_expires_at"))
+                    if legacy.get("lease_expires_at") else None
+                )
+            except (TypeError, ValueError):
+                lease_expires_at = None
+            try:
+                stale_attempt_at = (
+                    _apple_effect_now(legacy.get("stale_attempt_at"))
+                    if legacy.get("stale_attempt_at") else None
+                )
+            except (TypeError, ValueError):
+                stale_attempt_at = None
             conn.execute(
                 """INSERT OR IGNORE INTO apple_effects (
                     effect_key, transcript_id, effect_type, requested_target,
@@ -864,9 +951,7 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
                     actual_target, reconciled, attempt_count, lease_owner,
                     lease_expires_at, stale_attempt_at, last_error_code,
                     created_at, updated_at, succeeded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          COALESCE(?, datetime('now')),
-                          COALESCE(?, datetime('now')), ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     effect_key, int(transcript_id), effect_type, requested,
@@ -874,13 +959,38 @@ def _ensure_apple_effects_schema(conn: sqlite3.Connection) -> None:
                     provider_id, legacy.get("actual_target"),
                     int(bool(legacy.get("reconciled", 0))),
                     max(0, int(legacy.get("attempt_count") or 0)),
-                    legacy.get("lease_owner"), legacy.get("lease_expires_at"),
-                    legacy.get("stale_attempt_at"), error_code,
-                    legacy.get("created_at"), legacy.get("updated_at"),
-                    legacy.get("succeeded_at"),
+                    legacy.get("lease_owner"), lease_expires_at,
+                    stale_attempt_at, error_code,
+                    created_at, updated_at, succeeded_at,
                 ),
             )
         conn.execute("DROP TABLE " + legacy_name)
+    orphan_rows = conn.execute(
+        """
+        SELECT effects.* FROM apple_effects AS effects
+        LEFT JOIN transcripts ON transcripts.id = effects.transcript_id
+        WHERE transcripts.id IS NULL
+        """
+    ).fetchall()
+    for orphan in orphan_rows:
+        data = dict(orphan)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO apple_effect_quarantine (
+                effect_key, transcript_id, effect_type, requested_target,
+                payload_sha256, state, provider_id, actual_target,
+                reason_code, quarantined_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'orphan_transcript', ?)
+            """,
+            (
+                data["effect_key"], data["transcript_id"], data["effect_type"],
+                data["requested_target"], data["payload_sha256"], data["state"],
+                data["provider_id"], data["actual_target"], _apple_effect_now(),
+            ),
+        )
+        conn.execute(
+            "DELETE FROM apple_effects WHERE effect_key = ?", (data["effect_key"],)
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_apple_effects_transcript "
         "ON apple_effects(transcript_id, effect_type)"
@@ -3235,8 +3345,6 @@ def _apple_effect_safe_code(value: str | None, default: str = "provider_error") 
     candidate = str(value or "").strip().lower()
     if candidate in APPLE_EFFECT_SAFE_ERROR_CODES:
         return candidate
-    if re.fullmatch(r"[a-z][a-z0-9_]{0,47}", candidate):
-        return candidate
     return default
 
 
@@ -3280,6 +3388,9 @@ def claim_apple_effect(
     if not isinstance(transcript_id, int) or transcript_id <= 0:
         return {"effect_key": effect_key, "state": "failed", "claimable": False,
                 "error_code": "canonical_id_required"}
+    if not re.fullmatch(r"[0-9a-f]{64}", str(effect_key or "")):
+        return {"effect_key": str(effect_key or ""), "state": "failed",
+                "claimable": False, "error_code": "invalid_effect"}
     if effect_type not in APPLE_EFFECT_TYPES:
         return {"effect_key": effect_key, "state": "failed", "claimable": False,
                 "error_code": "invalid_effect"}
@@ -3348,7 +3459,28 @@ def claim_apple_effect(
             conn.commit()
             result.update({"claimable": False, "error_code": "effect_key_conflict"})
             return result
+        if result["state"] == "quarantined":
+            conn.commit()
+            result.update({"claimable": False, "error_code": result.get("last_error_code") or "marker_conflict"})
+            return result
         if not dimensions_match:
+            foreign_lease_active = False
+            if result["state"] == "in_flight" and result.get("lease_expires_at"):
+                try:
+                    foreign_lease_active = (
+                        datetime.fromisoformat(
+                            str(result["lease_expires_at"]).replace("Z", "+00:00")
+                        ) > now_dt
+                        and result.get("lease_owner") != owner
+                    )
+                except ValueError:
+                    foreign_lease_active = False
+            if foreign_lease_active:
+                conn.commit()
+                result.update(
+                    {"claimable": False, "error_code": "effect_key_conflict"}
+                )
+                return result
             conn.execute(
                 """UPDATE apple_effects
                    SET state = 'quarantined', last_error_code = ?,
@@ -3363,10 +3495,6 @@ def claim_apple_effect(
         if result["state"] == "succeeded":
             conn.commit()
             result["claimable"] = False
-            return result
-        if result["state"] == "quarantined":
-            conn.commit()
-            result.update({"claimable": False, "error_code": result.get("last_error_code") or "marker_conflict"})
             return result
         lease_expired = True
         if result["state"] == "in_flight" and result.get("lease_expires_at"):
@@ -3434,7 +3562,8 @@ def mark_apple_effect_succeeded(
         conn = _get_conn()
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT state, provider_id, effect_type FROM apple_effects WHERE effect_key = ?",
+            "SELECT state, provider_id, effect_type, lease_owner "
+            "FROM apple_effects WHERE effect_key = ?",
             (effect_key,),
         ).fetchone()
         if row is None:
@@ -3446,6 +3575,10 @@ def mark_apple_effect_succeeded(
                 return False
             conn.commit()
             return True
+        if not lease_owner or row["lease_owner"] != lease_owner:
+            conn.commit()
+            return False
+        now_iso = _apple_effect_now()
         existing_provider = conn.execute(
             """SELECT effect_key FROM apple_effects
                WHERE effect_type = ? AND provider_id = ?
@@ -3457,24 +3590,22 @@ def mark_apple_effect_succeeded(
             conn.execute(
                 """UPDATE apple_effects SET state='quarantined',
                     last_error_code='provider_conflict', lease_owner=NULL,
-                    lease_expires_at=NULL, updated_at=datetime('now')
-                    WHERE effect_key=? AND state != 'succeeded'""",
-                (effect_key,),
+                    lease_expires_at=NULL, updated_at=?
+                    WHERE effect_key=? AND state != 'succeeded'
+                      AND lease_owner=?""",
+                (now_iso, effect_key, lease_owner),
             )
             conn.commit()
             return False
-        owner_clause = ""
-        params: list[Any] = [provider_id, actual_target, 1 if reconciled else 0, effect_key]
-        if lease_owner:
-            owner_clause = " AND (lease_owner = ? OR lease_owner IS NULL)"
-            params.append(lease_owner)
+        params: list[Any] = [provider_id, actual_target, 1 if reconciled else 0,
+                             now_iso, now_iso, effect_key, lease_owner]
         cursor = conn.execute(
             """UPDATE apple_effects
                SET state='succeeded', provider_id=?, actual_target=?,
                    reconciled=?, lease_owner=NULL, lease_expires_at=NULL,
-                   last_error_code=NULL, succeeded_at=datetime('now'),
-                   updated_at=datetime('now')
-               WHERE effect_key=?""" + owner_clause,
+                   last_error_code=NULL, succeeded_at=?, updated_at=?
+               WHERE effect_key=? AND lease_owner=?
+                 AND state NOT IN ('succeeded', 'quarantined')""",
             tuple(params),
         )
         if cursor.rowcount != 1:
@@ -3498,20 +3629,21 @@ def mark_apple_effect_uncertain(
     *,
     lease_owner: str | None = None,
 ) -> bool:
-    code = _apple_effect_safe_code(error_code, "timeout_uncertain")
+    code = _apple_effect_safe_code(error_code)
     conn = None
     try:
         conn = _get_conn()
         conn.execute("BEGIN IMMEDIATE")
-        where = "effect_key = ?"
-        params: list[Any] = [code, effect_key]
-        if lease_owner:
-            where += " AND (lease_owner = ? OR lease_owner IS NULL)"
-            params.append(lease_owner)
+        if not lease_owner:
+            conn.rollback()
+            return False
+        now_iso = _apple_effect_now()
+        params: list[Any] = [code, now_iso, effect_key, lease_owner]
         cursor = conn.execute(
             f"""UPDATE apple_effects SET state='uncertain', last_error_code=?,
-                lease_owner=NULL, lease_expires_at=NULL, updated_at=datetime('now')
-                WHERE {where} AND state NOT IN ('succeeded', 'quarantined')""",
+                lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE effect_key=? AND lease_owner=?
+                  AND state NOT IN ('succeeded', 'quarantined')""",
             tuple(params),
         )
         conn.commit()
@@ -3531,6 +3663,7 @@ def mark_apple_effect_failed(
     error_code: str = "provider_error",
     *,
     quarantine: bool = False,
+    lease_owner: str | None = None,
 ) -> bool:
     code = _apple_effect_safe_code(error_code)
     state = "quarantined" if quarantine else "failed"
@@ -3538,11 +3671,16 @@ def mark_apple_effect_failed(
     try:
         conn = _get_conn()
         conn.execute("BEGIN IMMEDIATE")
+        if not lease_owner:
+            conn.rollback()
+            return False
+        now_iso = _apple_effect_now()
         cursor = conn.execute(
             f"""UPDATE apple_effects SET state=?, last_error_code=?,
-                lease_owner=NULL, lease_expires_at=NULL, updated_at=datetime('now')
-                WHERE effect_key=? AND state NOT IN ('succeeded', 'quarantined')""",
-            (state, code, effect_key),
+                lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE effect_key=? AND lease_owner=?
+                  AND state NOT IN ('succeeded', 'quarantined')""",
+            (state, code, now_iso, effect_key, lease_owner),
         )
         conn.commit()
         return cursor.rowcount == 1
@@ -3558,7 +3696,12 @@ def mark_apple_effect_failed(
 
 def get_apple_effect_health() -> dict[str, Any]:
     """Aggregate Apple-effect state without returning content or provider data."""
-    health: dict[str, Any] = {"query_ok": 1}
+    health: dict[str, Any] = {
+        "query_ok": 1, "health_error": 0, "total_count": 0,
+        "reserved_count": 0, "in_flight_count": 0, "uncertain_count": 0,
+        "succeeded_count": 0, "failed_count": 0, "quarantined_count": 0,
+        "stale_in_flight_count": 0, "migration_quarantine_count": 0,
+    }
     conn = None
     try:
         conn = _get_conn()
@@ -3569,6 +3712,9 @@ def get_apple_effect_health() -> dict[str, Any]:
             health[f"{row['state']}_count"] = int(row["count"])
         health["total_count"] = sum(
             int(row["count"]) for row in rows
+        )
+        health["migration_quarantine_count"] = int(
+            conn.execute("SELECT COUNT(*) FROM apple_effect_quarantine").fetchone()[0]
         )
         now = datetime.now(timezone.utc)
         stale = 0

@@ -135,6 +135,26 @@ class AddReminderTests(unittest.TestCase):
 
 
 class ReceiptTransportContractTests(unittest.TestCase):
+    @patch("reminders.subprocess.run")
+    def test_automation_denial_is_bounded_permission_error(self, run_mock):
+        sentinel = "secret transcript provider stderr"
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=f"-1743 {sentinel}"
+        )
+        with self.assertRaisesRegex(reminders.AppleScriptError, "permission_denied") as raised:
+            reminders._run_osascript("safe script")
+        self.assertNotIn(sentinel, str(raised.exception))
+
+    @patch("reminders.subprocess.run")
+    def test_arbitrary_nonzero_is_bounded_provider_error(self, run_mock):
+        sentinel = "secret transcript provider stderr"
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=sentinel
+        )
+        with self.assertRaisesRegex(reminders.AppleScriptError, "provider_error") as raised:
+            reminders._run_osascript("safe script")
+        self.assertNotIn(sentinel, str(raised.exception))
+
     def test_missing_notes_folder_is_an_empty_marker_search(self):
         with patch.object(
             reminders,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -15,12 +16,28 @@ import transcript_log
 
 log = logging.getLogger(__name__)
 
+_SAFE_ERROR_CODES = frozenset(
+    {
+        "active_claim", "canonical_id_required", "database_unavailable",
+        "effect_key_conflict", "effect_not_found", "invalid_effect",
+        "marker_conflict", "permission_denied", "provider_conflict",
+        "provider_error", "timeout_uncertain",
+    }
+)
+_TERMINAL_ERROR_CODES = frozenset(
+    {
+        "effect_key_conflict", "invalid_effect", "marker_conflict",
+        "permission_denied", "provider_conflict",
+    }
+)
+
 
 class AppleEffectError(RuntimeError):
     """Safe effect failure; the message is always a machine error code."""
 
     def __init__(self, code: str):
-        self.code = str(code or "provider_error")
+        candidate = str(code or "").strip().lower()
+        self.code = candidate if candidate in _SAFE_ERROR_CODES else "provider_error"
         super().__init__(self.code)
 
 
@@ -79,7 +96,9 @@ def effect_key_for(
     if not requested:
         raise AppleEffectError("invalid_effect")
     payload_hash = payload_sha256 or normalized_payload_sha256(payload)
-    if len(payload_hash) != 64:
+    if not isinstance(payload_hash, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", payload_hash
+    ):
         raise AppleEffectError("invalid_effect")
     material = "\0".join(
         [str(transcript_id), effect_type, requested, fallback, payload_hash]
@@ -109,7 +128,17 @@ def _receipt(row: dict[str, Any] | None, *, key: str, effect_type: str) -> Apple
 
 def _error_code(exc: Exception) -> str:
     code = getattr(exc, "code", None)
-    return code if isinstance(code, str) and code else "provider_error"
+    candidate = str(code or "").strip().lower()
+    return candidate if candidate in _SAFE_ERROR_CODES else "provider_error"
+
+
+def _mark_failed(key: str, code: str, owner: str | None) -> None:
+    transcript_log.mark_apple_effect_failed(
+        key,
+        code,
+        quarantine=code in _TERMINAL_ERROR_CODES,
+        lease_owner=owner,
+    )
 
 
 def _provider_id_target(value: Any, default_target: str) -> tuple[str | None, str]:
@@ -196,13 +225,11 @@ def _ensure_effect(
             code = "timeout_uncertain"
             _mark_uncertain(key, "timeout_uncertain", owner)
         else:
-            transcript_log.mark_apple_effect_failed(key, code, quarantine=False)
+            _mark_failed(key, code, owner)
         raise AppleEffectError(code) from None
 
     if len(matches) > 1:
-        transcript_log.mark_apple_effect_failed(
-            key, "marker_conflict", quarantine=True
-        )
+        _mark_failed(key, "marker_conflict", owner)
         raise AppleEffectError("marker_conflict")
 
     if matches:
@@ -215,6 +242,11 @@ def _ensure_effect(
         except Exception:
             persisted = False
         if not persisted:
+            current = transcript_log.get_apple_effect(key)
+            if current and current.get("state") == "quarantined":
+                raise AppleEffectError(
+                    str(current.get("last_error_code") or "provider_conflict")
+                )
             _mark_uncertain(key, "database_unavailable", owner)
             raise AppleEffectError("database_unavailable")
         return _receipt(
@@ -233,7 +265,7 @@ def _ensure_effect(
             code = "timeout_uncertain"
             _mark_uncertain(key, "timeout_uncertain", owner)
         else:
-            transcript_log.mark_apple_effect_failed(key, code, quarantine=False)
+            _mark_failed(key, code, owner)
         raise AppleEffectError(code) from None
 
     # A create response is not a durable provider receipt by itself.  Read the
@@ -243,18 +275,21 @@ def _ensure_effect(
         readback = _match_ids(find())
     except Exception as exc:
         code = _error_code(exc)
-        if getattr(exc, "ambiguous", False):
+        if getattr(exc, "ambiguous", False) or code == "timeout_uncertain":
             code = "timeout_uncertain"
-        _mark_uncertain(
-            key, "timeout_uncertain" if getattr(exc, "ambiguous", False) else code, owner
-        )
+            _mark_uncertain(key, code, owner)
+        else:
+            _mark_failed(key, code, owner)
         raise AppleEffectError(code) from None
     if len(readback) > 1:
-        transcript_log.mark_apple_effect_failed(key, "marker_conflict", quarantine=True)
+        _mark_failed(key, "marker_conflict", owner)
         raise AppleEffectError("marker_conflict")
-    if len(readback) != 1 or readback[0][0] != provider_id:
+    if len(readback) != 1:
         _mark_uncertain(key, "timeout_uncertain", owner)
         raise AppleEffectError("timeout_uncertain")
+    if readback[0][0] != provider_id:
+        _mark_failed(key, "provider_conflict", owner)
+        raise AppleEffectError("provider_conflict")
     if readback[0][1]:
         actual_target = readback[0][1]
 
@@ -265,6 +300,11 @@ def _ensure_effect(
     except Exception:
         persisted = False
     if not persisted:
+        current = transcript_log.get_apple_effect(key)
+        if current and current.get("state") == "quarantined":
+            raise AppleEffectError(
+                str(current.get("last_error_code") or "provider_conflict")
+            )
         # Provider create succeeded but local receipt did not.  Mark uncertain
         # best-effort so the next retry queries the exact marker first.
         _mark_uncertain(key, "database_unavailable", owner)

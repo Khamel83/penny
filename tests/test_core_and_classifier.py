@@ -74,6 +74,14 @@ class CorePipelineTests(unittest.TestCase):
                 core.classify_and_route("long note", source="iCloud")
         note_mock.assert_not_called()
 
+    def test_configured_maya_is_not_called_without_canonical_row(self) -> None:
+        core.cfg.maya.transcript_url = "http://maya/ingest/transcript"
+        core.cfg.maya.ingest_token = "token"
+        with patch.object(core, "_route_to_maya") as maya:
+            with self.assertRaisesRegex(core.RoutingError, "canonical_id_required"):
+                core.classify_and_route("canonical guard", source="test")
+        maya.assert_not_called()
+
     def test_progress_flags_do_not_replace_apple_receipt_authority(self) -> None:
         receipt = AppleEffectReceipt(
             "a" * 64, "note", "note-id", "succeeded", actual_target="Penny",
@@ -397,12 +405,14 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
 
-        result = core.classify_and_route("write a python script to parse CSV", source="test")
+        result = core.classify_and_route(
+            "write a python script to parse CSV", source="test", row_id=42
+        )
 
         self.assertEqual(result.get("reason"), "routed_to_maya")
         mock_post.assert_called_once()
         call_kwargs = mock_post.call_args[1]
-        self.assertEqual(call_kwargs["json"]["transcript"], "write a python script to parse CSV")
+        self.assertEqual(call_kwargs["json"]["transcript"], "fixture transcript")
         self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer test-token")
         self.assertIn("/ingest/transcript", mock_post.call_args[0][0])
 
@@ -713,7 +723,9 @@ class CorePipelineTests(unittest.TestCase):
             ),
         ):
             with pytest.raises(RuntimeError, match="stop-here"):
-                core.classify_and_route("buy milk", "test", allow_maya=False)
+                core.classify_and_route(
+                    "buy milk", "test", row_id=42, allow_maya=False
+                )
 
         assert calls["maya"] == 0
 

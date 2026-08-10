@@ -164,6 +164,52 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
         self.assertNotIn("secret transcript body", str(raised.exception))
         self.assertNotIn("secret transcript body", " ".join(str(call) for call in error.call_args_list))
 
+    def test_non_ambiguous_permission_error_is_quarantined_not_uncertain(self) -> None:
+        with (
+            patch.object(apple_effects.reminders, "find_note_by_marker", return_value=[]),
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                side_effect=reminders.AppleScriptError("permission_denied"),
+            ) as create,
+        ):
+            with self.assertRaisesRegex(apple_effects.AppleEffectError, "permission_denied"):
+                apple_effects.ensure_note(self.row_id, "permission")
+        key = apple_effects.effect_key_for(
+            self.row_id, "note", "Penny", "", apple_effects.normalized_payload_sha256("permission")
+        )
+        stored = transcript_log.get_apple_effect(key)
+        self.assertEqual(stored["state"], "quarantined")
+        self.assertEqual(stored["last_error_code"], "permission_denied")
+        create.assert_called_once()
+
+    def test_unsafe_provider_code_is_bounded_and_not_persisted(self) -> None:
+        sentinel = "provider stderr secret transcript body"
+        with patch.object(
+            apple_effects.reminders,
+            "find_note_by_marker",
+            side_effect=reminders.AppleScriptError(sentinel),
+        ):
+            with self.assertRaisesRegex(apple_effects.AppleEffectError, "provider_error") as raised:
+                apple_effects.ensure_note(self.row_id, "redacted")
+        self.assertNotIn(sentinel, str(raised.exception))
+        key = apple_effects.effect_key_for(
+            self.row_id, "note", "Penny", "", apple_effects.normalized_payload_sha256("redacted")
+        )
+        stored = transcript_log.get_apple_effect(key)
+        self.assertEqual(stored["last_error_code"], "provider_error")
+        self.assertNotIn(sentinel, str(stored))
+
+    def test_effect_key_requires_exact_lowercase_payload_hash(self) -> None:
+        with self.assertRaisesRegex(apple_effects.AppleEffectError, "invalid_effect"):
+            apple_effects.effect_key_for(
+                self.row_id, "note", "Penny", "", "z" * 64
+            )
+        with self.assertRaisesRegex(apple_effects.AppleEffectError, "invalid_effect"):
+            apple_effects.effect_key_for(
+                self.row_id, "note", "Penny", "", "A" * 64
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -612,8 +612,10 @@ git commit -m "feat: archive raw Penny captures durably"
 
 **Interfaces:**
 - Produces: `AppleEffectReceipt(effect_key, effect_type, provider_id, state, reconciled)`.
-- Produces: `ensure_note(effect_key, text, folder, source) -> AppleEffectReceipt`.
-- Produces: `ensure_reminder(effect_key, text, list_name, fallback) -> AppleEffectReceipt`.
+- Produces: `ensure_note(transcript_id, text, folder, source) -> AppleEffectReceipt`.
+- Produces: `ensure_reminder(transcript_id, text, list_name, fallback) -> AppleEffectReceipt`.
+- Effect keys are derived and validated internally from the canonical transcript ID,
+  effect type, requested/fallback target, and normalized payload SHA-256.
 - Marker: `penny-effect:<sha256>` stored in the Note HTML comment or Reminder body.
 
 - [ ] **Step 1: Write failing replay and ambiguous-write tests**
@@ -621,8 +623,8 @@ git commit -m "feat: archive raw Penny captures durably"
 ```python
 def test_note_replay_finds_existing_marker_without_create(self):
     with patch.object(reminders, "_run_osascript", side_effect=["note-id-1", "note-id-1"]) as run:
-        first = ensure_note("effect-1", "body", "Penny", "test")
-        second = ensure_note("effect-1", "body", "Penny", "test")
+        first = ensure_note(42, "body", "Penny", "test")
+        second = ensure_note(42, "body", "Penny", "test")
     self.assertEqual(first.provider_id, second.provider_id)
     self.assertNotIn("make new note", run.call_args_list[-1].args[0])
 
@@ -642,8 +644,8 @@ def test_crash_after_apple_create_reconciles_marker_on_retry(self):
         side_effect=[sqlite3.OperationalError("locked"), True],
     ):
         with self.assertRaises(sqlite3.OperationalError):
-            ensure_note("effect-1", "body", "Penny", "test")
-        receipt = ensure_note("effect-1", "body", "Penny", "test")
+            ensure_note(42, "body", "Penny", "test")
+        receipt = ensure_note(42, "body", "Penny", "test")
     self.assertEqual(receipt.provider_id, "x-coredata://note/provider-1")
     create.assert_called_once()
 ```
