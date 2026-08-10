@@ -3579,6 +3579,128 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["latest_recording_pk"], 101)
         self.assertEqual(health["awaiting_file_count"], 0)
 
+    def test_voice_memo_link_can_atomically_persist_terminal_state(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            111,
+            label="review",
+            raw_path="111.m4a",
+            duration_seconds=1.0,
+        )
+        row_id = transcript_log.insert_transcript(
+            "hash111",
+            "iCloud",
+            "review text",
+            quality_status="needs_review",
+            enqueue_slack=False,
+        )
+
+        self.assertTrue(
+            transcript_log.link_voice_memo_transcript(
+                111,
+                transcript_row_id=row_id,
+                content_hash="hash111",
+                audio_path="/tmp/staged.m4a",
+                terminal_state="needs_review",
+            )
+        )
+
+        conn = transcript_log._get_conn()
+        try:
+            source = conn.execute(
+                "SELECT status, error_message, terminal_at, retryable "
+                "FROM voice_memo_ingest WHERE recording_pk = 111"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source["status"], "needs_review")
+        self.assertEqual(source["error_message"], "needs_review")
+        self.assertIsNotNone(source["terminal_at"])
+        self.assertEqual(source["retryable"], 0)
+
+    def test_linked_voice_terminal_reconciliation_repairs_stranded_source(
+        self,
+    ) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            112,
+            label="stranded",
+            raw_path="112.m4a",
+            duration_seconds=1.0,
+        )
+        row_id = transcript_log.insert_transcript(
+            "hash112", "iCloud", "routed text"
+        )
+        self.assertTrue(
+            transcript_log.link_voice_memo_transcript(
+                112,
+                transcript_row_id=row_id,
+                content_hash="hash112",
+                audio_path="/tmp/staged.m4a",
+            )
+        )
+        self.assertTrue(transcript_log.mark_routed(row_id, {}, "note"))
+        self.assertEqual(
+            transcript_log.get_voice_memo_health()["completion_pending_count"], 1
+        )
+
+        self.assertEqual(
+            transcript_log.reconcile_linked_voice_memo_terminal_states(limit=10),
+            1,
+        )
+        health = transcript_log.get_voice_memo_health()
+        self.assertEqual(health["completion_pending_count"], 0)
+        conn = transcript_log._get_conn()
+        try:
+            source = conn.execute(
+                "SELECT status, terminal_at FROM voice_memo_ingest "
+                "WHERE recording_pk = 112"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source["status"], "routed")
+        self.assertIsNotNone(source["terminal_at"])
+
+    def test_linked_voice_reconciliation_preserves_oversize_terminal_state(
+        self,
+    ) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            113,
+            label="oversize",
+            raw_path="113.m4a",
+            duration_seconds=1.0,
+        )
+        row_id = transcript_log.insert_transcript(
+            "hash113",
+            "iCloud",
+            "(skipped: file too large)",
+            ingest_state="skipped_too_large",
+            quality_status="skipped_too_large",
+            enqueue_slack=False,
+        )
+        self.assertTrue(
+            transcript_log.link_voice_memo_transcript(
+                113,
+                transcript_row_id=row_id,
+                content_hash="hash113",
+                audio_path="/tmp/staged.m4a",
+            )
+        )
+
+        self.assertEqual(
+            transcript_log.reconcile_linked_voice_memo_terminal_states(limit=10),
+            1,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            source = conn.execute(
+                "SELECT status, error_message, terminal_at "
+                "FROM voice_memo_ingest WHERE recording_pk = 113"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source["status"], "skipped_too_large")
+        self.assertEqual(source["error_message"], "skipped_too_large")
+        self.assertIsNotNone(source["terminal_at"])
+
     def test_unlinked_discovered_and_awaiting_rows_without_deadlines_are_due(self) -> None:
         transcript_log.upsert_voice_memo_recording(
             280, label="discovered", raw_path="280.m4a", duration_seconds=1.0

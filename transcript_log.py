@@ -5269,42 +5269,67 @@ def link_voice_memo_transcript(
     content_hash: str,
     audio_path: str,
     routed: bool = False,
+    terminal_state: str | None = None,
 ) -> bool:
     conn = None
     try:
         conn = _get_conn()
-        status = "routed" if routed else "transcribed"
-        routed_sql = ", routed_at = datetime('now')" if routed else ""
+        if terminal_state not in {None, "routed", "needs_review", "skipped_too_large"}:
+            raise ValueError("Unsupported Voice Memo terminal state")
+        status = terminal_state or ("routed" if routed else "transcribed")
+        terminal = terminal_state is not None or routed
+        routed_state = status == "routed"
+        error_code = None if routed_state or not terminal else _voice_memo_error_code(status)
         cursor = conn.execute(
-            f"""UPDATE voice_memo_ingest
+            """UPDATE voice_memo_ingest
                 SET transcript_row_id = ?,
                     content_hash = ?,
                     audio_path = ?,
                     status = ?,
                     transcribed_at = datetime('now'),
-                    error_message = NULL,
+                    routed_at = CASE
+                        WHEN ? THEN COALESCE(routed_at, datetime('now'))
+                        ELSE routed_at
+                    END,
+                    terminal_at = CASE
+                        WHEN ? THEN COALESCE(terminal_at, datetime('now'))
+                        ELSE terminal_at
+                    END,
+                    error_message = ?,
                     retryable = 0,
                     next_attempt_at = NULL,
                     updated_at = datetime('now')
-                    {routed_sql}
                 WHERE recording_pk = ?""",
-            (transcript_row_id, content_hash, audio_path, status, recording_pk),
+            (
+                transcript_row_id,
+                content_hash,
+                audio_path,
+                status,
+                routed_state,
+                terminal,
+                error_code,
+                recording_pk,
+            ),
         )
         conn.commit()
         return cursor.rowcount == 1
     except Exception as e:
-        log.error("Failed to link voice memo transcript pk=%s: %s", recording_pk, e)
+        log.error(
+            "Failed to link voice memo transcript pk=%s: %s",
+            recording_pk,
+            _safe_exception_class(e),
+        )
         return False
     finally:
         if conn:
             conn.close()
 
 
-def mark_voice_memo_routed(recording_pk: int) -> None:
+def mark_voice_memo_routed(recording_pk: int) -> bool:
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE voice_memo_ingest
                SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
                    retryable = 0, next_attempt_at = NULL, terminal_at = datetime('now'),
@@ -5313,18 +5338,24 @@ def mark_voice_memo_routed(recording_pk: int) -> None:
             (recording_pk,),
         )
         conn.commit()
+        return cursor.rowcount == 1
     except Exception as e:
-        log.error("Failed to mark voice memo routed pk=%s: %s", recording_pk, e)
+        log.error(
+            "Failed to mark voice memo routed pk=%s: %s",
+            recording_pk,
+            _safe_exception_class(e),
+        )
+        return False
     finally:
         if conn:
             conn.close()
 
 
-def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> None:
+def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> bool:
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE voice_memo_ingest
                SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
                    retryable = 0, next_attempt_at = NULL, terminal_at = datetime('now'),
@@ -5333,12 +5364,83 @@ def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> None:
             (transcript_row_id,),
         )
         conn.commit()
+        return cursor.rowcount >= 1
     except Exception as e:
         log.error(
             "Failed to mark voice memo routed for transcript id=%s: %s",
             transcript_row_id,
-            e,
+            _safe_exception_class(e),
         )
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def reconcile_linked_voice_memo_terminal_states(limit: int = 100) -> int:
+    """Repair linked source rows from canonical metadata without reading bodies."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT voice_memo_ingest.recording_pk,
+                   transcripts.status AS transcript_status,
+                   transcripts.quality_status
+            FROM voice_memo_ingest
+            JOIN transcripts
+              ON transcripts.id = voice_memo_ingest.transcript_row_id
+            WHERE voice_memo_ingest.status = 'transcribed'
+              AND voice_memo_ingest.terminal_at IS NULL
+              AND (
+                    transcripts.status IN ('routed', 'processed')
+                    OR transcripts.quality_status != 'passed'
+                  )
+            ORDER BY voice_memo_ingest.recording_pk
+            LIMIT ?
+            """,
+            (max(0, min(int(limit), 1000)),),
+        ).fetchall()
+        repaired = 0
+        for row in rows:
+            if row["quality_status"] == "skipped_too_large":
+                status = "skipped_too_large"
+            elif row["transcript_status"] in {"routed", "processed"}:
+                status = "routed"
+            else:
+                status = "needs_review"
+            routed_state = status == "routed"
+            error_code = None if routed_state else "needs_review"
+            if status == "skipped_too_large":
+                error_code = "skipped_too_large"
+            cursor = conn.execute(
+                """
+                UPDATE voice_memo_ingest
+                SET status = ?, error_message = ?, retryable = 0,
+                    next_attempt_at = NULL,
+                    routed_at = CASE
+                        WHEN ? THEN COALESCE(routed_at, datetime('now'))
+                        ELSE routed_at
+                    END,
+                    terminal_at = COALESCE(terminal_at, datetime('now')),
+                    updated_at = datetime('now')
+                WHERE recording_pk = ?
+                  AND status = 'transcribed'
+                  AND terminal_at IS NULL
+                """,
+                (status, error_code, routed_state, row["recording_pk"]),
+            )
+            repaired += cursor.rowcount
+        conn.commit()
+        return repaired
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to reconcile linked Voice Memo terminal states: %s",
+            _safe_exception_class(e),
+        )
+        return 0
     finally:
         if conn:
             conn.close()
@@ -5434,7 +5536,11 @@ def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> bool:
         conn.commit()
         return cursor.rowcount == 1
     except Exception as e:
-        log.error("Failed to mark voice memo terminal pk=%s: %s", recording_pk, e)
+        log.error(
+            "Failed to mark voice memo terminal pk=%s: %s",
+            recording_pk,
+            _safe_exception_class(e),
+        )
         return False
     finally:
         if conn:
@@ -5543,6 +5649,7 @@ def get_voice_memo_health() -> dict[str, Any]:
         "failed_count": 0,
         "oldest_waiting_discovered_at": None,
         "retry_due_count": 0,
+        "completion_pending_count": 0,
         "terminal_count": 0,
         "terminal_failure_count": 0,
         "max_attempt_count": 0,
@@ -5576,6 +5683,14 @@ def get_voice_memo_health() -> dict[str, Any]:
             (VOICE_MEMO_MAX_ATTEMPTS, retry_due_at),
         ).fetchone()
         health["retry_due_count"] = int(retry_due[0] or 0)
+
+        completion_pending = conn.execute(
+            """SELECT COUNT(*) FROM voice_memo_ingest
+               WHERE transcript_row_id IS NOT NULL
+                 AND status = 'transcribed'
+                 AND terminal_at IS NULL"""
+        ).fetchone()
+        health["completion_pending_count"] = int(completion_pending[0] or 0)
 
         terminal = conn.execute(
             "SELECT COUNT(*) FROM voice_memo_ingest WHERE terminal_at IS NOT NULL"

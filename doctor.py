@@ -121,6 +121,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "row_count",
         "max_transcript_id",
         "configured",
+        "completion_pending_count",
         "configuration_partial",
         "migration_quarantine_count",
         "latest_set_matches_receipt",
@@ -424,6 +425,7 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
             "terminal_failure_count",
             "failed_count",
             "retry_due_count",
+            "completion_pending_count",
             "awaiting_file_count",
             "source_watermark",
             "max_attempt_count",
@@ -911,6 +913,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "unready", "source_unavailable"
         if int(values.get("terminal_failure_count", 0) or 0) > 0:
             return "unready", "terminal_failure"
+        if int(values.get("completion_pending_count", 0) or 0) > 0:
+            return "unready", "retryable_failure"
         if int(values.get("failed_count", 0) or 0) > 0:
             return "degraded", "retryable_failure"
         if int(values.get("retry_due_count", 0) or 0) > 0 or int(values.get("awaiting_file_count", 0) or 0) > 0:

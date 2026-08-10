@@ -75,6 +75,25 @@ class ArchiveTests(unittest.TestCase):
 
         self.assertFalse((self.root / "objects" / "sha256").exists())
 
+    def test_stage_audio_rejects_symlinked_ancestor_within_source_root(self) -> None:
+        voice_root = self.root / "voice"
+        voice_root.mkdir()
+        outside = self.root / "outside"
+        nested = outside / "nested"
+        nested.mkdir(parents=True)
+        (nested / "secret.m4a").write_bytes(b"outside-private")
+        (voice_root / "jump").symlink_to(outside, target_is_directory=True)
+        source = voice_root / "jump" / "nested" / "secret.m4a"
+
+        with self.assertRaises(SourceChangedError):
+            stage_audio(
+                source,
+                self.root / "objects",
+                source_root=voice_root,
+            )
+
+        self.assertFalse((self.root / "objects" / "sha256").exists())
+
     def test_stage_audio_same_hash_keeps_alias_extension_and_single_bytes(self) -> None:
         first_source = self.root / "first.m4a"
         second_source = self.root / "renamed.wav"

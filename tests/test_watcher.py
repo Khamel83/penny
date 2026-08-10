@@ -68,8 +68,9 @@ class WatcherTests(unittest.TestCase):
             patch.object(
                 watcher, "insert_transcript_result", return_value=_inserted(99)
             ) as insert_mock,
-            patch.object(watcher, "link_voice_memo_transcript", return_value=True),
-            patch.object(watcher, "mark_voice_memo_terminal") as terminal_mock,
+            patch.object(
+                watcher, "link_voice_memo_transcript", return_value=True
+            ) as link_mock,
         ):
             processed = watcher._process_audio_file(
                 audio_path,
@@ -84,7 +85,9 @@ class WatcherTests(unittest.TestCase):
             "skipped_too_large",
         )
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
-        terminal_mock.assert_called_once_with(123, "skipped_too_large")
+        self.assertEqual(
+            link_mock.call_args.kwargs["terminal_state"], "skipped_too_large"
+        )
 
     def test_oversized_archive_manifest_reports_skipped_quality_truthfully(self) -> None:
         audio_path = Path(self.db_dir) / "oversized-truth.m4a"
@@ -116,7 +119,7 @@ class WatcherTests(unittest.TestCase):
         staged = StagedAudio(audio_path, "a" * 64, 5, ".m4a")
         events: list[str] = []
         with (
-            patch.object(watcher, "stage_audio", side_effect=lambda *a: (events.append("stage"), staged)[1]),
+            patch.object(watcher, "stage_audio", side_effect=lambda *a, **k: (events.append("stage"), staged)[1]),
             patch.object(watcher, "transcribe_with_quality", side_effect=lambda *a, **k: (events.append("transcribe"), TranscriptionResult("text", QualityResult(True), 1))[1]),
             patch.object(watcher, "insert_transcript_result", side_effect=lambda **k: (events.append("insert"), _inserted(42))[1]) as insert,
             patch.object(watcher, "queue_archive_delivery"),
@@ -367,6 +370,25 @@ class WatcherTests(unittest.TestCase):
                 watcher._find_audio_path_for_recording({"ZPATH": "memo.m4a"})
             )
             self.assertEqual(watcher.scan_for_unprocessed_files(), [])
+
+    def test_process_recording_passes_voice_root_to_staging_boundary(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos-rooted"
+        voice_root.mkdir()
+        memo = voice_root / "memo.m4a"
+        memo.write_bytes(b"audio")
+        recording = {
+            "Z_PK": 45,
+            "ZPATH": memo.name,
+            "ZDATE": 1,
+            "ZDURATION": 1,
+        }
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher, "_process_audio_file", return_value=True) as process,
+        ):
+            self.assertTrue(watcher.process_recording(recording))
+
+        self.assertEqual(process.call_args.kwargs["source_root"], voice_root)
 
     def test_audio_is_staged_before_any_content_hash_read(self) -> None:
         source = Path(self.db_dir) / "source.m4a"
@@ -697,6 +719,39 @@ class WatcherTests(unittest.TestCase):
             delivery = conn.execute(
                 "SELECT status, unavailable_reason FROM archive_deliveries "
                 "WHERE transcript_row_id = ?", (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(tuple(delivery), ("unavailable", "unsafe_audio_source"))
+
+    def test_historical_backfill_rejects_symlinked_voice_root(self) -> None:
+        actual_root = Path(self.db_dir) / "actual-voice-root"
+        actual_root.mkdir()
+        source = actual_root / "memo.m4a"
+        source.write_bytes(b"private audio")
+        configured_root = Path(self.db_dir) / "voice-root-link"
+        configured_root.symlink_to(actual_root, target_is_directory=True)
+        row_id = transcript_log.insert_transcript(
+            content_hash="symlink-root-backfill",
+            source="iCloud",
+            transcript="canonical",
+            audio_path=str(source),
+            enqueue_slack=False,
+        )
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", configured_root),
+            patch.object(watcher, "stage_audio") as stage,
+        ):
+            watcher._reconcile_archive_backfill(limit=10)
+
+        stage.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            delivery = conn.execute(
+                "SELECT status, unavailable_reason FROM archive_deliveries "
+                "WHERE transcript_row_id = ?",
+                (row_id,),
             ).fetchone()
         finally:
             conn.close()
@@ -1069,6 +1124,32 @@ class WatcherTests(unittest.TestCase):
             allow_maya=False,
         )
         routed.assert_called_once_with(88)
+
+    def test_existing_pending_row_fails_closed_without_source_route_receipt(self) -> None:
+        audio_path = Path(self.db_dir) / "existing-pending-receipt.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 188,
+            "status": "pending",
+            "quality_status": "passed",
+            "transcript": "route canonical transcript",
+            "source": "iCloud",
+        }
+        with (
+            patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "link_voice_memo_transcript", return_value=True),
+            patch.object(watcher, "queue_archive_delivery"),
+            patch.object(watcher, "classify_and_route") as route,
+            patch.object(watcher, "mark_voice_memo_routed", return_value=False),
+        ):
+            self.assertFalse(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="existing-pending-receipt-hash",
+                    recording_pk=188,
+                )
+            )
+        route.assert_called_once()
 
     def test_existing_routed_row_skips_routing(self) -> None:
         audio_path = Path(self.db_dir) / "existing-routed.m4a"

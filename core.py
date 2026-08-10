@@ -182,16 +182,52 @@ def setup_logging(service_name: str) -> logging.Logger:
 # ===== Hashing =====
 
 
-def get_file_hash(path: Path) -> str:
-    """Get an MD5 identity without following a replaced final symlink."""
+def get_file_hash(path: Path, *, source_root: Path | None = None) -> str:
+    """Get an MD5 identity from a regular file rooted without symlink walks."""
     hasher = hashlib.md5()
-    flags = (
+    file_flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
-    descriptor = os.open(path, flags)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    absolute_path = path if path.is_absolute() else path.absolute()
+    if source_root is None:
+        absolute_root = absolute_path.parent.resolve(strict=True)
+        absolute_path = absolute_root / absolute_path.name
+    else:
+        absolute_root = (
+            source_root if source_root.is_absolute() else source_root.absolute()
+        )
+    try:
+        relative = absolute_path.relative_to(absolute_root)
+    except ValueError as exc:
+        raise OSError("source_outside_root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise OSError("source_unavailable")
+    directory_descriptor = os.open(absolute_root, directory_flags)
+    try:
+        for component in relative.parts[:-1]:
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=directory_descriptor,
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = child_descriptor
+        descriptor = os.open(
+            relative.parts[-1],
+            file_flags,
+            dir_fd=directory_descriptor,
+        )
+    finally:
+        os.close(directory_descriptor)
     with os.fdopen(descriptor, "rb") as f:
         if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
             raise OSError("source_not_regular")

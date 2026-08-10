@@ -76,18 +76,63 @@ def _source_signature_from_stat(info: os.stat_result) -> tuple[int, int, int, in
     return info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino
 
 
-def _open_source_nofollow(path: Path) -> int:
-    """Open one regular source without following its final path component."""
-    flags = (
+def _open_source_nofollow(
+    path: Path,
+    *,
+    source_root: Path | None = None,
+) -> int:
+    """Open one rooted regular source without following relative components."""
+    file_flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    absolute_path = path if path.is_absolute() else path.absolute()
+    if source_root is None:
+        try:
+            absolute_root = absolute_path.parent.resolve(strict=True)
+        except OSError as exc:
+            raise SourceChangedError("source_unavailable") from exc
+        absolute_path = absolute_root / absolute_path.name
+    else:
+        absolute_root = (
+            source_root if source_root.is_absolute() else source_root.absolute()
+        )
     try:
-        descriptor = os.open(path, flags)
+        relative = absolute_path.relative_to(absolute_root)
+    except ValueError as exc:
+        raise SourceChangedError("source_outside_root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise SourceChangedError("source_unavailable")
+
+    directory_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(absolute_root, directory_flags)
+        for component in relative.parts[:-1]:
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=directory_descriptor,
+            )
+            os.close(directory_descriptor)
+            directory_descriptor = child_descriptor
+        descriptor = os.open(
+            relative.parts[-1],
+            file_flags,
+            dir_fd=directory_descriptor,
+        )
     except OSError as exc:
         raise SourceChangedError("source_unavailable") from exc
+    finally:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise SourceChangedError("source_unavailable")
@@ -97,14 +142,19 @@ def _open_source_nofollow(path: Path) -> int:
     return descriptor
 
 
-def stage_audio(source: Path, object_root: Path) -> StagedAudio:
+def stage_audio(
+    source: Path,
+    object_root: Path,
+    *,
+    source_root: Path | None = None,
+) -> StagedAudio:
     """Stream a stable source into a content-addressed Penny-owned object."""
     source = Path(source)
     object_root = Path(object_root)
     extension = source.suffix.lower()
     if not re.fullmatch(r"\.[a-z0-9]{1,10}", extension):
         raise ValueError("unsafe_audio_extension")
-    descriptor = _open_source_nofollow(source)
+    descriptor = _open_source_nofollow(source, source_root=source_root)
     try:
         before = _source_signature_from_stat(os.fstat(descriptor))
         if before[0] <= 0:

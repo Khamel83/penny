@@ -35,6 +35,7 @@ def _ready_probes(tmp_path: Path):
             "terminal_failure_count": 0,
             "failed_count": 0,
             "retry_due_count": 0,
+            "completion_pending_count": 0,
             "awaiting_file_count": 0,
             "source_watermark": 4,
             "voicememos_responsive": True,
@@ -74,6 +75,19 @@ def test_doctor_marks_source_terminal_failure_unready(tmp_path: Path):
     report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
     assert report.overall == "unready"
     assert report.components["voice_memos"].reason == "terminal_failure"
+
+
+def test_doctor_marks_linked_source_completion_gap_unready(tmp_path: Path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["voice_memos"] = {
+        **probes["voice_memos"],
+        "completion_pending_count": 1,
+    }
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.overall == "unready"
+    assert report.components["voice_memos"].reason == "retryable_failure"
 
 
 def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypatch):

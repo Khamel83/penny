@@ -77,6 +77,23 @@ class CorePipelineTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 core.get_file_hash(link)
 
+    def test_file_hash_rejects_symlinked_ancestor_within_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "voice"
+            source_root.mkdir()
+            outside = root / "outside"
+            nested = outside / "nested"
+            nested.mkdir(parents=True)
+            (nested / "secret.m4a").write_bytes(b"private-outside-bytes")
+            (source_root / "jump").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                core.get_file_hash(
+                    source_root / "jump" / "nested" / "secret.m4a",
+                    source_root=source_root,
+                )
+
     def test_local_apple_route_without_row_id_fails_closed(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="long_note"),

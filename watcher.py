@@ -69,6 +69,7 @@ from transcript_log import (
     queue_archive_delivery,
     record_archive_backfill_failure,
     record_archive_unavailable,
+    reconcile_linked_voice_memo_terminal_states,
     upsert_voice_memo_recording,
     advance_source_watermark,
 )
@@ -630,7 +631,7 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
             break  # sorted by mtime desc, so all remaining are even older
 
         try:
-            file_hash = get_file_hash(audio_file)
+            file_hash = get_file_hash(audio_file, source_root=voice_base)
         except FileNotFoundError:
             continue
         except Exception as e:
@@ -695,6 +696,17 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
+def _canonical_voice_terminal_state(row: Dict[str, Any]) -> str | None:
+    quality_status = str(row.get("quality_status") or "")
+    if quality_status == "skipped_too_large":
+        return "skipped_too_large"
+    if row.get("status") in {"routed", "processed"}:
+        return "routed"
+    if quality_status != "passed":
+        return "needs_review"
+    return None
+
+
 def _process_audio_file(
     audio_path: Path,
     file_hash: str | None = None,
@@ -702,8 +714,10 @@ def _process_audio_file(
     duration_seconds: float | None = None,
     recording_pk: int | None = None,
     recorded_at: str | None = None,
+    source_root: Path | None = None,
 ) -> bool:
-    staged = stage_audio(audio_path, cfg.archive.object_root)
+    stage_options = {"source_root": source_root} if source_root is not None else {}
+    staged = stage_audio(audio_path, cfg.archive.object_root, **stage_options)
     staged_md5 = get_file_hash(staged.path)
     if file_hash is None:
         file_hash = staged_md5
@@ -806,9 +820,9 @@ def _process_audio_file(
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
+                terminal_state="skipped_too_large",
             ):
                 return False
-            mark_voice_memo_terminal(recording_pk, "skipped_too_large")
         return True
 
     existing = get_transcript_by_hash(file_hash)
@@ -819,23 +833,24 @@ def _process_audio_file(
             row_id, str(existing.get("quality_status") or "unknown"), existing
         ):
             return False
-        already_routed = existing.get("status") in {"routed", "processed"}
+        terminal_state = _canonical_voice_terminal_state(existing)
+        already_routed = terminal_state == "routed"
         if recording_pk is not None:
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
+            link_options: dict[str, Any] = {}
+            if terminal_state == "routed":
+                link_options["routed"] = True
+            elif terminal_state is not None:
+                link_options["terminal_state"] = terminal_state
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-                routed=already_routed,
+                **link_options,
             ):
                 return False
         if already_routed or existing.get("quality_status") != "passed":
-            if recording_pk is not None:
-                mark_voice_memo_terminal(
-                    recording_pk,
-                    "routed" if already_routed else "needs_review",
-                )
             return True
 
         classify_and_route(
@@ -846,7 +861,8 @@ def _process_audio_file(
             allow_maya=False,
         )
         if recording_pk is not None:
-            mark_voice_memo_routed(recording_pk)
+            if not mark_voice_memo_routed(recording_pk):
+                return False
         return True
 
     file_seen_at = datetime.now().isoformat()
@@ -915,9 +931,9 @@ def _process_audio_file(
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
+                terminal_state="needs_review",
             ):
                 return False
-            mark_voice_memo_terminal(recording_pk, "needs_review")
         return True
 
     result = insert_transcript_result(
@@ -953,22 +969,25 @@ def _process_audio_file(
         row_id = int(existing["id"])
         if not persist_archive(row_id, "passed", existing):
             return False
+        terminal_state = _canonical_voice_terminal_state(existing)
+        existing_routed = terminal_state == "routed"
         if recording_pk is not None:
+            link_options = {}
+            if terminal_state == "routed":
+                link_options["routed"] = True
+            elif terminal_state is not None:
+                link_options["terminal_state"] = terminal_state
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-                routed=existing.get("status") in {"routed", "processed"},
+                **link_options,
             ):
                 return False
-        if existing.get("status") in {"routed", "processed"}:
-            if recording_pk is not None:
-                mark_voice_memo_terminal(recording_pk, "routed")
+        if existing_routed:
             return True
         if existing.get("quality_status") != "passed":
-            if recording_pk is not None:
-                mark_voice_memo_terminal(recording_pk, "needs_review")
             return True
         transcript = str(existing["transcript"])
     else:
@@ -990,7 +1009,8 @@ def _process_audio_file(
         allow_maya=False,
     )
     if recording_pk is not None:
-        mark_voice_memo_routed(recording_pk)
+        if not mark_voice_memo_routed(recording_pk):
+            return False
     return True
 
 
@@ -1033,6 +1053,12 @@ def process_recording(
             duration_seconds=duration_seconds,
             recording_pk=pk,
             recorded_at=recorded_at,
+            source_root=(
+                roots[0]
+                if (roots := _voice_memo_roots()) is not None
+                and audio_path.is_relative_to(roots[0])
+                else None
+            ),
         )
         if not processed:
             mark_voice_memo_retryable(pk, "transcription_failed")
@@ -1047,13 +1073,22 @@ def process_recording(
         return False
 
 
-def process_file(audio_path: Path, *, file_hash: str | None = None) -> bool:
+def process_file(
+    audio_path: Path,
+    *,
+    file_hash: str | None = None,
+    source_root: Path | None = None,
+) -> bool:
     try:
         log.info(
             "Processing Voice Memo disk candidate (size_mb=%.1f)",
             audio_path.stat().st_size / (1024 * 1024),
         )
-        return _process_audio_file(audio_path, file_hash=file_hash)
+        return _process_audio_file(
+            audio_path,
+            file_hash=file_hash,
+            source_root=source_root,
+        )
     except FileNotFoundError:
         log.warning("Voice Memo disk candidate disappeared before processing")
         return False
@@ -1164,12 +1199,15 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
 
 
 def _process_disk_backlog(limit: int) -> None:
+    roots = _voice_memo_roots()
+    if roots is None:
+        return
     unprocessed = scan_for_unprocessed_files()
     if not unprocessed:
         return
     log.info("Found %s unprocessed file(s) on disk", len(unprocessed))
     for audio_file, file_hash in unprocessed[:limit]:
-        process_file(audio_file, file_hash=file_hash)
+        process_file(audio_file, file_hash=file_hash, source_root=roots[0])
 
 
 def _process_slack_outbox() -> None:
@@ -1214,6 +1252,9 @@ def _process_archive_outbox() -> None:
 
 def _reconcile_archive_backfill(limit: int) -> None:
     """Reconcile old canonical rows without retranscription or rerouting."""
+    voice_roots = _voice_memo_roots()
+    voice_base = voice_roots[0] if voice_roots is not None else None
+    voice_root = voice_roots[1] if voice_roots is not None else None
     for row in get_archive_backfill_candidates(limit=limit):
         transcript_id = int(row["transcript_row_id"])
         raw_candidates = [
@@ -1222,7 +1263,6 @@ def _reconcile_archive_backfill(limit: int) -> None:
             if value
         ]
         object_root = Path(cfg.archive.object_root).resolve()
-        voice_root = Path(VOICE_MEMOS_DIR).resolve()
 
         def safe_path(path: Path, root: Path) -> Path | None:
             try:
@@ -1235,6 +1275,7 @@ def _reconcile_archive_backfill(limit: int) -> None:
 
         staged: StagedAudio | None = None
         candidate: Path | None = None
+        candidate_source_root: Path | None = None
         unsafe_candidate = False
         invalid_local_object = False
         for raw_candidate in raw_candidates:
@@ -1265,10 +1306,19 @@ def _reconcile_archive_backfill(limit: int) -> None:
                 except OSError:
                     invalid_local_object = True
                     continue
-            external = safe_path(raw_candidate, voice_root)
+            external = (
+                _safe_voice_memo_candidate(
+                    raw_candidate,
+                    voice_base=voice_base,
+                    voice_root=voice_root,
+                )
+                if voice_base is not None and voice_root is not None
+                else None
+            )
             if external is not None:
                 if external.is_file():
                     candidate = external
+                    candidate_source_root = voice_base
                     break
                 continue
             unsafe_candidate = True
@@ -1294,7 +1344,11 @@ def _reconcile_archive_backfill(limit: int) -> None:
             continue
         try:
             if staged is None:
-                staged = stage_audio(candidate, cfg.archive.object_root)
+                staged = stage_audio(
+                    candidate,
+                    cfg.archive.object_root,
+                    source_root=candidate_source_root,
+                )
         except Exception as exc:
             record_archive_backfill_failure(
                 transcript_id, "archive_backfill_source_error"
@@ -1483,13 +1537,15 @@ def _retry_pending_routes(limit: int) -> None:
                 allow_maya=False,
             )
             if row["source"] == "iCloud":
-                mark_voice_memo_routed_for_transcript(row["id"])
+                if not mark_voice_memo_routed_for_transcript(row["id"]):
+                    raise RuntimeError("voice_memo_receipt_unavailable")
         except Exception as e:
             log.error("Retry failed for id=%s: %s", row["id"], type(e).__name__)
 
 
 def _process_ingest_pass() -> None:
     operations = (
+        lambda: reconcile_linked_voice_memo_terminal_states(limit=100),
         lambda: _process_db_batch(get_new_recordings()),
         lambda: _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT),
         lambda: _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT),
