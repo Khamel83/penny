@@ -156,7 +156,9 @@ def _safe_remote(value: str) -> tuple[str, str]:
     host, root = remote.split(":", 1)
     if not host or not root or any(char in host for char in " /\\\n\t"):
         raise SyncError("remote_invalid")
-    if "\n" in root or "\r" in root or any(char in root for char in ";|&$`'\""):
+    if any(char.isspace() for char in root) or any(
+        char in root for char in ";|&$`'\"\\"
+    ):
         raise SyncError("remote_invalid")
     return host, root.rstrip("/") + "/"
 
@@ -191,7 +193,7 @@ def sync_backup_set(
             "rsync",
             "--archive",
             "--checksum",
-            "--protect-args",
+            "--",
             objects_source,
             f"{host}:{remote_root}objects/",
         ),
@@ -199,7 +201,7 @@ def sync_backup_set(
             "rsync",
             "--archive",
             "--checksum",
-            "--protect-args",
+            "--",
             set_source,
             f"{host}:{remote_root}sets/{receipt.backup_set_id}/",
         ),

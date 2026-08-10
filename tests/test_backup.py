@@ -224,6 +224,23 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(backup_penny.SyncError):
             backup_penny.sync_backup_set(receipt, runner=runner)
         self.assertEqual([call[0] for call in calls], ["rsync", "rsync", "ssh"])
+        self.assertTrue(all("--protect-args" not in call for call in calls))
+
+    def test_remote_rejects_shell_whitespace_without_protect_args(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **_kwargs: object) -> object:
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with self.assertRaises(backup_penny.SyncError):
+            backup_penny.sync_backup_set(
+                receipt,
+                remote="homelab:~/backups/penny unsafe/",
+                runner=runner,
+            )
+        self.assertEqual(calls, [])
 
     def test_remote_rsync_failure_is_fatal(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
