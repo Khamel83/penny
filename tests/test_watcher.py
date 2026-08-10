@@ -341,6 +341,7 @@ class WatcherTests(unittest.TestCase):
                 "object_root",
                 Path(self.db_dir) / "historical-objects",
             ),
+            patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
             patch.object(watcher, "transcribe_with_quality") as transcribe,
             patch.object(watcher, "classify_and_route") as route,
         ):
@@ -351,6 +352,170 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(len(due), 1)
         self.assertEqual(due[0]["transcript_row_id"], row_id)
         self.assertEqual(due[0]["canonical_recorded_at"], "2025-01-02T03:04:05Z")
+        self.assertTrue(
+            Path(due[0]["local_object_path"]).is_relative_to(
+                Path(self.db_dir) / "historical-objects"
+            )
+        )
+
+    def test_historical_backfill_rejects_unapproved_db_path_without_opening(self) -> None:
+        outside = Path(self.db_dir).parent / "private-recording.m4a"
+        outside.write_bytes(b"must not be opened")
+        self.addCleanup(outside.unlink, missing_ok=True)
+        row_id = transcript_log.insert_transcript(
+            content_hash="unsafe-backfill-path",
+            source="iCloud",
+            transcript="canonical",
+            audio_path=str(outside),
+            enqueue_slack=False,
+        )
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir) / "approved"),
+            patch.object(watcher, "stage_audio") as stage,
+        ):
+            watcher._reconcile_archive_backfill(limit=10)
+        stage.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            delivery = conn.execute(
+                "SELECT status, unavailable_reason FROM archive_deliveries "
+                "WHERE transcript_row_id = ?", (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(tuple(delivery), ("unavailable", "unsafe_audio_source"))
+
+    def test_historical_backfill_queue_failure_is_durable_and_retryable(self) -> None:
+        source = Path(self.db_dir) / "retryable.m4a"
+        source.write_bytes(b"audio")
+        row_id = transcript_log.insert_transcript(
+            content_hash="retryable-backfill",
+            source="iCloud",
+            transcript="canonical",
+            audio_path=str(source),
+            enqueue_slack=False,
+        )
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
+            patch.object(
+                watcher, "queue_archive_delivery",
+                side_effect=sqlite3.OperationalError("secret path"),
+            ),
+        ):
+            watcher._reconcile_archive_backfill(limit=10)
+        conn = transcript_log._get_conn()
+        try:
+            delivery = conn.execute(
+                "SELECT status, attempt_count, next_attempt_at, last_error_code "
+                "FROM archive_deliveries WHERE transcript_row_id = ?", (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(delivery["status"], "backfill_pending")
+        self.assertEqual(delivery["attempt_count"], 1)
+        self.assertIsNotNone(delivery["next_attempt_at"])
+        self.assertEqual(delivery["last_error_code"], "archive_backfill_queue_error")
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["backfill_pending_count"], 1)
+        for _ in range(4):
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE archive_deliveries SET next_attempt_at = datetime('now', '-1 second') "
+                    "WHERE transcript_row_id = ?", (row_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            with (
+                patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
+                patch.object(
+                    watcher, "queue_archive_delivery",
+                    side_effect=RuntimeError("secret content"),
+                ),
+            ):
+                watcher._reconcile_archive_backfill(limit=10)
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["backfill_pending_count"], 0)
+        self.assertEqual(health["backfill_failed_count"], 1)
+
+    def test_historical_backfill_reuses_only_verified_local_object(self) -> None:
+        source = Path(self.db_dir) / "local-object-source.m4a"
+        source.write_bytes(b"audio")
+        object_root = Path(self.db_dir) / "objects"
+        staged = watcher.stage_audio(source, object_root)
+        row_id = transcript_log.insert_transcript(
+            content_hash="verified-local-object",
+            source="iCloud",
+            transcript="canonical",
+            audio_path=str(staged.path),
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET audio_sha256 = ? WHERE id = ?",
+                (staged.audio_sha256, row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with (
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+            patch.object(watcher, "stage_audio") as restage,
+        ):
+            watcher._reconcile_archive_backfill(limit=10)
+        restage.assert_not_called()
+        pending = transcript_log.get_pending_archive_deliveries(limit=10)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["local_object_path"], str(staged.path.resolve()))
+
+    def test_outside_root_published_paths_become_visible_without_open_or_move(self) -> None:
+        source = Path(self.db_dir) / "outside-root.m4a"
+        source.write_bytes(b"audio")
+        staged = watcher.stage_audio(source, Path(self.db_dir) / "objects")
+        row_id = transcript_log.insert_transcript(
+            content_hash="outside-root",
+            source="iCloud",
+            transcript="canonical",
+            archive_staged=staged,
+            archive_metadata={"source": "iCloud", "quality_status": "passed"},
+            enqueue_slack=False,
+        )
+        mirror_root = Path(self.db_dir) / "mirror"
+        with patch.object(watcher.cfg.archive, "mirror_root", mirror_root):
+            watcher._process_archive_outbox()
+        outside = Path(self.db_dir) / "outside"
+        outside.mkdir()
+        outside_files = [outside / f"capture{suffix}" for suffix in (".m4a", ".md", ".json")]
+        for path in outside_files:
+            path.write_bytes(b"do not touch")
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE archive_deliveries SET destination_audio_path = ?, "
+                "destination_markdown_path = ?, destination_manifest_path = ? "
+                "WHERE transcript_row_id = ?",
+                (*map(str, outside_files), row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with patch.object(watcher.cfg.archive, "mirror_root", mirror_root):
+            watcher._reconcile_published_archives(limit=10)
+        self.assertTrue(all(path.read_bytes() == b"do not touch" for path in outside_files))
+        conn = transcript_log._get_conn()
+        try:
+            delivery = conn.execute(
+                "SELECT status, validation_status, rebuild_needed, validation_error_code "
+                "FROM archive_deliveries WHERE transcript_row_id = ?", (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(
+            tuple(delivery),
+            ("pending", "invalid", 1, "local_mirror_path_outside_root"),
+        )
 
     def test_historical_non_audio_and_missing_audio_are_visible_in_health(self) -> None:
         transcript_log.insert_transcript(

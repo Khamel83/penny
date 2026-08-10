@@ -391,6 +391,7 @@ def deliver():
             transcript=text,
             duration_seconds=duration,
             enqueue_slack=False,
+            archive_unavailable_reason="no_raw_audio",
         )
     except Exception as error:
         log.error("/deliver persistence failed (%s)", type(error).__name__)
@@ -404,6 +405,17 @@ def deliver():
             log.error("/deliver duplicate has no canonical row")
             return jsonify({"error": "delivery unavailable"}), 503
         row_id = int(existing["id"])
+        try:
+            record_archive_unavailable(
+                row_id,
+                availability_status="not_applicable",
+                reason_code="no_raw_audio",
+            )
+        except Exception as error:
+            log.error(
+                "/deliver archive applicability failed (%s)", type(error).__name__
+            )
+            return jsonify({"error": "delivery unavailable"}), 503
         if existing.get("status") in {"routed", "processed"}:
             log.info("/deliver: duplicate transcript (hash=%s)", content_hash[:12])
             return jsonify({"status": "duplicate"})

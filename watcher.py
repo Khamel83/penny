@@ -61,6 +61,7 @@ from transcript_log import (
     mark_archive_delivery_validated,
     needs_archive_delivery,
     queue_archive_delivery,
+    record_archive_backfill_failure,
     record_archive_unavailable,
     upsert_voice_memo_recording,
     advance_source_watermark,
@@ -276,6 +277,7 @@ def update_health_check() -> None:
         and int(archive_health.get("failed_count", 0)) == 0
         and int(archive_health.get("invalid_count", 0)) == 0
         and int(archive_health.get("rebuild_needed_count", 0)) == 0
+        and int(archive_health.get("backfill_failed_count", 0)) == 0
     )
     HEALTH_FILE.write_text(
         (
@@ -319,6 +321,8 @@ def update_health_check() -> None:
             f"archive_not_applicable:{archive_health.get('not_applicable_count', 0)}|"
             f"archive_invalid:{archive_health.get('invalid_count', 0)}|"
             f"archive_rebuild_needed:{archive_health.get('rebuild_needed_count', 0)}|"
+            f"archive_backfill_pending:{archive_health.get('backfill_pending_count', 0)}|"
+            f"archive_backfill_failed:{archive_health.get('backfill_failed_count', 0)}|"
             f"archive_oldest_pending_age_seconds:"
             f"{archive_health.get('oldest_pending_age_seconds', 0)}|"
             f"archive_health_error:{archive_health.get('health_error', 0)}\n"
@@ -969,16 +973,71 @@ def _reconcile_archive_backfill(limit: int) -> None:
     """Reconcile old canonical rows without retranscription or rerouting."""
     for row in get_archive_backfill_candidates(limit=limit):
         transcript_id = int(row["transcript_row_id"])
-        transcript_path = Path(row["transcript_audio_path"]) if row.get("transcript_audio_path") else None
-        voice_path = Path(row["voice_audio_path"]) if row.get("voice_audio_path") else None
-        candidate = next(
-            (path for path in (transcript_path, voice_path) if path and path.is_file()),
-            None,
-        )
+        raw_candidates = [
+            Path(value)
+            for value in (row.get("transcript_audio_path"), row.get("voice_audio_path"))
+            if value
+        ]
+        object_root = Path(cfg.archive.object_root).resolve()
+        voice_root = Path(VOICE_MEMOS_DIR).resolve()
+
+        def safe_path(path: Path, root: Path) -> Path | None:
+            try:
+                if not path.is_absolute() or path.is_symlink():
+                    return None
+                resolved = path.resolve()
+                return resolved if resolved.is_relative_to(root) else None
+            except OSError:
+                return None
+
+        staged: StagedAudio | None = None
+        candidate: Path | None = None
+        unsafe_candidate = False
+        invalid_local_object = False
+        for raw_candidate in raw_candidates:
+            local = safe_path(raw_candidate, object_root)
+            if local is not None:
+                known_sha = str(row.get("audio_sha256") or "")
+                try:
+                    info = local.stat()
+                    expected = (
+                        object_root / "sha256" / known_sha[:2]
+                        / f"{known_sha}{local.suffix.lower()}"
+                    )
+                    if (
+                        len(known_sha) != 64
+                        or local != expected
+                        or not local.is_file()
+                        or info.st_size <= 0
+                        or (info.st_mode & 0o777) != 0o400
+                        or sha256_file(local) != known_sha
+                    ):
+                        invalid_local_object = True
+                        continue
+                    staged = StagedAudio(
+                        local, known_sha, info.st_size, local.suffix.lower()
+                    )
+                    candidate = local
+                    break
+                except OSError:
+                    invalid_local_object = True
+                    continue
+            external = safe_path(raw_candidate, voice_root)
+            if external is not None:
+                if external.is_file():
+                    candidate = external
+                    break
+                continue
+            unsafe_candidate = True
+
         if candidate is None:
             source = str(row.get("source") or "").lower()
             transcript = str(row.get("transcript") or "").lstrip().lower()
-            if transcript.startswith("(migrated"):
+            if invalid_local_object:
+                status, reason = "unavailable", "invalid_local_object"
+            elif unsafe_candidate:
+                status, reason = "unavailable", "unsafe_audio_source"
+            elif transcript.startswith("(migrated"):
                 status, reason = "unavailable", "legacy_placeholder"
             elif source in {"icloud", "shortcut", "voice-memos"}:
                 status, reason = "unavailable", "missing_audio_source"
@@ -991,18 +1050,19 @@ def _reconcile_archive_backfill(limit: int) -> None:
             )
             continue
         try:
-            known_sha = row.get("audio_sha256")
-            if known_sha and transcript_path == candidate:
-                if sha256_file(candidate) != known_sha:
-                    raise SourceChangedError(candidate.name)
-                staged = StagedAudio(
-                    candidate,
-                    str(known_sha),
-                    candidate.stat().st_size,
-                    candidate.suffix.lower(),
-                )
-            else:
+            if staged is None:
                 staged = stage_audio(candidate, cfg.archive.object_root)
+        except Exception as exc:
+            record_archive_backfill_failure(
+                transcript_id, "archive_backfill_source_error"
+            )
+            log.error(
+                "Archive backfill failed for transcript id=%s: %s",
+                transcript_id,
+                type(exc).__name__,
+            )
+            continue
+        try:
             queue_archive_delivery(
                 transcript_id,
                 staged,
@@ -1020,6 +1080,9 @@ def _reconcile_archive_backfill(limit: int) -> None:
                 },
             )
         except Exception as exc:
+            record_archive_backfill_failure(
+                transcript_id, "archive_backfill_queue_error"
+            )
             log.error(
                 "Archive backfill failed for transcript id=%s: %s",
                 transcript_id,
@@ -1032,6 +1095,25 @@ def _reconcile_published_archives(limit: int) -> None:
     for row in get_published_archive_deliveries(limit=limit):
         delivery_id = int(row["id"])
         manifest_path = Path(str(row.get("destination_manifest_path") or ""))
+        mirror_root = Path(cfg.archive.mirror_root).resolve()
+        destinations = [
+            Path(str(row.get(key)))
+            for key in (
+                "destination_audio_path",
+                "destination_markdown_path",
+                "destination_manifest_path",
+            )
+            if row.get(key)
+        ]
+        if any(
+            not path.is_absolute()
+            or not path.resolve().is_relative_to(mirror_root)
+            for path in destinations
+        ):
+            mark_archive_delivery_rebuild_needed(
+                delivery_id, "local_mirror_path_outside_root"
+            )
+            continue
         valid = validate_local_mirror_receipt(row)
         if valid:
             mark_archive_delivery_validated(delivery_id)

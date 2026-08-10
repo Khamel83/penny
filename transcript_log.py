@@ -2113,7 +2113,6 @@ def get_slack_delivery_health() -> dict[str, int]:
     health = {
         "pending_count": 0,
         "sent_count": 0,
-        "local_mirror_published_count": 0,
         "failed_count": 0,
         "quality_failure_pending_count": 0,
         "quality_failure_failed_count": 0,
@@ -2468,6 +2467,7 @@ def mark_archive_delivery_rebuild_needed(
             "local_mirror_validation_failed",
             "local_mirror_missing",
             "local_mirror_receipt_mismatch",
+            "local_mirror_path_outside_root",
         }
         else "local_mirror_validation_failed"
     )
@@ -2520,6 +2520,11 @@ def get_archive_backfill_candidates(limit: int = 10) -> list[dict[str, Any]]:
             LEFT JOIN archive_deliveries
               ON archive_deliveries.transcript_row_id = transcripts.id
             WHERE archive_deliveries.id IS NULL
+               OR (
+                    archive_deliveries.status = 'backfill_pending'
+                    AND (archive_deliveries.next_attempt_at IS NULL
+                         OR archive_deliveries.next_attempt_at <= datetime('now'))
+               )
             ORDER BY transcripts.id
             LIMIT ?
             """,
@@ -2537,6 +2542,8 @@ _ARCHIVE_AVAILABILITY_REASONS = frozenset(
         "missing_audio_source",
         "no_raw_audio",
         "source_unavailable",
+        "unsafe_audio_source",
+        "invalid_local_object",
     }
 )
 
@@ -2608,6 +2615,74 @@ def record_archive_unavailable(
             transcript_id,
             availability_status=availability_status,
             reason_code=reason_code,
+        )
+        conn.commit()
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+_ARCHIVE_BACKFILL_ERROR_CODES = frozenset(
+    {"archive_backfill_queue_error", "archive_backfill_source_error"}
+)
+
+
+def record_archive_backfill_failure(transcript_id: int, error_code: str) -> None:
+    """Persist a bounded retry state for recoverable historical archive work."""
+    safe_code = (
+        error_code
+        if error_code in _ARCHIVE_BACKFILL_ERROR_CODES
+        else "archive_backfill_source_error"
+    )
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        canonical = conn.execute(
+            "SELECT source, recorded_at, duration_seconds FROM transcripts WHERE id = ?",
+            (transcript_id,),
+        ).fetchone()
+        if canonical is None:
+            raise LookupError("Canonical transcript row does not exist")
+        aliases_json = json.dumps(
+            [str(canonical["source"])], separators=(",", ":"), ensure_ascii=False
+        )
+        alias_hash = hashlib.sha256(aliases_json.encode("utf-8")).hexdigest()
+        conn.execute(
+            """
+            INSERT INTO archive_deliveries (
+                transcript_row_id, archive_source, source_aliases, recorded_at,
+                archive_duration_seconds, status, availability_status,
+                attempt_count, next_attempt_at, last_error_code,
+                alias_set_sha256, publication_scope, validation_status
+            ) VALUES (?, ?, ?, ?, ?, 'backfill_pending', 'retryable', 1,
+                      datetime('now', '+30 seconds'), ?, ?, 'local_mirror', 'pending')
+            ON CONFLICT(transcript_row_id) DO UPDATE SET
+                attempt_count = archive_deliveries.attempt_count + 1,
+                status = CASE
+                    WHEN archive_deliveries.attempt_count + 1 >= ?
+                    THEN 'backfill_failed' ELSE 'backfill_pending' END,
+                availability_status = 'retryable',
+                next_attempt_at = CASE
+                    WHEN archive_deliveries.attempt_count + 1 >= ? THEN NULL
+                    ELSE datetime(
+                        'now', '+' || MIN(
+                            3600, 30 * (1 << archive_deliveries.attempt_count)
+                        ) || ' seconds'
+                    )
+                END,
+                last_error_code = excluded.last_error_code,
+                updated_at = datetime('now')
+            """,
+            (
+                transcript_id, canonical["source"], aliases_json,
+                canonical["recorded_at"], canonical["duration_seconds"],
+                safe_code, alias_hash, ARCHIVE_MAX_ATTEMPTS, ARCHIVE_MAX_ATTEMPTS,
+            ),
         )
         conn.commit()
     except Exception:
@@ -2754,11 +2829,14 @@ def get_archive_delivery_health() -> dict[str, int]:
     health = {
         "pending_count": 0,
         "sent_count": 0,
+        "local_mirror_published_count": 0,
         "failed_count": 0,
         "unavailable_count": 0,
         "not_applicable_count": 0,
         "invalid_count": 0,
         "rebuild_needed_count": 0,
+        "backfill_pending_count": 0,
+        "backfill_failed_count": 0,
         "oldest_pending_age_seconds": 0,
         "health_error": 0,
     }
@@ -2775,6 +2853,8 @@ def get_archive_delivery_health() -> dict[str, int]:
                 "failed": "failed_count",
                 "unavailable": "unavailable_count",
                 "not_applicable": "not_applicable_count",
+                "backfill_pending": "backfill_pending_count",
+                "backfill_failed": "backfill_failed_count",
             }.get(str(row["status"]))
             if key:
                 health[key] = int(row["count"])

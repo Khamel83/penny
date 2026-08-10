@@ -55,6 +55,7 @@ def client(tmp_path, monkeypatch):
     import webhook.server as server
     transcript_log.init_db()
     monkeypatch.setattr(server.cfg.archive, "object_root", tmp_path / "archive-objects")
+    monkeypatch.setattr(server, "record_archive_unavailable", MagicMock())
     server.app.config["TESTING"] = True
     with server.app.test_client() as c:
         yield c
@@ -635,6 +636,7 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
     assert seen["allow_maya"] is False
     assert seen["transcript"] == DELIVER_PAYLOAD["transcript"]
     assert insert_calls[0]["enqueue_slack"] is False
+    assert insert_calls[0]["archive_unavailable_reason"] == "no_raw_audio"
 
     # Same payload again → dedup via md5 content hash
     resp2 = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
@@ -667,6 +669,33 @@ def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.get_json() == {"status": "duplicate"}
     route_called.assert_not_called()
+
+
+def test_deliver_duplicate_archive_applicability_failure_returns_503(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setattr(
+        server_module,
+        "insert_transcript_result",
+        lambda **_: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=8, existing_status="routed"
+        ),
+    )
+    monkeypatch.setattr(
+        server_module, "get_transcript_by_hash",
+        lambda _: {"id": 8, "status": "routed"},
+    )
+    monkeypatch.setattr(
+        server_module, "record_archive_unavailable",
+        MagicMock(side_effect=sqlite3.OperationalError("unavailable")),
+    )
+    route = MagicMock()
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+
+    response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "delivery unavailable"}
+    route.assert_not_called()
 
 
 @pytest.mark.parametrize("status", ["pending", "failed"])
