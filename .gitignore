@@ -24,6 +24,7 @@ google_token.json
 
 # Local tool state
 .janitor/
+.worktrees/
 
 # Logs
 *.log
