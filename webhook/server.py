@@ -374,6 +374,11 @@ def deliver():
         log.error("/deliver routing failed (%s)", type(error).__name__)
         return jsonify({"error": "delivery processing failed"}), 500
 
+    confirmed = get_transcript_by_hash(content_hash)
+    if confirmed is None or confirmed.get("status") not in {"routed", "processed"}:
+        log.error("/deliver routing is not durably confirmed")
+        return jsonify({"error": "delivery unavailable"}), 503
+
     return jsonify({"status": "delivered", "id": row_id})
 
 

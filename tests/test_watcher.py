@@ -168,6 +168,44 @@ class WatcherTests(unittest.TestCase):
         transcribe.assert_not_called()
         route.assert_not_called()
 
+    def test_insert_race_processed_duplicate_skips_routing(self) -> None:
+        audio_path = Path(self.db_dir) / "race-processed.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 90,
+            "status": "processed",
+            "quality_status": "passed",
+            "transcript": "already processed",
+            "source": "iCloud",
+        }
+
+        with (
+            patch.object(
+                watcher, "get_transcript_by_hash", side_effect=[None, canonical]
+            ),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult("fresh transcript", QualityResult(True), 1),
+            ),
+            patch.object(
+                watcher,
+                "insert_transcript_result",
+                return_value=TranscriptInsertResult(
+                    InsertOutcome.DUPLICATE, row_id=90, existing_status="processed"
+                ),
+            ),
+            patch.object(watcher, "classify_and_route") as route,
+        ):
+            self.assertTrue(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="race-processed-hash",
+                )
+            )
+
+        route.assert_not_called()
+
     def test_new_recording_routes_without_draining_slack_outbox(self) -> None:
         audio_path = Path(self.db_dir) / "new-recording.m4a"
         audio_path.write_bytes(b"audio")

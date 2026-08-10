@@ -589,9 +589,9 @@ def _process_audio_file(
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-                routed=existing.get("status") == "routed",
+                routed=existing.get("status") in {"routed", "processed"},
             )
-        if existing.get("status") == "routed":
+        if existing.get("status") in {"routed", "processed"}:
             return True
         if existing.get("quality_status") != "passed":
             return True
