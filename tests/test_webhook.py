@@ -632,6 +632,105 @@ def test_raw_upload_over_audio_limit_is_rejected_before_processing(client, monke
     temp_file.assert_not_called()
 
 
+def test_multipart_upload_rejects_unknown_media_before_staging(
+    client, monkeypatch, caplog
+):
+    """Unsupported multipart media must not reach the archive or transcriber."""
+    filename = "PRIVATE_UPLOAD_FILENAME_SENTINEL.pdf"
+    body = b"PRIVATE_UPLOAD_CONTENT_SENTINEL"
+    stage = MagicMock()
+    transcribe = MagicMock()
+    monkeypatch.setattr(server_module, "stage_audio", stage)
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(body), filename)},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 415
+    assert response.get_json() == {"error": "unsupported audio media"}
+    assert filename not in response.get_data(as_text=True)
+    assert body.decode() not in caplog.text
+    assert filename not in caplog.text
+    stage.assert_not_called()
+    transcribe.assert_not_called()
+
+
+def test_multipart_upload_rejects_non_audio_mime_before_staging(
+    client, monkeypatch
+):
+    """A trusted-looking extension cannot override a non-audio MIME type."""
+    stage = MagicMock()
+    transcribe = MagicMock()
+    monkeypatch.setattr(server_module, "stage_audio", stage)
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+
+    response = client.post(
+        "/upload",
+        data={
+            "audio": (
+                io.BytesIO(b"audio"),
+                "PRIVATE_UPLOAD_FILENAME_SENTINEL.m4a",
+                "text/plain",
+            )
+        },
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 415
+    assert response.get_json() == {"error": "unsupported audio media"}
+    stage.assert_not_called()
+    transcribe.assert_not_called()
+
+
+def test_multipart_upload_rejects_missing_filename_before_staging(client, monkeypatch):
+    """Multipart audio requires a safe, supported filename extension."""
+    stage = MagicMock()
+    transcribe = MagicMock()
+    monkeypatch.setattr(server_module, "stage_audio", stage)
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"audio"), "PRIVATE_UPLOAD_FILENAME_SENTINEL", "audio/m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "audio filename required"}
+    stage.assert_not_called()
+    transcribe.assert_not_called()
+
+
+def test_raw_upload_rejects_unknown_media_before_staging(client, monkeypatch, caplog):
+    """Raw uploads require an allowlisted audio MIME type before materialization."""
+    body = b"PRIVATE_RAW_UPLOAD_CONTENT_SENTINEL"
+    stage = MagicMock()
+    transcribe = MagicMock()
+    monkeypatch.setattr(server_module, "stage_audio", stage)
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post(
+        "/upload",
+        data=body,
+        content_type="application/octet-stream",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 415
+    assert response.get_json() == {"error": "unsupported audio media"}
+    assert body.decode() not in caplog.text
+    stage.assert_not_called()
+    transcribe.assert_not_called()
+
+
 def test_upload_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
     sentinel = "upload-routing-secret-must-not-leak"
     monkeypatch.setattr(server_module, "transcribe", lambda _: (_ for _ in ()).throw(RuntimeError(sentinel)))
@@ -648,6 +747,37 @@ def test_upload_failure_does_not_leak_exception_text(client, monkeypatch, caplog
     assert response.get_json() == {"error": "upload processing failed"}
     assert sentinel not in caplog.text
     assert sentinel not in response.get_data(as_text=True)
+
+
+def test_main_rejects_unprotected_non_loopback_bind(monkeypatch):
+    monkeypatch.setattr(server_module.cfg.webhook, "host", "0.0.0.0")
+    monkeypatch.delenv("PENNY_WEBHOOK_ALLOW_NONLOOPBACK", raising=False)
+    init_db = MagicMock()
+    run = MagicMock()
+    monkeypatch.setattr(server_module, "init_db", init_db)
+    monkeypatch.setattr(server_module.app, "run", run)
+
+    with pytest.raises(SystemExit):
+        server_module.main()
+
+    init_db.assert_not_called()
+    run.assert_not_called()
+
+
+def test_main_allows_explicitly_protected_non_loopback_bind(monkeypatch):
+    monkeypatch.setattr(server_module.cfg.webhook, "host", "0.0.0.0")
+    monkeypatch.setenv("PENNY_WEBHOOK_ALLOW_NONLOOPBACK", "1")
+    init_db = MagicMock()
+    run = MagicMock()
+    monkeypatch.setattr(server_module, "init_db", init_db)
+    monkeypatch.setattr(server_module.app, "run", run)
+
+    server_module.main()
+
+    init_db.assert_called_once()
+    run.assert_called_once_with(
+        host="0.0.0.0", port=server_module.cfg.webhook.port, use_reloader=False
+    )
 
 
 def test_ingest_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
@@ -675,6 +805,43 @@ def test_ingest_token_cannot_authorize_deliver(client, monkeypatch):
         "/deliver", json=DELIVER_PAYLOAD, headers=_ingest_auth()
     )
     assert response.status_code == 401
+
+
+def test_deliver_rejects_non_json_before_parsing_or_persistence(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    insert = MagicMock()
+    monkeypatch.setattr(server_module, "insert_transcript_result", insert)
+
+    response = client.post(
+        "/deliver",
+        data=b"PRIVATE_DELIVER_BODY_SENTINEL",
+        content_type="text/plain",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 415
+    assert response.get_json() == {"error": "delivery requires JSON"}
+    insert.assert_not_called()
+    assert b"PRIVATE_DELIVER_BODY_SENTINEL" not in response.data
+
+
+def test_deliver_rejects_oversized_request_before_parsing_or_persistence(
+    client, monkeypatch
+):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    insert = MagicMock()
+    monkeypatch.setattr(server_module, "insert_transcript_result", insert)
+
+    response = client.post(
+        "/deliver",
+        data=b"x" * (server_module.MAX_DELIVER_REQUEST_BYTES + 1),
+        content_type="application/json",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 413
+    assert response.get_json() == {"error": "request too large"}
+    insert.assert_not_called()
 
 
 def test_oversized_ingest_is_rejected_before_route(client, monkeypatch):

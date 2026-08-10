@@ -48,6 +48,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = cfg.webhook.max_request_bytes
 
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
+MAX_DELIVER_REQUEST_BYTES = 128 * 1024
 _SAFE_MEDIA_TYPES = frozenset(
     {
         "audio/aac",
@@ -56,12 +57,54 @@ _SAFE_MEDIA_TYPES = frozenset(
         "audio/m4a",
         "audio/mpeg",
         "audio/mp4",
+        "audio/mp4a-latm",
         "audio/ogg",
         "audio/wav",
+        "audio/x-caf",
         "audio/x-m4a",
+        "audio/x-wav",
         "application/octet-stream",
     }
 )
+_AUDIO_MEDIA_TYPES = _SAFE_MEDIA_TYPES - {"application/octet-stream"}
+_AUDIO_EXTENSION_MEDIA_TYPES = {
+    ".aac": frozenset({"audio/aac"}),
+    ".amr": frozenset({"audio/amr", "application/octet-stream"}),
+    ".caf": frozenset({"audio/caf", "audio/x-caf", "application/octet-stream"}),
+    ".m4a": frozenset(
+        {
+            "audio/m4a",
+            "audio/mp4",
+            "audio/mp4a-latm",
+            "audio/x-m4a",
+            "application/octet-stream",
+        }
+    ),
+    ".mp3": frozenset({"audio/mpeg"}),
+    ".mp4": frozenset({"audio/mp4", "audio/mp4a-latm"}),
+    ".oga": frozenset({"audio/ogg"}),
+    ".ogg": frozenset({"audio/ogg"}),
+    ".wav": frozenset({"audio/wav", "audio/x-wav"}),
+}
+_AUDIO_EXTENSION_TO_MEDIA_TYPE = {
+    extension: sorted(media_types - {"application/octet-stream"})[0]
+    for extension, media_types in _AUDIO_EXTENSION_MEDIA_TYPES.items()
+}
+_MEDIA_TYPE_TO_AUDIO_EXTENSION = {
+    "audio/aac": ".aac",
+    "audio/amr": ".amr",
+    "audio/caf": ".caf",
+    "audio/m4a": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mp4a-latm": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".caf",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+}
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -70,6 +113,55 @@ def _safe_media_type(value: object) -> str:
     if candidate in _SAFE_MEDIA_TYPES:
         return candidate
     return "unknown"
+
+
+def _normalized_media_type(value: object) -> str:
+    return str(value or "").split(";", 1)[0].strip().lower()
+
+
+def _reject_upload(reason: str, status_code: int, media_type: object):
+    """Return a bounded upload rejection without echoing user input."""
+    log.warning(
+        "Upload rejected reason=%s media_type=%s",
+        reason,
+        _safe_media_type(media_type),
+    )
+    return jsonify({"error": reason}), status_code
+
+
+def _validate_multipart_media(audio_file):
+    """Return (safe filename, canonical MIME type, suffix) or a response tuple."""
+    fname = _safe_upload_name(audio_file.filename, fallback="")
+    suffix = Path(fname).suffix.lower()
+    if not fname or not suffix:
+        return _reject_upload("audio filename required", 400, audio_file.mimetype)
+    if suffix not in _AUDIO_EXTENSION_MEDIA_TYPES:
+        return _reject_upload("unsupported audio media", 415, audio_file.mimetype)
+
+    media_type = _normalized_media_type(audio_file.mimetype)
+    allowed_media_types = _AUDIO_EXTENSION_MEDIA_TYPES[suffix]
+    if media_type not in allowed_media_types:
+        return _reject_upload("unsupported audio media", 415, audio_file.mimetype)
+
+    return fname, _AUDIO_EXTENSION_TO_MEDIA_TYPE[suffix], suffix
+
+
+def _validate_raw_media(media_type: object):
+    """Return (canonical MIME type, suffix) or a bounded response tuple."""
+    normalized = _normalized_media_type(media_type)
+    if normalized not in _AUDIO_MEDIA_TYPES:
+        return _reject_upload("unsupported audio media", 415, media_type)
+    return normalized, _MEDIA_TYPE_TO_AUDIO_EXTENSION[normalized]
+
+
+def _validate_bind_policy(host: object | None = None) -> None:
+    """Fail closed unless a non-loopback bind has explicit protection."""
+    candidate = str(host if host is not None else cfg.webhook.host).strip().lower()
+    if candidate in _LOOPBACK_HOSTS:
+        return
+    if os.environ.get("PENNY_WEBHOOK_ALLOW_NONLOOPBACK", "") == "1":
+        return
+    raise RuntimeError("non-loopback webhook bind requires explicit protection")
 
 
 def _safe_quality_code(value: object) -> str:
@@ -184,21 +276,26 @@ def upload():
         log.warning("Raw upload exceeds configured size limit")
         return jsonify({"error": "Audio file too large"}), 413
 
-    suffix = ".tmp"
     if audio_file:
-        fname = _safe_upload_name(audio_file.filename)
-        if "." in fname:
-            suffix = "." + fname.rsplit(".", 1)[-1].lower()
+        media_validation = _validate_multipart_media(audio_file)
+        if len(media_validation) == 2 and isinstance(media_validation[1], int):
+            return media_validation
+        fname, media_type, suffix = media_validation
         log.info(
             "Upload received multipart file_count=%d content_type=%s",
             len(request.files),
-            _safe_media_type(audio_file.mimetype or request.content_type),
+            _safe_media_type(media_type),
         )
     else:
+        media_validation = _validate_raw_media(request.mimetype)
+        if len(media_validation) == 2 and isinstance(media_validation[1], int):
+            return media_validation
+        media_type, suffix = media_validation
+        fname = ""
         log.info(
             "Upload received raw bytes=%d content_type=%s",
             len(raw_body),
-            _safe_media_type(request.content_type),
+            _safe_media_type(media_type),
         )
 
     temp_path = None
@@ -232,7 +329,7 @@ def upload():
             "source_alias": fname if audio_file else "raw-upload",
             "original_name": fname if audio_file else f"raw-upload{suffix}",
             "ingested_at": ingested_at,
-            "mime_type": audio_file.mimetype if audio_file else request.mimetype,
+            "mime_type": media_type,
             "backend": "mlx-whisper",
             "model": cfg.voice_memos.whisper_model,
         }
@@ -452,6 +549,19 @@ def deliver():
     if not secret or provided != f"Bearer {secret}":
         return jsonify({"error": "unauthorized"}), 401
 
+    if not request.is_json:
+        return jsonify({"error": "delivery requires JSON"}), 415
+    if (
+        request.content_length is not None
+        and request.content_length > MAX_DELIVER_REQUEST_BYTES
+    ):
+        return jsonify({"error": "request too large"}), 413
+    # Cache the bounded body before JSON parsing so a chunked request cannot
+    # bypass the explicit delivery limit.
+    raw_body = request.get_data(cache=True, as_text=False)
+    if len(raw_body) > MAX_DELIVER_REQUEST_BYTES:
+        return jsonify({"error": "request too large"}), 413
+
     body = request.get_json(silent=True) or {}
     text = (body.get("transcript") or "").strip()
     if not text:
@@ -548,6 +658,12 @@ def deliver():
 # ===== Main =====
 
 def main():
+    try:
+        _validate_bind_policy(cfg.webhook.host)
+    except RuntimeError as error:
+        log.error("Webhook startup refused reason=bind_policy")
+        raise SystemExit(str(error)) from error
+
     init_db()
     log.info("Starting Penny Webhook Server")
     log.info("  Port: %s", cfg.webhook.port)

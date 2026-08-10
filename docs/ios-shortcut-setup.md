@@ -8,7 +8,8 @@ Create a new Shortcut with these actions:
 
 1. **Record Audio** - Duration: "Ask When Running" or "Set to 0 for manual stop"
 2. **Get Contents of URL** - POST to webhook
-   - URL: `http://macmini:5678/upload`
+   - URL: `http://127.0.0.1:5678/upload` for a local-Mac test, or the
+     protected endpoint configured for your deployment
    - Headers: `Authorization: Bearer <PENNY_INGEST_TOKEN>`
    - Request Body: Form
      - audio: Variable (select the recorded audio)
@@ -32,7 +33,8 @@ If you prefer the native Voice Memos app:
 1. Create Shortcut with:
    - **Find Voice Memos** - Filter: "Created in last 1 minute"
    - **Repeat with Each**:
-     - **Get Contents of URL** - POST to `http://macmini:5678/upload`
+     - **Get Contents of URL** - POST to `http://127.0.0.1:5678/upload` for a
+       local-Mac test, or the protected endpoint configured for your deployment
      - Header: `Authorization: Bearer <PENNY_INGEST_TOKEN>`
      - Form field: audio = Repeat Item
 
@@ -45,9 +47,17 @@ If you prefer the native Voice Memos app:
 
 ## Webhook URL
 
-- **Public (no Tailscale needed)**: `https://omars-mac-mini.deer-panga.ts.net/upload` (use this — works from anywhere, no VPN)
-- **Via Tailscale**: `http://macmini:5678/upload` (when Tailscale is active on phone)
-- **Local network**: `http://100.113.216.27:5678/upload` (hardcoded Tailscale IP)
+Phase A binds the webhook to loopback (`127.0.0.1`) by default. A phone or
+watch cannot reach that address directly; use it only for a local-Mac test.
+There is no public Penny upload URL.
+
+For a phone-accessible Shortcut, first deploy a protected LAN or tunnel
+endpoint and use that deployment's hostname. Set `PENNY_WEBHOOK_HOST` to the
+protected interface and set `PENNY_WEBHOOK_ALLOW_NONLOOPBACK=1` only after the
+firewall/tunnel and the ingest token are in place. The server refuses an
+unprotected non-loopback bind at startup; verify `/ready` reports the protected
+bind before putting the endpoint in a Shortcut. Do not use `0.0.0.0` as a
+standalone exposure setting or publish a tailnet URL from this document.
 
 ## Testing
 
@@ -57,5 +67,6 @@ If you prefer the native Voice Memos app:
 
 Set `PENNY_INGEST_TOKEN` in the webhook launchd environment before using either
 shortcut. `config.toml` defaults the webhook to loopback; set
-`PENNY_WEBHOOK_HOST=0.0.0.0` only for the protected LAN deployment. Old
-headerless clients receive `401 Unauthorized`.
+`PENNY_WEBHOOK_HOST` and `PENNY_WEBHOOK_ALLOW_NONLOOPBACK=1` only for an
+explicitly protected deployment. Old headerless clients receive `401
+Unauthorized`.
