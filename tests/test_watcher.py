@@ -106,6 +106,68 @@ class WatcherTests(unittest.TestCase):
 
         routed.assert_not_called()
 
+    def test_existing_pending_row_resumes_routing_without_transcribing(self) -> None:
+        audio_path = Path(self.db_dir) / "existing-pending.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 88,
+            "status": "pending",
+            "quality_status": "passed",
+            "transcript": "route canonical transcript",
+            "source": "iCloud",
+        }
+
+        with (
+            patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+            patch.object(watcher, "classify_and_route") as route,
+            patch.object(watcher, "mark_voice_memo_routed") as routed,
+        ):
+            self.assertTrue(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="existing-pending-hash",
+                    recording_pk=88,
+                )
+            )
+
+        transcribe.assert_not_called()
+        route.assert_called_once_with(
+            "route canonical transcript",
+            source="iCloud",
+            row_id=88,
+            duration_seconds=None,
+            allow_maya=False,
+        )
+        routed.assert_called_once_with(88)
+
+    def test_existing_routed_row_skips_routing(self) -> None:
+        audio_path = Path(self.db_dir) / "existing-routed.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 89,
+            "status": "routed",
+            "quality_status": "passed",
+            "transcript": "already routed",
+            "source": "iCloud",
+        }
+
+        with (
+            patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+            patch.object(watcher, "classify_and_route") as route,
+        ):
+            self.assertTrue(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="existing-routed-hash",
+                    recording_pk=89,
+                )
+            )
+
+        transcribe.assert_not_called()
+        route.assert_not_called()
+
     def test_new_recording_routes_without_draining_slack_outbox(self) -> None:
         audio_path = Path(self.db_dir) / "new-recording.m4a"
         audio_path.write_bytes(b"audio")

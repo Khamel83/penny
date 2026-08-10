@@ -529,6 +529,99 @@ def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
     route_called.assert_not_called()
 
 
+@pytest.mark.parametrize("status", ["pending", "failed"])
+def test_deliver_resumes_pending_or_failed_duplicate_before_success(
+    client, monkeypatch, status
+):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    canonical = {
+        "id": 7,
+        "status": status,
+        "transcript": "canonical delivery transcript",
+        "source": "maya:voice_memo",
+    }
+    routed = {**canonical, "status": "routed"}
+    monkeypatch.setattr(
+        server_module,
+        "insert_transcript_result",
+        lambda **_: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=7, existing_status=status
+        ),
+    )
+    monkeypatch.setattr(
+        server_module, "get_transcript_by_hash", MagicMock(side_effect=[canonical, routed])
+    )
+    route = MagicMock(return_value={"items": []})
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+
+    response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "delivered", "id": 7}
+    assert server_module.get_transcript_by_hash.call_count == 2
+    route.assert_called_once_with(
+        "canonical delivery transcript",
+        "maya:voice_memo",
+        row_id=7,
+        duration_seconds=DELIVER_PAYLOAD["duration_seconds"],
+        allow_maya=False,
+    )
+
+
+def test_deliver_duplicate_requires_durable_route_confirmation(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    canonical = {
+        "id": 9,
+        "status": "pending",
+        "transcript": "canonical delivery transcript",
+        "source": "maya:voice_memo",
+    }
+    monkeypatch.setattr(
+        server_module,
+        "insert_transcript_result",
+        lambda **_: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=9, existing_status="pending"
+        ),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_transcript_by_hash",
+        MagicMock(side_effect=[canonical, canonical]),
+    )
+    route = MagicMock(return_value={"items": []})
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+
+    response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "delivery unavailable"}
+    route.assert_called_once()
+
+
+def test_deliver_routed_duplicate_skips_routing(client, monkeypatch):
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setattr(
+        server_module,
+        "insert_transcript_result",
+        lambda **_: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=8, existing_status="routed"
+        ),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_transcript_by_hash",
+        lambda _: {"id": 8, "status": "routed"},
+    )
+    route = MagicMock()
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+
+    response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "duplicate"}
+    route.assert_not_called()
+
+
 def test_deliver_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
     sentinel = "deliver-routing-secret-must-not-leak"
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")

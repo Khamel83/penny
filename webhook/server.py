@@ -338,8 +338,26 @@ def deliver():
         if existing is None:
             log.error("/deliver duplicate has no canonical row")
             return jsonify({"error": "delivery unavailable"}), 503
-        log.info("/deliver: duplicate transcript (hash=%s)", content_hash[:12])
-        return jsonify({"status": "duplicate"})
+        row_id = int(existing["id"])
+        if existing.get("status") in {"routed", "processed"}:
+            log.info("/deliver: duplicate transcript (hash=%s)", content_hash[:12])
+            return jsonify({"status": "duplicate"})
+        try:
+            classify_and_route(
+                str(existing["transcript"]),
+                str(existing["source"]),
+                row_id=row_id,
+                duration_seconds=duration,
+                allow_maya=False,
+            )
+        except Exception as error:
+            log.error("/deliver retry routing failed (%s)", type(error).__name__)
+            return jsonify({"error": "delivery processing failed"}), 500
+        confirmed = get_transcript_by_hash(content_hash)
+        if confirmed is None or confirmed.get("status") not in {"routed", "processed"}:
+            log.error("/deliver retry routing is not durably confirmed")
+            return jsonify({"error": "delivery unavailable"}), 503
+        return jsonify({"status": "delivered", "id": row_id})
 
     row_id = int(result.row_id)
     log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",

@@ -480,15 +480,29 @@ def _process_audio_file(
     existing = get_transcript_by_hash(file_hash)
     if existing is not None:
         log.info("Already logged: %s", audio_path.name)
+        row_id = int(existing["id"])
+        already_routed = existing.get("status") in {"routed", "processed"}
         if recording_pk is not None:
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
             link_voice_memo_transcript(
                 recording_pk,
-                transcript_row_id=int(existing["id"]),
+                transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-                routed=existing.get("status") == "routed",
+                routed=already_routed,
             )
+        if already_routed or existing.get("quality_status") != "passed":
+            return True
+
+        classify_and_route(
+            str(existing["transcript"]),
+            source=str(existing["source"]),
+            row_id=row_id,
+            duration_seconds=duration_seconds,
+            allow_maya=False,
+        )
+        if recording_pk is not None:
+            mark_voice_memo_routed(recording_pk)
         return True
 
     file_seen_at = datetime.now().isoformat()
