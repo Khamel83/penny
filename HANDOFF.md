@@ -63,8 +63,12 @@ An ingest is acknowledged only after a typed persistence result is `inserted` or
 retryable/backoff state or `failed_terminal`; there is no separate completion
 watermark. Incomplete or changing audio remains `awaiting_file`/retryable until
 the source is fully materialized; a terminal source row remains `failed_terminal`.
-Retryable work uses bounded exponential backoff. Archive and Apple-effect
-failures use quarantine; Maya terminal delivery uses `dead_letter`.
+Retryable work uses bounded exponential backoff. Archive publication failures
+remain pending through bounded retries and then become visibly `failed`;
+published-mirror conflicts use recoverable conflict quarantine. Terminal or
+conflicting Apple-effect failures use quarantine, ordinary failures remain
+`failed`, and ambiguous timeouts remain `uncertain`. Maya terminal delivery
+uses `dead_letter`.
 
 Apple effects persist a deterministic key before attempting the side effect and
 record provider identifiers plus a read-back receipt. An ambiguous timeout is

@@ -30,7 +30,16 @@ def _ready_probes(tmp_path: Path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     return {
         "sqlite": {"query_ok": 1, "integrity_ok": 1, "foreign_keys_ok": 1, "schema_ok": 1},
-        "voice_memos": {"query_ok": 1, "terminal_failure_count": 0, "failed_count": 0, "retry_due_count": 0, "awaiting_file_count": 0, "source_watermark": 4},
+        "voice_memos": {
+            "query_ok": 1,
+            "terminal_failure_count": 0,
+            "failed_count": 0,
+            "retry_due_count": 0,
+            "awaiting_file_count": 0,
+            "source_watermark": 4,
+            "voicememos_responsive": True,
+            "voice_db_ok": True,
+        },
         "archive": {"health_error": 0, "failed_count": 0, "invalid_count": 0, "rebuild_needed_count": 0, "pending_count": 0},
         "transcription": {"verified": True, "offline": True},
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
@@ -43,6 +52,8 @@ def _ready_probes(tmp_path: Path):
             "launchd_ok": True,
             "age_seconds": 2,
             "timestamp_valid": True,
+            "voicememos_responsive": True,
+            "voice_db_ok": True,
         },
         "ingress": {
             "secret_configured": True,
@@ -61,6 +72,48 @@ def test_doctor_marks_source_terminal_failure_unready(tmp_path: Path):
     report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
     assert report.overall == "unready"
     assert report.components["voice_memos"].reason == "terminal_failure"
+
+
+def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypatch):
+    import doctor
+
+    observed = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    health_file = tmp_path / "health.txt"
+    tasks_health_file = tmp_path / "health_tasks.txt"
+    health_file.write_text(
+        "2026-08-10T12:00:00Z|watcher_ok:1|"
+        "voicememos_responsive:0|voice_db_ok:0|",
+        encoding="utf-8",
+    )
+    tasks_health_file.write_text("tasks_poller_ok:1\n", encoding="utf-8")
+    os.utime(health_file, (observed.timestamp(), observed.timestamp()))
+    os.utime(tasks_health_file, (observed.timestamp(), observed.timestamp()))
+    monkeypatch.setenv("PENNY_HEALTH_FILE", str(health_file))
+    monkeypatch.setenv("PENNY_TASKS_HEALTH_FILE", str(tasks_health_file))
+    monkeypatch.setattr(
+        doctor.transcript_log,
+        "get_voice_memo_health",
+        lambda: {
+            "query_ok": 1,
+            "health_error": 0,
+            "terminal_failure_count": 0,
+            "failed_count": 0,
+            "retry_due_count": 0,
+            "awaiting_file_count": 0,
+            "source_watermark": 4,
+        },
+    )
+
+    voice = doctor._default_probe_voice_memos(now=observed)
+    services = doctor._default_probe_services(now=observed)
+
+    assert voice["voicememos_responsive"] is False
+    assert voice["voice_db_ok"] is False
+    assert doctor._infer_status("voice_memos", voice) == ("unready", "source_unavailable")
+    services["launchd_ok"] = True
+    assert services["voicememos_responsive"] is False
+    assert services["voice_db_ok"] is False
+    assert doctor._infer_status("services", services) == ("unready", "source_unavailable")
 
 
 def test_doctor_separates_liveness_from_readiness(tmp_path: Path):

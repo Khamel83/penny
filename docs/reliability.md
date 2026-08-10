@@ -35,8 +35,11 @@ An audio file is copied into Penny-owned local staging, checked for a stable
 size/signature, and hashed. A source that changes during copying is retried;
 partial materialization remains `awaiting_file`/retryable, and a terminal source
 row is `failed_terminal`. Temporary archive material is removed after a failed
-copy; archive and Apple-effect failures use quarantine, while Maya terminal
-delivery uses `dead_letter`.
+copy. Archive publication failures remain pending through bounded retries and
+then become visibly `failed`; migration/orphan rows and invalid published-mirror
+material use recoverable quarantine. Terminal or conflicting Apple-effect
+failures use quarantine, ordinary failures remain `failed`, and ambiguous
+timeouts remain `uncertain`. Maya terminal delivery uses `dead_letter`.
 Retryable failures use bounded backoff and a terminal attempt/age limit.
 
 ## Archive and iCloud mirror

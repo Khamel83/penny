@@ -65,6 +65,7 @@ _SAFE_REASON_VALUES = frozenset(
         "schema_failure",
         "secret_missing",
         "source_stale",
+        "source_unavailable",
         "terminal_failure",
         "timestamp_invalid",
         "uncertain_effect",
@@ -109,6 +110,8 @@ _SAFE_DETAIL_KEYS = frozenset(
         "verified",
         "watcher_ok",
         "tasks_ok",
+        "voicememos_responsive",
+        "voice_db_ok",
         "offline",
         "integrity_check_ok",
         "foreign_key_check_ok",
@@ -197,9 +200,20 @@ _STARTUP_SOURCE_REVISION = _capture_startup_source_revision()
 
 
 _REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
+    "voice_memos": frozenset(
+        {"query_ok", "voicememos_responsive", "voice_db_ok"}
+    ),
     "backup": frozenset({"verified", "age_seconds", "timestamp_valid"}),
     "services": frozenset(
-        {"watcher_ok", "tasks_ok", "launchd_ok", "age_seconds", "timestamp_valid"}
+        {
+            "watcher_ok",
+            "tasks_ok",
+            "launchd_ok",
+            "age_seconds",
+            "timestamp_valid",
+            "voicememos_responsive",
+            "voice_db_ok",
+        }
     ),
     "ingress": frozenset(
         {"secret_configured", "callback_secret_configured", "loopback_bind", "protected_bind"}
@@ -392,6 +406,7 @@ def _default_probe_sqlite(_config: Any = None, *, now: datetime | None = None, *
 
 def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     health = transcript_log.get_voice_memo_health()
+    watcher_path = Path(os.environ.get("PENNY_HEALTH_FILE", "~/.penny/health.txt")).expanduser()
     data = {
         key: health.get(key, 0)
         for key in (
@@ -405,6 +420,10 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
             "max_attempt_count",
         )
     }
+    data["voicememos_responsive"] = _health_flag(
+        watcher_path, "voicememos_responsive"
+    )
+    data["voice_db_ok"] = _health_flag(watcher_path, "voice_db_ok")
     waiting = health.get("oldest_waiting_discovered_at")
     if waiting:
         age, valid = _age_seconds(waiting, now=now)
@@ -654,6 +673,10 @@ def _default_probe_services(_config: Any = None, *, now: datetime | None = None,
         "launchd_ok": _launchd_status(),
         "age_seconds": age,
         "timestamp_valid": bool(watcher_valid),
+        "voicememos_responsive": _health_flag(
+            watcher_path, "voicememos_responsive"
+        ),
+        "voice_db_ok": _health_flag(watcher_path, "voice_db_ok"),
     }
 
 
@@ -844,6 +867,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if name == "voice_memos":
         if not values.get("query_ok", 1) or values.get("health_error", 0):
             return "unready", "database_unavailable"
+        if not values.get("voicememos_responsive", False) or not values.get(
+            "voice_db_ok", False
+        ):
+            return "unready", "source_unavailable"
         if values.get("timestamp_valid") is False:
             return "unready", "timestamp_invalid"
         if int(values.get("terminal_failure_count", 0) or 0) > 0:
@@ -916,6 +943,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if name == "services":
         if values.get("timestamp_valid") is False:
             return "unready", "timestamp_invalid"
+        if not values.get("voicememos_responsive", False) or not values.get(
+            "voice_db_ok", False
+        ):
+            return "unready", "source_unavailable"
         if not values.get("watcher_ok", False) or not values.get("launchd_ok", False):
             return "unready", "launchd_unavailable"
         if int(values.get("age_seconds", 0) or 0) > _DEFAULT_HEALTH_MAX_AGE_SECONDS:
