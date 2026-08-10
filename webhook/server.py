@@ -110,6 +110,9 @@ def upload():
     if not audio_file and not raw_body:
         log.warning("Upload rejected — no audio. Files: %s, Content-Type: %s", list(request.files.keys()), request.content_type)
         return jsonify({"error": "No audio file — expected multipart field or raw audio body"}), 400
+    if raw_body and len(raw_body) > MAX_FILE_SIZE:
+        log.warning("Raw upload exceeds configured size limit")
+        return jsonify({"error": "Audio file too large"}), 413
 
     suffix = ".tmp"
     if audio_file:
@@ -192,9 +195,9 @@ def upload():
             "skipped": result.get("skip", False),
         })
 
-    except Exception as e:
-        log.error("Upload error: %s", e, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+    except Exception as error:
+        log.error("Upload processing failed (%s)", type(error).__name__)
+        return jsonify({"error": "upload processing failed"}), 500
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -246,9 +249,9 @@ def ingest():
             )
         else:
             result = {"skip": True, "reason": "duplicate"}
-    except Exception as e:
-        log.error("Ingest error: %s", e, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+    except Exception as error:
+        log.error("Ingest processing failed (%s)", type(error).__name__)
+        return jsonify({"error": "ingest processing failed"}), 500
 
     return jsonify({
         "status": "ok",

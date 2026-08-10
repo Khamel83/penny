@@ -327,6 +327,67 @@ def test_oversized_upload_is_rejected_before_processing(client, monkeypatch):
     temp_file.assert_not_called()
 
 
+def test_raw_upload_over_audio_limit_is_rejected_before_processing(client, monkeypatch):
+    transcribe = MagicMock()
+    route = MagicMock()
+    temp_file = MagicMock()
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+    monkeypatch.setattr(server_module.tempfile, "NamedTemporaryFile", temp_file)
+
+    response = client.post(
+        "/upload",
+        data=b"x" * (server_module.MAX_FILE_SIZE + 1),
+        content_type="audio/m4a",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 413
+    assert response.get_json() == {"error": "Audio file too large"}
+    transcribe.assert_not_called()
+    route.assert_not_called()
+    temp_file.assert_not_called()
+
+
+def test_upload_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
+    sentinel = "upload-routing-secret-must-not-leak"
+    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(server_module, "transcribe", lambda _: (_ for _ in ()).throw(RuntimeError(sentinel)))
+    caplog.set_level(logging.ERROR, logger=server_module.log.name)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"audio"), "memo.m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "upload processing failed"}
+    assert sentinel not in caplog.text
+    assert sentinel not in response.get_data(as_text=True)
+
+
+def test_ingest_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
+    sentinel = "ingest-routing-secret-must-not-leak"
+    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(
+        server_module,
+        "insert_transcript",
+        lambda **_: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    caplog.set_level(logging.ERROR, logger=server_module.log.name)
+
+    response = client.post(
+        "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "ingest processing failed"}
+    assert sentinel not in caplog.text
+    assert sentinel not in response.get_data(as_text=True)
+
+
 def test_ingest_token_cannot_authorize_deliver(client, monkeypatch):
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "deliver-secret")
     response = client.post(
