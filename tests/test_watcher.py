@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1228,6 +1229,26 @@ class WatcherTests(unittest.TestCase):
             ) as pending,
             patch.object(
                 maya_delivery,
+                "claim_maya_delivery",
+                side_effect=[
+                    {
+                        "transcript_id": "101",
+                        "maya_claim_token": "token-101",
+                        "maya_claim_owner": "test-worker",
+                        "maya_claimed_at": "2026-08-10T12:00:00Z",
+                        "maya_claim_expires_at": "2026-08-10T12:02:00Z",
+                    },
+                    {
+                        "transcript_id": "102",
+                        "maya_claim_token": "token-102",
+                        "maya_claim_owner": "test-worker",
+                        "maya_claimed_at": "2026-08-10T12:00:00Z",
+                        "maya_claim_expires_at": "2026-08-10T12:02:00Z",
+                    },
+                ],
+            ),
+            patch.object(
+                maya_delivery,
                 "build_maya_v2_envelope",
                 side_effect=[RuntimeError("bad first row"), envelope],
             ),
@@ -1289,6 +1310,65 @@ class WatcherTests(unittest.TestCase):
         stored = transcript_log.get_transcript(int(row_id))
         self.assertEqual(stored["maya_delivery_status"], "dead_letter")
         self.assertEqual(stored["maya_dead_letter_reason"], "attempt_cap")
+
+    def test_two_maya_workers_claim_one_row_and_post_once(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-two-worker-claim",
+            source="iCloud",
+            transcript="Two workers must produce one HTTP request.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        selected = {
+            "id": int(row_id),
+            "maya_delivery_attempt_count": 0,
+        }
+        pending_calls = 0
+        pending_lock = threading.Lock()
+
+        def pending_rows(*, limit: int, max_attempts: int, max_age_days: int):
+            nonlocal pending_calls
+            with pending_lock:
+                pending_calls += 1
+            return [selected]
+
+        response = SimpleNamespace(status_code=200, json=lambda: {})
+        results: list[int] = []
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya.test/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(maya_delivery, "get_pending_maya_deliveries", side_effect=pending_rows),
+            patch.object(maya_delivery.requests, "post", return_value=response) as post,
+            patch.object(maya_delivery, "_validated_drop_id", return_value="drop-two-worker"),
+        ):
+            workers = [
+                threading.Thread(
+                    target=lambda: results.append(
+                        maya_delivery.process_pending_maya_deliveries(limit=1)
+                    )
+                )
+                for _ in range(2)
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=5)
+
+        self.assertEqual(pending_calls, 2)
+        self.assertEqual(sorted(results), [0, 1])
+        self.assertEqual(post.call_count, 1)
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-two-worker")
+        self.assertIsNone(stored["maya_claim_token"])
 
     def test_each_ingest_pass_reaches_slack_before_a_maya_outage(self) -> None:
         events: list[str] = []

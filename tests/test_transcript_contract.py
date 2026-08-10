@@ -629,12 +629,23 @@ class TranscriptContractTests(unittest.TestCase):
         ]
         persistence_attempts = 0
 
-        def persist_receipt(transcript_row_id: int, drop_id: str) -> None:
+        def persist_receipt(
+            transcript_row_id: int,
+            drop_id: str,
+            *,
+            claim_token: str | None = None,
+            claim_owner: str | None = None,
+        ) -> None:
             nonlocal persistence_attempts
             persistence_attempts += 1
             if persistence_attempts == 1:
                 raise sqlite3.OperationalError("simulated local write failure")
-            transcript_log.mark_maya_delivery_sent(transcript_row_id, drop_id)
+            transcript_log.mark_maya_delivery_sent(
+                transcript_row_id,
+                drop_id,
+                claim_token=claim_token,
+                claim_owner=claim_owner,
+            )
 
         with (
             patch.object(

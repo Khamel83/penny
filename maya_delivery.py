@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -13,10 +15,12 @@ import requests
 from config import get_config
 from transcript_log import (
     build_maya_v2_envelope,
+    claim_maya_delivery,
     get_pending_maya_deliveries,
     mark_maya_delivery_failed,
     mark_maya_delivery_retryable,
     mark_maya_delivery_sent,
+    release_maya_delivery_claim,
 )
 
 log = logging.getLogger(__name__)
@@ -59,6 +63,7 @@ def _schedule_retry(
     row_id: int,
     delivery: dict[str, Any],
     error_message: str,
+    claim: dict[str, str] | None = None,
 ) -> None:
     try:
         mark_maya_delivery_retryable(
@@ -67,6 +72,8 @@ def _schedule_retry(
             retry_after_seconds=_retry_delay_seconds(delivery),
             max_attempts=getattr(cfg.maya, "max_attempts", 20),
             max_age_days=getattr(cfg.maya, "max_age_days", 7),
+            claim_token=claim.get("maya_claim_token") if claim else None,
+            claim_owner=claim.get("maya_claim_owner") if claim else None,
         )
     except Exception as exc:
         log.error(
@@ -76,9 +83,18 @@ def _schedule_retry(
         )
 
 
-def _record_invalid_receipt(row_id: int, error_message: str) -> None:
+def _record_invalid_receipt(
+    row_id: int,
+    error_message: str,
+    claim: dict[str, str] | None = None,
+) -> None:
     try:
-        mark_maya_delivery_failed(row_id, error_message)
+        mark_maya_delivery_failed(
+            row_id,
+            error_message,
+            claim_token=claim.get("maya_claim_token") if claim else None,
+            claim_owner=claim.get("maya_claim_owner") if claim else None,
+        )
     except Exception as exc:
         log.error(
             "Maya invalid-receipt state could not be persisted for transcript=%s: %s",
@@ -129,9 +145,18 @@ def _validated_drop_id(
     return drop_id
 
 
-def _mark_permanent_failure(row_id: int, error_code: str) -> None:
+def _mark_permanent_failure(
+    row_id: int,
+    error_code: str,
+    claim: dict[str, str] | None = None,
+) -> None:
     try:
-        mark_maya_delivery_failed(row_id, error_code)
+        mark_maya_delivery_failed(
+            row_id,
+            error_code,
+            claim_token=claim.get("maya_claim_token") if claim else None,
+            claim_owner=claim.get("maya_claim_owner") if claim else None,
+        )
     except Exception as exc:
         log.error(
             "Maya failure state could not be persisted for transcript=%s: %s",
@@ -145,6 +170,7 @@ def _process_one_maya_delivery(
     *,
     maya_url: str,
     maya_token: str,
+    claim: dict[str, str],
 ) -> bool:
     row_id = int(delivery["id"])
     try:
@@ -161,7 +187,7 @@ def _process_one_maya_delivery(
             row_id,
             type(exc).__name__,
         )
-        _mark_permanent_failure(row_id, "delivery_error")
+        _mark_permanent_failure(row_id, "delivery_error", claim)
         return False
 
     try:
@@ -180,11 +206,7 @@ def _process_one_maya_delivery(
             row_id,
             type(exc).__name__,
         )
-        _schedule_retry(
-            row_id,
-            delivery,
-            "delivery_error",
-        )
+        _schedule_retry(row_id, delivery, "delivery_error", claim)
         return False
 
     if _is_transient_status(response.status_code):
@@ -193,10 +215,10 @@ def _process_one_maya_delivery(
             row_id,
             response.status_code,
         )
-        _schedule_retry(row_id, delivery, "provider_error:TransientHTTP")
+        _schedule_retry(row_id, delivery, "provider_error:TransientHTTP", claim)
         return False
     if response.status_code != 200:
-        _mark_permanent_failure(row_id, "provider_error:HTTPError")
+        _mark_permanent_failure(row_id, "provider_error:HTTPError", claim)
         return False
 
     try:
@@ -210,6 +232,7 @@ def _process_one_maya_delivery(
         _record_invalid_receipt(
             row_id,
             "acknowledgement_error:InvalidReceipt",
+            claim,
         )
         return False
 
@@ -224,6 +247,7 @@ def _process_one_maya_delivery(
         _record_invalid_receipt(
             row_id,
             "acknowledgement_error:ReceiptConflict",
+            claim,
         )
         return False
     except InvalidReceiptError as exc:
@@ -235,12 +259,23 @@ def _process_one_maya_delivery(
         _record_invalid_receipt(
             row_id,
             "acknowledgement_error:InvalidReceipt",
+            claim,
         )
         return False
 
     try:
-        mark_maya_delivery_sent(row_id, drop_id)
+        mark_maya_delivery_sent(
+            row_id,
+            drop_id,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
+        )
     except Exception as exc:
+        release_maya_delivery_claim(
+            row_id,
+            claim.get("maya_claim_token"),
+            claim.get("maya_claim_owner"),
+        )
         log.error(
             "Maya receipt persistence failed for transcript=%s: %s",
             row_id,
@@ -261,16 +296,30 @@ def process_pending_maya_deliveries(limit: int = 20) -> int:
     delivered = 0
     max_attempts = getattr(cfg.maya, "max_attempts", 20)
     max_age_days = getattr(cfg.maya, "max_age_days", 7)
+    worker_owner = f"penny-maya-worker:{os.getpid()}:{threading.get_ident()}"
     for delivery in get_pending_maya_deliveries(
         limit=limit,
         max_attempts=max_attempts,
         max_age_days=max_age_days,
     ):
         try:
+            row_id = int(delivery["id"])
+            claim = claim_maya_delivery(row_id, worker_owner)
+        except Exception as exc:
+            log.error(
+                "Maya delivery claim failed for transcript=%s: %s",
+                delivery.get("id", "unknown"),
+                type(exc).__name__,
+            )
+            continue
+        if claim is None:
+            continue
+        try:
             if _process_one_maya_delivery(
                 delivery,
                 maya_url=maya_url,
                 maya_token=maya_token,
+                claim=claim,
             ):
                 delivered += 1
         except Exception as exc:

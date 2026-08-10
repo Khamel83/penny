@@ -881,6 +881,10 @@ class TranscriptLogTests(unittest.TestCase):
                 "maya_last_attempt_at",
                 "maya_dead_letter_at",
                 "maya_dead_letter_reason",
+                "maya_claim_token",
+                "maya_claim_owner",
+                "maya_claimed_at",
+                "maya_claim_expires_at",
                 "maya_delivery_eligible",
                 "recorded_at",
                 "superseded_by_transcript_row_id",
@@ -1359,6 +1363,221 @@ class TranscriptLogTests(unittest.TestCase):
         stored = transcript_log.get_transcript(int(row_id))
         self.assertEqual(stored["maya_delivery_status"], "dead_letter")
         self.assertEqual(stored["maya_dead_letter_reason"], "age_cap")
+
+    def test_maya_pending_query_terminalizes_invalid_schedule_and_preserves_future_schedule(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        invalid = transcript_log.insert_transcript(
+            content_hash="maya-invalid-next-attempt",
+            source="iCloud",
+            transcript="Invalid schedule must not be sent.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        future = transcript_log.insert_transcript(
+            content_hash="maya-future-next-attempt",
+            source="iCloud",
+            transcript="Future schedule remains pending.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.executemany(
+                "UPDATE transcripts SET maya_next_attempt_at = ? WHERE id = ?",
+                [("not-a-schedule", invalid), ("2026-08-11T12:00:00Z", future)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        pending = transcript_log.get_pending_maya_deliveries(limit=10, now=now)
+
+        self.assertEqual([int(row["id"]) for row in pending], [])
+        invalid_row = transcript_log.get_transcript(int(invalid))
+        future_row = transcript_log.get_transcript(int(future))
+        self.assertEqual(invalid_row["maya_delivery_status"], "dead_letter")
+        self.assertEqual(invalid_row["maya_dead_letter_reason"], "invalid_schedule")
+        self.assertEqual(future_row["maya_delivery_status"], "pending")
+        self.assertEqual(future_row["maya_next_attempt_at"], "2026-08-11T12:00:00Z")
+
+    def test_maya_claim_is_atomic_owner_bound_and_expired_claims_recover(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-claim-cas",
+            source="iCloud",
+            transcript="Only one worker may claim this row.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+
+        first = transcript_log.claim_maya_delivery(
+            int(row_id), "worker-a", now=now, lease_seconds=60
+        )
+        self.assertIsNotNone(first)
+        self.assertEqual(first["maya_claim_owner"], "worker-a")
+        self.assertEqual(
+            transcript_log.claim_maya_delivery(
+                int(row_id), "worker-b", now=now, lease_seconds=60
+            ),
+            None,
+        )
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_retryable(
+                int(row_id),
+                "timeout",
+                now=now,
+                claim_token=first["maya_claim_token"],
+                claim_owner="worker-b",
+            )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "pending")
+        self.assertEqual(stored["maya_claim_owner"], "worker-a")
+
+        recovered = transcript_log.claim_maya_delivery(
+            int(row_id), "worker-b", now="2026-08-10T12:01:01Z", lease_seconds=60
+        )
+        self.assertIsNotNone(recovered)
+        self.assertNotEqual(
+            recovered["maya_claim_token"], first["maya_claim_token"]
+        )
+        self.assertEqual(recovered["maya_claim_owner"], "worker-b")
+
+    def test_maya_claim_cannot_use_stale_snapshot_after_dead_letter(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-claim-stale-snapshot",
+            source="iCloud",
+            transcript="A stale selection cannot dispatch.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        selected = transcript_log.get_pending_maya_deliveries(limit=1, now=now)[0]
+        self.assertEqual(selected["id"], row_id)
+        self.assertTrue(
+            transcript_log.mark_maya_delivery_dead_letter(
+                int(row_id), "operator_replay", now=now
+            )
+        )
+        self.assertIsNone(
+            transcript_log.claim_maya_delivery(int(row_id), "worker-a", now=now)
+        )
+
+    def test_maya_claim_owner_is_required_for_worker_transitions(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-claim-owner-transition",
+            source="iCloud",
+            transcript="Claim ownership gates every worker transition.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        claim = transcript_log.claim_maya_delivery(int(row_id), "worker-a", now=now)
+        self.assertIsNotNone(claim)
+        claim_kwargs = {
+            "claim_token": claim["maya_claim_token"],
+            "claim_owner": "worker-b",
+        }
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_sent(
+                int(row_id), "drop-owner-mismatch", **claim_kwargs
+            )
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_failed(
+                int(row_id), "provider_error", **claim_kwargs
+            )
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_retryable(
+                int(row_id), "timeout", now=now, **claim_kwargs
+            )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "pending")
+        self.assertEqual(stored["maya_claim_owner"], "worker-a")
+
+    def test_maya_pending_row_with_drop_id_cannot_overwrite_receipt(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-pending-drop-invariant",
+            source="iCloud",
+            transcript="A pending row with a receipt must not be overwritten.",
+            ingest_state="transcribed",
+            recorded_at="2026-08-10T12:00:00Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_drop_id = ? WHERE id = ?",
+                ("drop-existing", row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_sent(int(row_id), "drop-new")
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "pending")
+        self.assertEqual(stored["maya_drop_id"], "drop-existing")
+
+    def test_active_maya_claim_is_not_terminalized_until_lease_expiry(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-active-claim-cap",
+            source="iCloud",
+            transcript="An active worker claim must finish its HTTP attempt.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 20, "
+                "maya_first_attempt_at = ? WHERE id = ?",
+                ("2026-08-01T12:00:00Z", row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        claim = transcript_log.claim_maya_delivery(
+            int(row_id), "worker-active", now=now, lease_seconds=60
+        )
+        self.assertIsNotNone(claim)
+
+        pending = transcript_log.get_pending_maya_deliveries(limit=10, now=now)
+        self.assertEqual([int(row["id"]) for row in pending], [int(row_id)])
+        active = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(active["maya_delivery_status"], "pending")
+        self.assertEqual(active["maya_claim_owner"], "worker-active")
+
+        expired_pending = transcript_log.get_pending_maya_deliveries(
+            limit=10, now="2026-08-10T12:01:01Z"
+        )
+        self.assertEqual(expired_pending, [])
+        expired = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(expired["maya_delivery_status"], "dead_letter")
+        self.assertEqual(expired["maya_dead_letter_reason"], "attempt_cap")
+        self.assertIsNone(expired["maya_claim_token"])
+        self.assertIsNone(expired["maya_claim_owner"])
 
     def test_maya_replay_preserves_envelope_and_only_resets_delivery_schedule(self) -> None:
         now = "2026-08-10T12:00:00Z"

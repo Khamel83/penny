@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -39,8 +40,15 @@ MAYA_MAX_AGE_DAYS = 7
 # Descriptive aliases retained for callers that prefer the delivery namespace.
 MAYA_DELIVERY_MAX_ATTEMPTS = MAYA_MAX_ATTEMPTS
 MAYA_DELIVERY_MAX_AGE_DAYS = MAYA_MAX_AGE_DAYS
+MAYA_CLAIM_LEASE_SECONDS = 120
 MAYA_DEAD_LETTER_REASONS = frozenset(
-    {"attempt_cap", "age_cap", "operator_replay", "delivery_error"}
+    {
+        "attempt_cap",
+        "age_cap",
+        "invalid_schedule",
+        "operator_replay",
+        "delivery_error",
+    }
 )
 VOICE_MEMO_RETRY_ERROR_CODES = frozenset(
     {
@@ -173,6 +181,10 @@ def init_db() -> None:
                 maya_last_attempt_at TEXT,
                 maya_dead_letter_at TEXT,
                 maya_dead_letter_reason TEXT,
+                maya_claim_token TEXT,
+                maya_claim_owner TEXT,
+                maya_claimed_at TEXT,
+                maya_claim_expires_at TEXT,
                 superseded_by_transcript_row_id INTEGER
             )
         """)
@@ -1070,6 +1082,18 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "maya_dead_letter_reason": (
             "ALTER TABLE transcripts ADD COLUMN maya_dead_letter_reason TEXT"
         ),
+        "maya_claim_token": (
+            "ALTER TABLE transcripts ADD COLUMN maya_claim_token TEXT"
+        ),
+        "maya_claim_owner": (
+            "ALTER TABLE transcripts ADD COLUMN maya_claim_owner TEXT"
+        ),
+        "maya_claimed_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_claimed_at TEXT"
+        ),
+        "maya_claim_expires_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_claim_expires_at TEXT"
+        ),
         "superseded_by_transcript_row_id": (
             "ALTER TABLE transcripts "
             "ADD COLUMN superseded_by_transcript_row_id INTEGER"
@@ -1282,6 +1306,63 @@ def _safe_maya_dead_letter_reason(reason: str) -> str:
     }
     normalized = aliases.get(normalized, normalized)
     return normalized if normalized in MAYA_DEAD_LETTER_REASONS else "delivery_error"
+
+
+def _validate_maya_claim_arguments(
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> None:
+    if (claim_token is None) != (claim_owner is None):
+        raise ValueError("Maya claim token and owner are both required")
+
+
+def _maya_claim_matches(
+    row: sqlite3.Row,
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> bool:
+    _validate_maya_claim_arguments(claim_token, claim_owner)
+    if claim_token is None:
+        return row["maya_claim_token"] is None and row["maya_claim_owner"] is None
+    return (
+        row["maya_claim_token"] == claim_token
+        and row["maya_claim_owner"] == claim_owner
+    )
+
+
+def _maya_claim_is_active(row: sqlite3.Row, now: str) -> bool:
+    """Return whether a complete claim lease is valid at the supplied UTC time."""
+    token = row["maya_claim_token"]
+    owner = row["maya_claim_owner"]
+    expires_at = row["maya_claim_expires_at"]
+    if not token or not owner or not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        current = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return expires.astimezone(timezone.utc) > current.astimezone(timezone.utc)
+
+
+def _maya_schedule_is_due(value: object, now: str) -> bool:
+    """Return whether a nullable next-attempt value permits dispatch."""
+    if value is None:
+        return True
+    try:
+        scheduled = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        current = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if scheduled.tzinfo is None:
+        scheduled = scheduled.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return scheduled.astimezone(timezone.utc) <= current.astimezone(timezone.utc)
 
 
 def _as_iso8601_utc(value: object) -> str:
@@ -2329,16 +2410,33 @@ def _terminalize_maya_delivery_limits(
         SET maya_delivery_status = 'dead_letter',
             maya_delivery_error = COALESCE(maya_delivery_error, 'delivery_error'),
             maya_next_attempt_at = NULL,
+            maya_claim_token = NULL,
+            maya_claim_owner = NULL,
+            maya_claimed_at = NULL,
+            maya_claim_expires_at = NULL,
             maya_dead_letter_at = ?,
             maya_dead_letter_reason = CASE
                 WHEN COALESCE(maya_delivery_attempt_count, 0) >= ?
                     THEN 'attempt_cap'
+                WHEN maya_first_attempt_at IS NOT NULL
+                     AND julianday(maya_first_attempt_at) IS NULL
+                    THEN 'age_cap'
+                WHEN maya_next_attempt_at IS NOT NULL
+                     AND julianday(maya_next_attempt_at) IS NULL
+                    THEN 'invalid_schedule'
                 ELSE 'age_cap'
             END,
             updated_at = ?
         WHERE maya_delivery_status = 'pending'
           AND maya_drop_id IS NULL
           AND ({_maya_eligible_predicate()})
+          AND (
+                maya_claim_token IS NULL
+                OR maya_claim_owner IS NULL
+                OR maya_claim_expires_at IS NULL
+                OR julianday(maya_claim_expires_at) IS NULL
+                OR julianday(maya_claim_expires_at) <= julianday(?)
+              )
           AND (
                 COALESCE(maya_delivery_attempt_count, 0) >= ?
                 OR (
@@ -2348,11 +2446,16 @@ def _terminalize_maya_delivery_limits(
                         OR julianday(?) - julianday(maya_first_attempt_at) >= ?
                     )
                 )
+                OR (
+                    maya_next_attempt_at IS NOT NULL
+                    AND julianday(maya_next_attempt_at) IS NULL
+                )
               )
         """,
         (
             now,
             max_attempts,
+            now,
             now,
             max_attempts,
             now,
@@ -2360,6 +2463,168 @@ def _terminalize_maya_delivery_limits(
         ),
     )
     return int(cursor.rowcount)
+
+
+def claim_maya_delivery(
+    transcript_id: int,
+    owner: str,
+    *,
+    now: datetime | str | None = None,
+    lease_seconds: int = MAYA_CLAIM_LEASE_SECONDS,
+) -> dict[str, str] | None:
+    """Atomically claim one due pending row before any provider request.
+
+    A claim is available only to one owner at a time. A valid, unexpired claim
+    blocks other workers; an expired or malformed lease can be reclaimed. The
+    returned token must accompany every worker-side state transition.
+    """
+    normalized_owner = str(owner or "").strip()
+    if not normalized_owner:
+        raise ValueError("Maya claim owner is required")
+    normalized_now = _maya_now(now)
+    try:
+        lease = max(1, min(int(lease_seconds), 3600))
+    except (TypeError, ValueError):
+        lease = MAYA_CLAIM_LEASE_SECONDS
+    expires_at = _maya_now(
+        datetime.fromisoformat(normalized_now.replace("Z", "+00:00"))
+        + timedelta(seconds=lease)
+    )
+    claim_token = secrets.token_hex(24)
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            f"""
+            UPDATE transcripts
+            SET maya_claim_token = ?,
+                maya_claim_owner = ?,
+                maya_claimed_at = ?,
+                maya_claim_expires_at = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND maya_delivery_status = 'pending'
+              AND maya_drop_id IS NULL
+              AND ({_maya_eligible_predicate()})
+              AND (
+                    maya_next_attempt_at IS NULL
+                    OR julianday(maya_next_attempt_at) <= julianday(?)
+                  )
+              AND (
+                    maya_claim_token IS NULL
+                    OR maya_claim_owner IS NULL
+                    OR maya_claim_expires_at IS NULL
+                    OR julianday(maya_claim_expires_at) IS NULL
+                    OR julianday(maya_claim_expires_at) <= julianday(?)
+                  )
+            """,
+            (
+                claim_token,
+                normalized_owner,
+                normalized_now,
+                expires_at,
+                normalized_now,
+                transcript_id,
+                normalized_now,
+                normalized_now,
+            ),
+        )
+        if cursor.rowcount == 0:
+            current = conn.execute(
+                f"""
+                SELECT id, maya_delivery_status, maya_drop_id,
+                       maya_next_attempt_at, maya_claim_token, maya_claim_owner,
+                       maya_claimed_at, maya_claim_expires_at
+                FROM transcripts
+                WHERE id = ?
+                  AND ({_maya_eligible_predicate()})
+                """,
+                (transcript_id,),
+            ).fetchone()
+            if (
+                current is not None
+                and current["maya_delivery_status"] == "pending"
+                and current["maya_drop_id"] is None
+                and _maya_schedule_is_due(current["maya_next_attempt_at"], normalized_now)
+                and current["maya_claim_owner"] == normalized_owner
+                and _maya_claim_is_active(current, normalized_now)
+            ):
+                conn.commit()
+                return {
+                    "transcript_id": str(transcript_id),
+                    "maya_claim_token": str(current["maya_claim_token"]),
+                    "maya_claim_owner": str(current["maya_claim_owner"]),
+                    "maya_claimed_at": str(current["maya_claimed_at"]),
+                    "maya_claim_expires_at": str(current["maya_claim_expires_at"]),
+                }
+            conn.rollback()
+            return None
+        conn.commit()
+        return {
+            "transcript_id": str(transcript_id),
+            "maya_claim_token": claim_token,
+            "maya_claim_owner": normalized_owner,
+            "maya_claimed_at": normalized_now,
+            "maya_claim_expires_at": expires_at,
+        }
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to claim Maya delivery id=%s: %s",
+            transcript_id,
+            _safe_exception_class(exc),
+        )
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def release_maya_delivery_claim(
+    transcript_id: int,
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> bool:
+    """Release one matching pending claim after receipt persistence fails."""
+    _validate_maya_claim_arguments(claim_token, claim_owner)
+    if claim_token is None or claim_owner is None:
+        return False
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+              AND maya_delivery_status = 'pending'
+              AND maya_drop_id IS NULL
+              AND maya_claim_token = ?
+              AND maya_claim_owner = ?
+            """,
+            (_maya_now(), transcript_id, claim_token, claim_owner),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to release Maya claim id=%s: %s",
+            transcript_id,
+            _safe_exception_class(exc),
+        )
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 
 def get_pending_maya_deliveries(
@@ -2409,14 +2674,44 @@ def get_pending_maya_deliveries(
             conn.close()
 
 
-def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
+def mark_maya_delivery_sent(
+    transcript_row_id: int,
+    drop_id: str,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
     """Persist Maya's durable receipt, accepting only exact Drop replays."""
     if not drop_id:
         raise ValueError("Maya Drop ID is required")
+    _validate_maya_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         normalized_now = _maya_now()
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            """
+            SELECT maya_delivery_status, maya_drop_id,
+                   maya_claim_token, maya_claim_owner
+            FROM transcripts WHERE id = ?
+            """,
+            (transcript_row_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Transcript row does not exist")
+        if current["maya_delivery_status"] == "sent":
+            if current["maya_drop_id"] != drop_id:
+                raise ValueError("Maya Drop ID conflicts with the durable receipt")
+            conn.commit()
+            return
+        if (
+            current["maya_delivery_status"] != "pending"
+            or current["maya_drop_id"] is not None
+        ):
+            raise ValueError("Maya receipt cannot transition the current delivery state")
+        if not _maya_claim_matches(current, claim_token, claim_owner):
+            raise ValueError("Maya claim owner mismatch")
         cursor = conn.execute(
             """
             UPDATE transcripts
@@ -2424,25 +2719,16 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
                 maya_drop_id = ?,
                 maya_delivery_error = NULL,
                 maya_next_attempt_at = NULL,
+                maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
                 updated_at = ?
             WHERE id = ?
-              AND (
-                    (maya_delivery_status = 'pending'
-                     AND maya_drop_id IS NULL)
-                    OR (maya_delivery_status = 'sent' AND maya_drop_id = ?)
-                  )
             """,
-            (drop_id, normalized_now, transcript_row_id, drop_id),
+            (drop_id, normalized_now, transcript_row_id),
         )
         if cursor.rowcount == 0:
-            current = conn.execute(
-                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
-                (transcript_row_id,),
-            ).fetchone()
-            if current is None:
-                raise LookupError("Transcript row does not exist")
-            if current["maya_drop_id"] not in (None, drop_id):
-                raise ValueError("Maya Drop ID conflicts with the durable receipt")
             raise ValueError("Maya receipt cannot transition the current delivery state")
         conn.commit()
     except Exception as e:
@@ -2457,36 +2743,56 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
             conn.close()
 
 
-def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> None:
+def mark_maya_delivery_failed(
+    transcript_row_id: int,
+    error_message: str,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
     """Persist a bounded Maya delivery failure without changing Slack state."""
+    _validate_maya_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         normalized_now = _maya_now()
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            """
+            SELECT maya_delivery_status, maya_drop_id,
+                   maya_claim_token, maya_claim_owner
+            FROM transcripts WHERE id = ?
+            """,
+            (transcript_row_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Transcript row does not exist")
+        if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
+            conn.rollback()
+            return
+        if current["maya_delivery_status"] in {"failed", "dead_letter"}:
+            conn.rollback()
+            return
+        if current["maya_delivery_status"] != "pending":
+            raise ValueError("Maya failure cannot transition the current delivery state")
+        if not _maya_claim_matches(current, claim_token, claim_owner):
+            raise ValueError("Maya claim owner mismatch")
         cursor = conn.execute(
             """
             UPDATE transcripts
             SET maya_delivery_status = 'failed',
                 maya_delivery_error = ?,
                 maya_next_attempt_at = NULL,
+                maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
                 updated_at = ?
             WHERE id = ?
-              AND maya_delivery_status = 'pending'
-              AND maya_drop_id IS NULL
             """,
             (_safe_delivery_error(error_message), normalized_now, transcript_row_id),
         )
         if cursor.rowcount == 0:
-            current = conn.execute(
-                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
-                (transcript_row_id,),
-            ).fetchone()
-            if current is None:
-                raise LookupError("Transcript row does not exist")
-            if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
-                return
-            if current["maya_delivery_status"] in {"failed", "dead_letter"}:
-                return
             raise ValueError("Maya failure cannot transition the current delivery state")
         conn.commit()
     except Exception as e:
@@ -2509,8 +2815,11 @@ def mark_maya_delivery_retryable_at(
     now: datetime | str | None = None,
     max_attempts: int | None = None,
     max_age_days: int | None = None,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
 ) -> None:
     """Persist a transient Maya failure with an injectable UTC clock."""
+    _validate_maya_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         normalized_now = _maya_now(now)
@@ -2521,7 +2830,8 @@ def mark_maya_delivery_retryable_at(
         current = conn.execute(
             """
             SELECT maya_delivery_status, maya_drop_id,
-                   maya_delivery_attempt_count, maya_first_attempt_at
+                   maya_delivery_attempt_count, maya_first_attempt_at,
+                   maya_claim_token, maya_claim_owner
             FROM transcripts WHERE id = ?
             """,
             (transcript_row_id,),
@@ -2533,6 +2843,8 @@ def mark_maya_delivery_retryable_at(
             return
         if current["maya_delivery_status"] != "pending":
             raise ValueError("Maya retry requires an explicitly replayed pending row")
+        if not _maya_claim_matches(current, claim_token, claim_owner):
+            raise ValueError("Maya claim owner mismatch")
 
         post_attempt_count = max(0, int(current["maya_delivery_attempt_count"] or 0)) + 1
         first_attempt_at = current["maya_first_attempt_at"] or normalized_now
@@ -2553,6 +2865,10 @@ def mark_maya_delivery_retryable_at(
                     maya_last_attempt_at = ?,
                     maya_delivery_error = ?,
                     maya_next_attempt_at = NULL,
+                    maya_claim_token = NULL,
+                    maya_claim_owner = NULL,
+                    maya_claimed_at = NULL,
+                    maya_claim_expires_at = NULL,
                     maya_dead_letter_at = ?,
                     maya_dead_letter_reason = ?,
                     updated_at = ?
@@ -2585,6 +2901,10 @@ def mark_maya_delivery_retryable_at(
                     maya_last_attempt_at = ?,
                     maya_delivery_error = ?,
                     maya_next_attempt_at = ?,
+                    maya_claim_token = NULL,
+                    maya_claim_owner = NULL,
+                    maya_claimed_at = NULL,
+                    maya_claim_expires_at = NULL,
                     maya_dead_letter_at = NULL,
                     maya_dead_letter_reason = NULL,
                     updated_at = ?
@@ -2623,6 +2943,8 @@ def mark_maya_delivery_retryable(
     now: datetime | str | None = None,
     max_attempts: int | None = None,
     max_age_days: int | None = None,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
 ) -> None:
     """Compatibility entry point for bounded Maya retry state."""
     mark_maya_delivery_retryable_at(
@@ -2632,6 +2954,8 @@ def mark_maya_delivery_retryable(
         now=now,
         max_attempts=max_attempts,
         max_age_days=max_age_days,
+        claim_token=claim_token,
+        claim_owner=claim_owner,
     )
 
 
@@ -2651,18 +2975,30 @@ def mark_maya_delivery_dead_letter(
             SET maya_delivery_status = 'dead_letter',
                 maya_delivery_error = COALESCE(maya_delivery_error, 'delivery_error'),
                 maya_next_attempt_at = NULL,
+                maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
                 maya_dead_letter_at = ?,
                 maya_dead_letter_reason = ?,
                 updated_at = ?
             WHERE id = ?
               AND maya_delivery_status = 'pending'
               AND maya_drop_id IS NULL
+              AND (
+                    maya_claim_token IS NULL
+                    OR maya_claim_owner IS NULL
+                    OR maya_claim_expires_at IS NULL
+                    OR julianday(maya_claim_expires_at) IS NULL
+                    OR julianday(maya_claim_expires_at) <= julianday(?)
+                  )
             """,
             (
                 normalized_now,
                 _safe_maya_dead_letter_reason(error_code),
                 normalized_now,
                 transcript_id,
+                normalized_now,
             ),
         )
         conn.commit()
@@ -2701,13 +3037,24 @@ def replay_maya_delivery(
                 maya_dead_letter_reason = NULL,
                 maya_delivery_error = NULL,
                 maya_next_attempt_at = NULL,
+                maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
                 updated_at = ?
             WHERE id = ?
               AND maya_delivery_status IN ('failed', 'dead_letter')
               AND maya_drop_id IS NULL
               AND ({_maya_eligible_predicate()})
+              AND (
+                    maya_claim_token IS NULL
+                    OR maya_claim_owner IS NULL
+                    OR maya_claim_expires_at IS NULL
+                    OR julianday(maya_claim_expires_at) IS NULL
+                    OR julianday(maya_claim_expires_at) <= julianday(?)
+                  )
             """,
-            (normalized_now, transcript_id),
+            (normalized_now, transcript_id, normalized_now),
         )
         conn.commit()
         return bool(cursor.rowcount)
