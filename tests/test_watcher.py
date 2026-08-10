@@ -470,6 +470,59 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["local_object_path"], str(staged.path.resolve()))
 
+    def test_partial_archive_migration_recovers_valid_audio_without_reopening_terminal_rows(self) -> None:
+        source = Path(self.db_dir) / "migration-recovery.m4a"
+        source.write_bytes(b"recoverable audio")
+        row_id = transcript_log.insert_transcript(
+            content_hash="migration-recovery",
+            source="iCloud",
+            transcript="canonical",
+            audio_path=str(source),
+            enqueue_slack=False,
+        )
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("DROP TABLE archive_deliveries")
+            conn.execute(
+                "CREATE TABLE archive_deliveries ("
+                "id INTEGER PRIMARY KEY, transcript_id INTEGER, status TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO archive_deliveries VALUES (41, ?, 'pending')", (row_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        transcript_log.init_db()
+        terminal_id = transcript_log.insert_transcript(
+            content_hash="terminal-legacy-placeholder",
+            source="iCloud",
+            transcript="(migrated legacy placeholder)",
+            enqueue_slack=False,
+        )
+        transcript_log.record_archive_unavailable(
+            int(terminal_id),
+            availability_status="unavailable",
+            reason_code="legacy_placeholder",
+        )
+        candidates = transcript_log.get_archive_backfill_candidates(limit=10)
+        self.assertEqual(
+            [row["transcript_row_id"] for row in candidates], [row_id]
+        )
+        object_root = Path(self.db_dir) / "migration-objects"
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+        ):
+            watcher._reconcile_archive_backfill(limit=10)
+        pending = transcript_log.get_pending_archive_deliveries(limit=10)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["transcript_row_id"], row_id)
+        self.assertTrue(
+            Path(pending[0]["local_object_path"]).is_relative_to(object_root)
+        )
+
     def test_outside_root_published_paths_become_visible_without_open_or_move(self) -> None:
         source = Path(self.db_dir) / "outside-root.m4a"
         source.write_bytes(b"audio")

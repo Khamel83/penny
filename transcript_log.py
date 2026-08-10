@@ -2525,6 +2525,11 @@ def get_archive_backfill_candidates(limit: int = 10) -> list[dict[str, Any]]:
                     AND (archive_deliveries.next_attempt_at IS NULL
                          OR archive_deliveries.next_attempt_at <= datetime('now'))
                )
+               OR (
+                    archive_deliveries.status = 'unavailable'
+                    AND archive_deliveries.unavailable_reason =
+                        'migration_missing_archive_metadata'
+               )
             ORDER BY transcripts.id
             LIMIT ?
             """,
@@ -2584,6 +2589,13 @@ def _record_archive_unavailable_conn(
                 validation_status = excluded.validation_status,
                 validation_error_code = excluded.validation_error_code,
                 updated_at = datetime('now')
+            WHERE archive_deliveries.status IN ('unavailable', 'not_applicable')
+              AND archive_deliveries.availability_status IN (
+                  'unavailable', 'not_applicable'
+              )
+              AND archive_deliveries.local_object_path IS NULL
+              AND archive_deliveries.audio_sha256 IS NULL
+              AND archive_deliveries.receipt_sha256 IS NULL
             """,
             (
                 transcript_id,

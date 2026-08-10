@@ -32,6 +32,8 @@ os.environ.setdefault(
 # Import the Flask app — must import server module which imports config at module level
 import importlib
 import webhook.server as server_module  # noqa: E402
+import transcript_log  # noqa: E402
+from archive import stage_audio  # noqa: E402
 from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
@@ -696,6 +698,72 @@ def test_deliver_duplicate_archive_applicability_failure_returns_503(client, mon
     assert response.status_code == 503
     assert response.get_json() == {"error": "delivery unavailable"}
     route.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", ["ingest", "deliver"])
+@pytest.mark.parametrize("archive_status", ["pending", "published"])
+def test_text_duplicate_preserves_existing_raw_audio_archive_delivery(
+    client, monkeypatch, tmp_path, endpoint, archive_status
+):
+    text = DELIVER_PAYLOAD["transcript"]
+    content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+    source = tmp_path / f"existing-{endpoint}-{archive_status}.m4a"
+    source.write_bytes(b"existing raw audio")
+    staged = stage_audio(source, server_module.cfg.archive.object_root)
+    row_id = transcript_log.insert_transcript(
+        content_hash=content_hash,
+        source="iCloud",
+        transcript=text,
+        archive_staged=staged,
+        archive_metadata={
+            "source": "iCloud",
+            "source_alias": source.name,
+            "quality_status": "passed",
+        },
+        enqueue_slack=False,
+    )
+    transcript_log.mark_routed(int(row_id), {"skip": True}, "test")
+    pending = transcript_log.get_pending_archive_deliveries(limit=1)[0]
+    if archive_status == "published":
+        transcript_log.mark_archive_delivery_published(
+            pending["id"],
+            audio_path="/mirror/existing.m4a",
+            markdown_path="/mirror/existing.md",
+            manifest_path="/mirror/existing.json",
+            receipt_sha256="existing-receipt",
+        )
+
+    def archive_state():
+        conn = transcript_log._get_conn()
+        try:
+            return tuple(conn.execute(
+                "SELECT status, availability_status, local_object_path, audio_sha256, "
+                "source_aliases, destination_audio_path, destination_markdown_path, "
+                "destination_manifest_path, receipt_sha256, publication_generation "
+                "FROM archive_deliveries WHERE transcript_row_id = ?",
+                (row_id,),
+            ).fetchone())
+        finally:
+            conn.close()
+
+    before = archive_state()
+    monkeypatch.setattr(
+        server_module,
+        "record_archive_unavailable",
+        transcript_log.record_archive_unavailable,
+    )
+    if endpoint == "ingest":
+        response = client.post(
+            "/ingest",
+            json={"text": text, "source": "text"},
+            headers=_ingest_auth(),
+        )
+    else:
+        monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+        response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 200
+    assert archive_state() == before
 
 
 @pytest.mark.parametrize("status", ["pending", "failed"])
