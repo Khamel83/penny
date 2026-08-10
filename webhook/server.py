@@ -306,9 +306,9 @@ def deliver():
             duration_seconds=duration,
             allow_maya=False,
         )
-    except Exception as e:
-        log.error("/deliver: routing failed: %s", e)
-        return jsonify({"error": f"routing failed: {e}"}), 500
+    except Exception as error:
+        log.error("/deliver routing failed (%s)", type(error).__name__)
+        return jsonify({"error": "delivery processing failed"}), 500
 
     return jsonify({"status": "delivered", "id": row_id})
 

@@ -478,5 +478,25 @@ def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
     route_called.assert_not_called()
 
 
+def test_deliver_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
+    sentinel = "deliver-routing-secret-must-not-leak"
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(
+        server_module,
+        "classify_and_route",
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+    caplog.set_level(logging.ERROR, logger=server_module.log.name)
+
+    response = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "delivery processing failed"}
+    assert sentinel not in caplog.text
+    assert sentinel not in response.get_data(as_text=True)
+
+
 if __name__ == "__main__":
     unittest.main()
