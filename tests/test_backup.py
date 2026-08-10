@@ -217,13 +217,14 @@ class BackupTests(unittest.TestCase):
 
         def runner(command: list[str], **_: object) -> object:
             calls.append(command)
-            if command[0] == "ssh":
+            if command[0] == "ssh" and "sha256sum" in command:
                 return SimpleNamespace(returncode=0, stdout="0" * 64 + "  catalog.json\n")
             return SimpleNamespace(returncode=0, stdout="")
 
         with self.assertRaises(backup_penny.SyncError):
             backup_penny.sync_backup_set(receipt, runner=runner)
-        self.assertEqual([call[0] for call in calls], ["rsync", "rsync", "ssh"])
+        self.assertEqual([call[0] for call in calls], ["ssh", "rsync", "rsync", "ssh"])
+        self.assertEqual(calls[0][2:5], ["mkdir", "-p", "--"])
         self.assertTrue(all("--protect-args" not in call for call in calls))
 
     def test_remote_rejects_shell_whitespace_without_protect_args(self) -> None:
@@ -252,6 +253,19 @@ class BackupTests(unittest.TestCase):
 
         with self.assertRaises(backup_penny.SyncError):
             backup_penny.sync_backup_set(receipt, runner=runner)
+
+    def test_remote_directory_prepare_failure_is_fatal(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **_: object) -> object:
+            calls.append(command)
+            return SimpleNamespace(returncode=1, stdout="")
+
+        with self.assertRaises(backup_penny.SyncError):
+            backup_penny.sync_backup_set(receipt, runner=runner)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0:3], ["ssh", "homelab", "mkdir"])
 
     def test_export_json_is_atomic_and_export_main_fails_on_sync(self) -> None:
         destination = self.root / "export" / "history.json"

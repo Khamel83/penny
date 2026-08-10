@@ -188,6 +188,26 @@ def sync_backup_set(
         runner = subprocess.run
     objects_source = str(receipt.backup_root / "objects") + "/"
     set_source = str(receipt.set_path) + "/"
+    try:
+        prepared = runner(
+            [
+                "ssh",
+                host,
+                "mkdir",
+                "-p",
+                "--",
+                f"{remote_root}objects",
+                f"{remote_root}sets",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SyncError("remote_prepare_failed") from exc
+    if not _result_ok(prepared):
+        raise SyncError("remote_prepare_failed")
     commands: list[Sequence[str]] = [
         (
             "rsync",
