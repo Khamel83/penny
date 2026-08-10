@@ -5,6 +5,8 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -222,6 +224,61 @@ class BackupTests(unittest.TestCase):
             export_transcripts, "export_json"
         ), patch.object(export_transcripts, "rsync_to_homelab", return_value=False):
             self.assertEqual(export_transcripts.main(), 1)
+
+    def test_verifier_cli_returns_zero_and_only_safe_summary(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        command = [
+            sys.executable,
+            str(SCRIPTS / "verify_penny_backup.py"),
+            str(receipt.set_path),
+            str(self.root / "scratch"),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary["status"], "verified")
+        self.assertTrue(summary["valid"])
+        self.assertEqual(summary["row_count"], 1)
+        self.assertNotIn(str(self.root), result.stdout)
+
+    def test_verifier_cli_returns_one_for_invalid_set_and_two_for_safety(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text("{}", encoding="utf-8")
+        invalid = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "verify_penny_backup.py"),
+                str(receipt.set_path),
+                str(self.root / "scratch"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(invalid.returncode, 1)
+        self.assertNotIn(str(self.root), invalid.stdout + invalid.stderr)
+        unsafe = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "verify_penny_backup.py"),
+                "relative-set",
+                str(self.root / "scratch"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(unsafe.returncode, 2)
+
+    def test_verifier_cli_requires_both_explicit_paths(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS / "verify_penny_backup.py")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":
