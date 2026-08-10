@@ -2007,6 +2007,130 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["latest_recording_pk"], 101)
         self.assertEqual(health["awaiting_file_count"], 0)
 
+    def test_failed_voice_row_remains_retryable_after_watermark_advance(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            293,
+            label="retry me",
+            raw_path="retry-293.m4a",
+            duration_seconds=12.0,
+            recorded_at="2026-08-08T23:00:00Z",
+        )
+        transcript_log.mark_voice_memo_retryable(
+            293, "transcription_failed", now="2026-08-09T00:00:00Z"
+        )
+        self.assertTrue(transcript_log.advance_source_watermark("voice_memos", 400))
+
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2026-08-10T00:00:00Z", limit=10
+        )
+
+        self.assertEqual([row["recording_pk"] for row in due], [293])
+
+    def test_terminal_quality_row_is_not_retranscribed(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            294,
+            label="review terminal",
+            raw_path="review-294.m4a",
+            duration_seconds=8.0,
+        )
+        row_id = transcript_log.insert_transcript(
+            content_hash="review-294",
+            source="iCloud",
+            transcript="needs review",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            enqueue_slack=False,
+        )
+        transcript_log.link_voice_memo_transcript(
+            294,
+            transcript_row_id=int(row_id),
+            content_hash="review-294",
+            audio_path="review-294.m4a",
+        )
+        transcript_log.mark_voice_memo_terminal(294, "needs_review")
+
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2026-08-10T00:00:00Z", limit=10
+        )
+
+        self.assertNotIn(294, [row["recording_pk"] for row in due])
+
+    def test_voice_memo_retry_uses_bounded_exponential_backoff(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            295, label="retry", raw_path="retry-295.m4a", duration_seconds=1.0
+        )
+        transcript_log.mark_voice_memo_retryable(
+            295, "transcription_failed", now="2026-08-09T00:00:00Z"
+        )
+        first = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2026-08-09T00:00:29Z", limit=10
+        )
+        self.assertEqual(first, [])
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2026-08-09T00:00:30Z", limit=10
+        )
+        self.assertEqual([row["attempt_count"] for row in due], [1])
+
+        for attempt in range(2, 8):
+            transcript_log.mark_voice_memo_retryable(
+                295, "transcription_failed", now="2026-08-10T00:00:00Z"
+            )
+            row = transcript_log.get_voice_memo_recordings_for_retry(
+                now="2026-08-11T00:00:00Z", limit=10
+            )[0]
+            self.assertEqual(row["attempt_count"], attempt)
+
+        transcript_log.mark_voice_memo_retryable(
+            295, "transcription_failed", now="2026-08-12T00:00:00Z"
+        )
+        self.assertEqual(
+            transcript_log.get_voice_memo_recordings_for_retry(
+                now="2026-08-13T00:00:00Z", limit=10
+            ),
+            [],
+        )
+
+    def test_source_watermark_is_monotonic(self) -> None:
+        self.assertEqual(transcript_log.get_source_watermark("voice_memos"), 0)
+        self.assertTrue(transcript_log.advance_source_watermark("voice_memos", 42))
+        self.assertFalse(transcript_log.advance_source_watermark("voice_memos", 41))
+        self.assertEqual(transcript_log.get_source_watermark("voice_memos"), 42)
+
+    def test_legacy_cursor_migrates_once_and_sqlite_remains_authoritative(self) -> None:
+        legacy_cursor = Path(self.db_dir) / "last_pk.txt"
+        legacy_cursor.write_text("777", encoding="utf-8")
+        new_db = Path(self.db_dir) / "migrated.db"
+        with (
+            patch.object(transcript_log, "TRANSCRIPT_DB_PATH", new_db),
+            patch.object(transcript_log, "LEGACY_VOICE_MEMO_CURSOR_PATH", legacy_cursor),
+        ):
+            transcript_log.init_db()
+            self.assertEqual(transcript_log.get_source_watermark("voice_memos"), 777)
+            legacy_cursor.write_text("999", encoding="utf-8")
+            transcript_log.init_db()
+            self.assertEqual(transcript_log.get_source_watermark("voice_memos"), 777)
+
+    def test_legacy_unlinked_failed_voice_row_is_due_for_retry(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            296, label="legacy", raw_path="legacy.m4a", duration_seconds=1.0
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE voice_memo_ingest SET status = 'failed', retryable = 0, "
+                "next_attempt_at = NULL WHERE recording_pk = 296"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        transcript_log.init_db()
+
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2100-01-01T00:00:00Z", limit=10
+        )
+
+        self.assertEqual([row["recording_pk"] for row in due], [296])
+
     def test_get_pending_excludes_routed(self) -> None:
         transcript_log.insert_transcript("p1", "iCloud", "pending one")
         rid2 = transcript_log.insert_transcript("p2", "iCloud", "routed one")

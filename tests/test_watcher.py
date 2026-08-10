@@ -59,7 +59,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(
                 watcher, "insert_transcript_result", return_value=_inserted(99)
             ) as insert_mock,
-            patch.object(watcher, "mark_voice_memo_failed") as failed_mock,
+            patch.object(watcher, "mark_voice_memo_terminal") as terminal_mock,
         ):
             processed = watcher._process_audio_file(
                 audio_path,
@@ -74,7 +74,7 @@ class WatcherTests(unittest.TestCase):
             "skipped_too_large",
         )
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
-        failed_mock.assert_called_once_with(123, "file too large")
+        terminal_mock.assert_called_once_with(123, "file_too_large")
 
     def test_watcher_does_not_mark_source_routed_after_insert_failure(self) -> None:
         audio_path = Path(self.db_dir) / "persistence-failure.m4a"
@@ -105,6 +105,60 @@ class WatcherTests(unittest.TestCase):
             )
 
         routed.assert_not_called()
+
+    def test_failed_transcription_schedules_safe_retry_for_unlinked_source(self) -> None:
+        audio_path = Path(self.db_dir) / "failing.m4a"
+        audio_path.write_bytes(b"audio")
+        with (
+            patch.object(watcher, "_find_audio_path_for_recording", return_value=audio_path),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                side_effect=RuntimeError("memo text must not enter retry state"),
+            ),
+        ):
+            self.assertFalse(watcher.process_recording({"Z_PK": 45}))
+
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT retryable, error_message FROM voice_memo_ingest "
+                "WHERE recording_pk = 45"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["retryable"], 1)
+        self.assertEqual(row["error_message"], "processing_error")
+
+    def test_failed_upsert_does_not_advance_discovery_cursor(self) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "get_source_watermark", return_value=0),
+            patch.object(watcher, "upsert_voice_memo_recording", return_value=False),
+            patch.object(watcher, "process_recording") as process_recording,
+            patch.object(watcher, "advance_source_watermark") as advance,
+        ):
+            watcher._process_db_batch([{"Z_PK": 501}])
+
+        self.assertLess(watcher.get_last_seen_pk(), 501)
+        process_recording.assert_not_called()
+        advance.assert_not_called()
+
+    def test_discovery_advances_after_durable_upserts_despite_processing_failure(self) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        recordings = [{"Z_PK": 501}, {"Z_PK": 503}]
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "get_source_watermark", return_value=500),
+            patch.object(watcher, "upsert_voice_memo_recording", return_value=True),
+            patch.object(watcher, "process_recording", return_value=False),
+            patch.object(watcher, "advance_source_watermark", return_value=True) as advance,
+        ):
+            watcher._process_db_batch(recordings)
+
+        advance.assert_called_once_with("voice_memos", 503)
+        self.assertEqual(state_file.read_text(encoding="utf-8"), "503")
 
     def test_existing_pending_row_resumes_routing_without_transcribing(self) -> None:
         audio_path = Path(self.db_dir) / "existing-pending.m4a"
@@ -475,7 +529,7 @@ class WatcherTests(unittest.TestCase):
             ),
             patch.object(
                 watcher,
-                "_retry_waiting_for_files",
+                "_retry_voice_memo_recordings",
                 side_effect=lambda limit: events.append("waiting"),
             ),
             patch.object(

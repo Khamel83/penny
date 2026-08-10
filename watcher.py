@@ -23,21 +23,25 @@ from transcript_quality import transcribe_with_quality
 from transcript_log import (
     InsertOutcome,
     get_maya_delivery_health,
+    get_source_watermark,
     get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
+    get_voice_memo_recordings_for_retry,
     init_db,
     insert_transcript_result,
     is_already_logged,
     get_pending,
     link_voice_memo_transcript,
-    mark_voice_memo_failed,
     mark_voice_memo_file_seen,
     mark_voice_memo_routed,
     mark_voice_memo_routed_for_transcript,
+    mark_voice_memo_retryable,
+    mark_voice_memo_terminal,
     mark_voice_memo_waiting_for_file,
     upsert_voice_memo_recording,
+    advance_source_watermark,
 )
 
 cfg = get_config()
@@ -282,17 +286,19 @@ def update_health_check() -> None:
 
 
 def get_last_seen_pk() -> int:
-    if not STATE_FILE.exists():
-        return 0
-    try:
-        return int(STATE_FILE.read_text(encoding="utf-8").strip())
-    except Exception:
-        return 0
+    """Return the SQLite source cursor; last_pk.txt is only a compatibility mirror."""
+    return get_source_watermark("voice_memos")
 
 
 def set_last_seen_pk(pk: int) -> None:
+    """Atomically mirror an already-durable source watermark for compatibility."""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(str(pk), encoding="utf-8")
+    temporary = STATE_FILE.with_name(f".{STATE_FILE.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(str(pk))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, STATE_FILE)
 
 
 # ===== Database polling =====
@@ -473,8 +479,17 @@ def _process_audio_file(
             if existing is None:
                 log.error("Oversized file duplicate has no canonical row: %s", audio_path.name)
                 return False
+            row_id = int(existing["id"])
+        else:
+            row_id = int(result.row_id)
         if recording_pk is not None:
-            mark_voice_memo_failed(recording_pk, "file too large")
+            link_voice_memo_transcript(
+                recording_pk,
+                transcript_row_id=row_id,
+                content_hash=file_hash,
+                audio_path=str(audio_path),
+            )
+            mark_voice_memo_terminal(recording_pk, "file_too_large")
         return True
 
     existing = get_transcript_by_hash(file_hash)
@@ -492,6 +507,11 @@ def _process_audio_file(
                 routed=already_routed,
             )
         if already_routed or existing.get("quality_status") != "passed":
+            if recording_pk is not None:
+                mark_voice_memo_terminal(
+                    recording_pk,
+                    "routed" if already_routed else "needs_review",
+                )
             return True
 
         classify_and_route(
@@ -557,7 +577,7 @@ def _process_audio_file(
                 content_hash=file_hash,
                 audio_path=str(audio_path),
             )
-            mark_voice_memo_failed(recording_pk, "transcript needs review")
+            mark_voice_memo_terminal(recording_pk, "needs_review")
         return True
 
     result = insert_transcript_result(
@@ -592,8 +612,12 @@ def _process_audio_file(
                 routed=existing.get("status") in {"routed", "processed"},
             )
         if existing.get("status") in {"routed", "processed"}:
+            if recording_pk is not None:
+                mark_voice_memo_terminal(recording_pk, "routed")
             return True
         if existing.get("quality_status") != "passed":
+            if recording_pk is not None:
+                mark_voice_memo_terminal(recording_pk, "needs_review")
             return True
         transcript = str(existing["transcript"])
     else:
@@ -628,13 +652,14 @@ def process_recording(recording: Dict[str, Any]) -> bool:
         else None
     )
     recorded_at = _recording_timestamp_utc(recording)
-    upsert_voice_memo_recording(
+    if not upsert_voice_memo_recording(
         pk,
         label=label,
         raw_path=raw_path,
         duration_seconds=duration_seconds,
         recorded_at=recorded_at,
-    )
+    ):
+        return False
     log.info("Processing %s (PK=%s)", label, pk)
 
     audio_path = _find_audio_path_for_recording(recording)
@@ -645,19 +670,23 @@ def process_recording(recording: Dict[str, Any]) -> bool:
             pk,
         )
         mark_voice_memo_waiting_for_file(pk, "file not downloaded yet")
+        mark_voice_memo_retryable(pk, "file_not_downloaded")
         return False
 
     try:
         mark_voice_memo_file_seen(pk, str(audio_path))
-        return _process_audio_file(
+        processed = _process_audio_file(
             audio_path,
             duration_seconds=duration_seconds,
             recording_pk=pk,
             recorded_at=recorded_at,
         )
+        if not processed:
+            mark_voice_memo_retryable(pk, "transcription_failed")
+        return processed
     except Exception as e:
-        mark_voice_memo_failed(pk, str(e))
-        log.error("Error processing %s (PK=%s): %s", label, pk, e, exc_info=True)
+        mark_voice_memo_retryable(pk, "processing_error")
+        log.error("Error processing Voice Memo PK=%s: %s", pk, type(e).__name__)
         return False
 
 
@@ -723,10 +752,10 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     if not recordings:
         return
     log.info("Found %s new recording(s)", len(recordings))
-    max_registered_pk = get_last_seen_pk()
+    max_registered_pk = get_source_watermark("voice_memos")
     for recording in recordings[:FILE_SCAN_PROCESS_LIMIT]:
         pk = int(recording["Z_PK"])
-        upsert_voice_memo_recording(
+        persisted = upsert_voice_memo_recording(
             pk,
             label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
             raw_path=str(recording.get("ZPATH") or ""),
@@ -737,10 +766,14 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
             ),
             recorded_at=_recording_timestamp_utc(recording),
         )
+        if not persisted:
+            log.error("Stopping discovery batch after durable upsert failure pk=%s", pk)
+            break
         max_registered_pk = max(max_registered_pk, pk)
         process_recording(recording)
-    if max_registered_pk > get_last_seen_pk():
-        set_last_seen_pk(max_registered_pk)
+    if max_registered_pk > get_source_watermark("voice_memos"):
+        if advance_source_watermark("voice_memos", max_registered_pk):
+            set_last_seen_pk(max_registered_pk)
     if len(recordings) > FILE_SCAN_PROCESS_LIMIT:
         log.info(
             "Batch capped at %s of %s recordings (remaining will process next cycle)",
@@ -810,6 +843,40 @@ def _retry_waiting_for_files(limit: int) -> None:
         )
 
 
+def _retry_voice_memo_recordings(limit: int) -> None:
+    """Retry due unlinked source rows, refreshing CloudRecordings metadata first."""
+    retryable = get_voice_memo_recordings_for_retry(limit=limit)
+    if not retryable:
+        return
+    log.info("Retrying %s due Voice Memo recording(s)", len(retryable))
+    refreshed = get_recordings_by_pk([int(row["recording_pk"]) for row in retryable])
+    for row in retryable:
+        pk = int(row["recording_pk"])
+        recording = refreshed.get(pk)
+        if recording is None:
+            recording = {
+                "Z_PK": pk,
+                "ZCUSTOMLABEL": row.get("label"),
+                "ZPATH": row.get("raw_path"),
+                "ZDURATION": row.get("duration_seconds"),
+                "recorded_at": row.get("recorded_at"),
+            }
+        else:
+            if not upsert_voice_memo_recording(
+                pk,
+                label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
+                raw_path=str(recording.get("ZPATH") or ""),
+                duration_seconds=(
+                    float(recording.get("ZDURATION"))
+                    if recording.get("ZDURATION") is not None
+                    else None
+                ),
+                recorded_at=_recording_timestamp_utc(recording),
+            ):
+                continue
+        process_recording(recording)
+
+
 def _retry_pending_routes(limit: int) -> None:
     pending = get_pending(limit=limit)
     for row in pending:
@@ -834,7 +901,7 @@ def _retry_pending_routes(limit: int) -> None:
 
 def _process_ingest_pass() -> None:
     _process_db_batch(get_new_recordings())
-    _retry_waiting_for_files(FILE_SCAN_PROCESS_LIMIT)
+    _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT)
     _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
     _retry_pending_routes(limit=5)
     _process_slack_outbox()

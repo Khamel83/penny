@@ -19,7 +19,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,20 @@ SLACK_MAX_ATTEMPTS = 5
 QUALITY_FAILURE_CONTENT_KIND = "transcript_quality_failure"
 QUALITY_FAILURE_DESTINATION = "maya-ledger"
 MAX_QUALITY_DETAIL_CHARACTERS = 255
+VOICE_MEMO_MAX_ATTEMPTS = 8
+VOICE_MEMO_RETRY_ERROR_CODES = frozenset(
+    {
+        "file_not_downloaded",
+        "file_too_large",
+        "needs_review",
+        "persistence_failed",
+        "processing_error",
+        "routed",
+        "source_changed",
+        "transcription_failed",
+    }
+)
+LEGACY_VOICE_MEMO_CURSOR_PATH = Path("~/.penny/last_pk.txt").expanduser()
 SLACK_DELIVERY_PLAN_LEGACY_TOP_LEVEL_V1 = "legacy_top_level_v1"
 SLACK_DELIVERY_PLAN_BLOCK_KIT_V2 = "block_kit_v2"
 SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR = (
@@ -158,6 +172,21 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_voice_memo_ingest_status ON voice_memo_ingest(status)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_voice_memo_ingest_retry_due "
+            "ON voice_memo_ingest(retryable, next_attempt_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_watermarks (
+                source TEXT PRIMARY KEY,
+                last_discovered_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _migrate_legacy_voice_memo_cursor(conn)
+        _migrate_legacy_voice_memo_retry_state(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS slack_deliveries (
@@ -406,6 +435,82 @@ def _ensure_voice_memo_columns(conn: sqlite3.Connection) -> None:
         table="voice_memo_ingest",
         column="recorded_at",
         sql="ALTER TABLE voice_memo_ingest ADD COLUMN recorded_at TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="attempt_count",
+        sql=(
+            "ALTER TABLE voice_memo_ingest "
+            "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
+        ),
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="last_attempt_at",
+        sql="ALTER TABLE voice_memo_ingest ADD COLUMN last_attempt_at TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="next_attempt_at",
+        sql="ALTER TABLE voice_memo_ingest ADD COLUMN next_attempt_at TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="retryable",
+        sql=(
+            "ALTER TABLE voice_memo_ingest "
+            "ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1"
+        ),
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="terminal_at",
+        sql="ALTER TABLE voice_memo_ingest ADD COLUMN terminal_at TEXT",
+    )
+
+
+def _read_legacy_voice_memo_cursor() -> int:
+    try:
+        return max(0, int(LEGACY_VOICE_MEMO_CURSOR_PATH.read_text().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def _migrate_legacy_voice_memo_cursor(conn: sqlite3.Connection) -> None:
+    """Seed SQLite once from the old compatibility mirror, never the reverse."""
+    existing = conn.execute(
+        "SELECT 1 FROM source_watermarks WHERE source = 'voice_memos'"
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            """INSERT INTO source_watermarks(source, last_discovered_id, updated_at)
+               VALUES ('voice_memos', ?, datetime('now'))""",
+            (_read_legacy_voice_memo_cursor(),),
+        )
+
+
+def _migrate_legacy_voice_memo_retry_state(conn: sqlite3.Connection) -> None:
+    """Make old unlinked failures retryable without retranscribing linked rows."""
+    conn.execute(
+        """UPDATE voice_memo_ingest
+           SET retryable = 0,
+               next_attempt_at = NULL,
+               terminal_at = COALESCE(terminal_at, datetime('now'))
+           WHERE transcript_row_id IS NOT NULL OR status = 'routed'"""
+    )
+    conn.execute(
+        """UPDATE voice_memo_ingest
+           SET retryable = 1,
+               next_attempt_at = COALESCE(next_attempt_at, datetime('now'))
+           WHERE transcript_row_id IS NULL
+             AND status = 'failed'
+             AND attempt_count < ?""",
+        (VOICE_MEMO_MAX_ATTEMPTS,),
     )
 
 
@@ -1969,7 +2074,7 @@ def upsert_voice_memo_recording(
     raw_path: str,
     duration_seconds: float | None,
     recorded_at: str | None = None,
-) -> None:
+) -> bool:
     conn = None
     try:
         conn = _get_conn()
@@ -1995,8 +2100,10 @@ def upsert_voice_memo_recording(
             ),
         )
         conn.commit()
+        return True
     except Exception as e:
         log.error("Failed to upsert voice memo state pk=%s: %s", recording_pk, e)
+        return False
     finally:
         if conn:
             conn.close()
@@ -2011,11 +2118,11 @@ def mark_voice_memo_waiting_for_file(
         conn.execute(
             """UPDATE voice_memo_ingest
                SET status = 'awaiting_file',
-                   error_message = ?,
+                   error_message = 'file_not_downloaded',
                    file_missing_count = file_missing_count + 1,
                    updated_at = datetime('now')
                WHERE recording_pk = ?""",
-            (error_message, recording_pk),
+            (recording_pk,),
         )
         conn.commit()
     except Exception as e:
@@ -2068,6 +2175,8 @@ def link_voice_memo_transcript(
                     status = ?,
                     transcribed_at = datetime('now'),
                     error_message = NULL,
+                    retryable = 0,
+                    next_attempt_at = NULL,
                     updated_at = datetime('now')
                     {routed_sql}
                 WHERE recording_pk = ?""",
@@ -2088,6 +2197,7 @@ def mark_voice_memo_routed(recording_pk: int) -> None:
         conn.execute(
             """UPDATE voice_memo_ingest
                SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
+                   retryable = 0, next_attempt_at = NULL, terminal_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE recording_pk = ?""",
             (recording_pk,),
@@ -2107,6 +2217,7 @@ def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> None:
         conn.execute(
             """UPDATE voice_memo_ingest
                SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
+                   retryable = 0, next_attempt_at = NULL, terminal_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE transcript_row_id = ?""",
             (transcript_row_id,),
@@ -2123,19 +2234,163 @@ def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> None:
             conn.close()
 
 
-def mark_voice_memo_failed(recording_pk: int, error_message: str) -> None:
+def _voice_memo_error_code(error_code: str) -> str:
+    return error_code if error_code in VOICE_MEMO_RETRY_ERROR_CODES else "processing_error"
+
+
+def _voice_memo_now(now: str | None) -> datetime:
+    value = datetime.now(timezone.utc) if now is None else datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _voice_memo_iso(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def mark_voice_memo_retryable(
+    recording_pk: int, error_code: str, *, now: str | None = None
+) -> None:
+    """Schedule an unlinked source record for a bounded retry."""
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """SELECT attempt_count, transcript_row_id FROM voice_memo_ingest
+               WHERE recording_pk = ?""",
+            (recording_pk,),
+        ).fetchone()
+        if row is None or row["transcript_row_id"] is not None:
+            return
+        attempt_count = int(row["attempt_count"] or 0) + 1
+        attempted_at = _voice_memo_now(now)
+        terminal = attempt_count >= VOICE_MEMO_MAX_ATTEMPTS
+        next_attempt_at = None
+        if not terminal:
+            backoff_seconds = min(30 * 2 ** (attempt_count - 1), 1800)
+            next_attempt_at = _voice_memo_iso(
+                attempted_at + timedelta(seconds=backoff_seconds)
+            )
+        conn.execute(
+            """UPDATE voice_memo_ingest
+               SET status = CASE WHEN ? THEN 'failed_terminal' ELSE 'failed' END,
+                   error_message = ?,
+                   attempt_count = ?,
+                   last_attempt_at = ?,
+                   next_attempt_at = ?,
+                   retryable = ?,
+                   terminal_at = CASE WHEN ? THEN ? ELSE NULL END,
+                   updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (
+                terminal,
+                _voice_memo_error_code(error_code),
+                attempt_count,
+                _voice_memo_iso(attempted_at),
+                next_attempt_at,
+                int(not terminal),
+                terminal,
+                _voice_memo_iso(attempted_at) if terminal else None,
+                recording_pk,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to schedule voice memo retry pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> None:
+    """Record a linked non-retryable source outcome without retaining unsafe detail."""
     conn = None
     try:
         conn = _get_conn()
         conn.execute(
             """UPDATE voice_memo_ingest
-               SET status = 'failed', error_message = ?, updated_at = datetime('now')
+               SET status = 'terminal', error_message = ?, retryable = 0,
+                   next_attempt_at = NULL, terminal_at = datetime('now'),
+                   updated_at = datetime('now')
                WHERE recording_pk = ?""",
-            (error_message, recording_pk),
+            (_voice_memo_error_code(error_code), recording_pk),
         )
         conn.commit()
     except Exception as e:
-        log.error("Failed to mark voice memo failed pk=%s: %s", recording_pk, e)
+        log.error("Failed to mark voice memo terminal pk=%s: %s", recording_pk, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_voice_memo_failed(recording_pk: int, error_message: str) -> None:
+    """Compatibility alias for legacy callers; errors are reduced to safe codes."""
+    mark_voice_memo_retryable(recording_pk, error_message)
+
+
+def get_voice_memo_recordings_for_retry(
+    *, now: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        due_at = _voice_memo_iso(_voice_memo_now(now))
+        rows = conn.execute(
+            """SELECT * FROM voice_memo_ingest
+               WHERE retryable = 1
+                 AND transcript_row_id IS NULL
+                 AND attempt_count < ?
+                 AND next_attempt_at IS NOT NULL
+                 AND next_attempt_at <= ?
+               ORDER BY next_attempt_at ASC, recording_pk ASC
+               LIMIT ?""",
+            (VOICE_MEMO_MAX_ATTEMPTS, due_at, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        log.error("Failed to fetch retryable voice memos: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_source_watermark(source: str) -> int:
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT last_discovered_id FROM source_watermarks WHERE source = ?",
+            (source,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception as e:
+        log.error("Failed to get source watermark source=%s: %s", source, e)
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
+def advance_source_watermark(source: str, discovered_id: int) -> bool:
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """INSERT INTO source_watermarks(source, last_discovered_id, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(source) DO UPDATE SET
+                   last_discovered_id = excluded.last_discovered_id,
+                   updated_at = datetime('now')
+               WHERE excluded.last_discovered_id > source_watermarks.last_discovered_id""",
+            (source, discovered_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception as e:
+        log.error("Failed to advance source watermark source=%s: %s", source, e)
+        return False
     finally:
         if conn:
             conn.close()

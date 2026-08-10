@@ -156,6 +156,37 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             finally:
                 watcher.CLOUDRECORDINGS_DB = original_db
 
+    def test_retryable_voice_rows_are_refreshed_by_primary_key(self):
+        import watcher
+
+        stale = {"recording_pk": 7, "label": "Late path", "raw_path": ""}
+        fresh = {
+            "Z_PK": 7,
+            "ZCUSTOMLABEL": "Late path",
+            "ZDATE": 0,
+            "ZDURATION": 12.5,
+            "ZPATH": "late.m4a",
+        }
+        with patch.object(
+            watcher, "get_voice_memo_recordings_for_retry", return_value=[stale]
+        ), patch.object(
+            watcher, "get_recordings_by_pk", return_value={7: fresh}
+        ), patch.object(
+            watcher, "upsert_voice_memo_recording", return_value=True
+        ) as upsert_mock, patch.object(
+            watcher, "process_recording"
+        ) as process_mock:
+            watcher._retry_voice_memo_recordings(limit=5)
+
+        upsert_mock.assert_called_once_with(
+            7,
+            label="Late path",
+            raw_path="late.m4a",
+            duration_seconds=12.5,
+            recorded_at="2001-01-01T00:00:00Z",
+        )
+        process_mock.assert_called_once_with(fresh)
+
     def test_retry_waiting_for_files_uses_refreshed_cloudrecordings_row(self):
         """Retry should not keep using stale empty raw_path from local ingest state."""
         import watcher
