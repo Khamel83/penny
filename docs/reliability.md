@@ -24,10 +24,11 @@ additive and retry-safe.
 
 The Voice Memos reader is a read-only compatibility adapter, not a supported
 Apple storage API. It distinguishes no-new-memo, source query failure, denied
-container access, malformed metadata, and incomplete audio. Discovery and
-completion watermarks are separate. A source watermark never advances merely
-because a capture was observed; completion advances only after canonical storage
-and the configured processing handoff succeed.
+container access, malformed metadata, and incomplete audio. The SQLite
+`source_watermarks.last_discovered_id` cursor advances only after a durable
+`voice_memo_ingest` upsert. Processing failures remain in `voice_memo_ingest`
+with retryable/backoff state or `failed_terminal`; there is no separate
+completion watermark.
 
 An audio file is copied into Penny-owned local staging, checked for a stable
 size/signature, and hashed. A source that changes during copying is retried;
@@ -37,8 +38,9 @@ dead-letter state and require an operator decision.
 
 ## Archive and iCloud mirror
 
-Each canonical row eventually has one immutable local object and a complete
-`Penny Archive` mirror trio:
+Each audio-bearing canonical row may have one immutable local object and a
+complete `Penny Archive` mirror trio. Text-only, Maya, and Tasks rows may be
+`not_applicable` with `no_raw_audio` and do not receive an audio-bearing trio:
 
 ```text
 <utc>__p<id>__<source>__<sha12>.<original-extension>
@@ -110,9 +112,10 @@ must never be used as the readiness source.
 Raw audio stays within the approved Apple/Penny storage and backup boundary.
 Transcription is local and offline. Only authenticated, policy-mediated Maya or
 Hermes paths may receive transcript text; Slack quality receipts are metadata
-only. Secrets are dedicated per boundary and runtime-only. No operational log,
-Doctor report, test, or deployment artifact may contain transcript bodies,
-audio bytes, credentials, provider URLs, or raw exception text.
+only. The callback credential is currently reused by the Hermes notification
+path, and ordinary service logs still have a provider-URL/exception redaction
+follow-up. Doctor output, tests, and deployment evidence must remain
+metadata-only; do not treat ordinary logs as already clean.
 
 ## Recovery principles
 

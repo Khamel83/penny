@@ -45,6 +45,7 @@ health:
       repair_id: null
 observability:
   event_sink: homelab-api:/observations
+  event_sink_status: target-only-unverified
   evidence_policy: sanitized
   external_effects: receipt-required
 dependencies:

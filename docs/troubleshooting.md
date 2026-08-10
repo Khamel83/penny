@@ -26,8 +26,8 @@ confirm the device has network and iCloud capacity. The private Voice Memos
 reader may be denied by macOS privacy controls; grant the approved runtime the
 required permission through System Settings, then let the normal watcher retry.
 
-On the Mac, check Doctor's `voice_memos` component for source query, watermark,
-awaiting-file, retryable, and terminal-failure metadata. Use the canonical
+On the Mac, check Doctor's `voice_memos` component for source query, discovery
+cursor, awaiting-file, retryable, and terminal-failure metadata. Use the canonical
 SQLite row and source receipt to decide whether the memo is absent upstream,
 staged locally, retryable, or quarantined. `watcher.system.log` is diagnostic
 context only; do not tail it as a health check.
@@ -39,9 +39,11 @@ not bypass provenance, archive publication, policy, or receipts.
 ## Capture is pending or retrying
 
 Inspect the Doctor reason and bounded age/counter fields. A changing source file
-or missing audio is expected to remain retryable. A database or archive failure
-must not advance completion. A terminal failure is visible quarantine/dead-letter
-state and needs a specific operator decision; do not repeatedly replay it.
+or missing audio is expected to remain retryable. A database failure prevents the
+discovery cursor from advancing past an undurable upsert. Processing failures
+remain in `voice_memo_ingest` as retryable or `failed_terminal`; there is no
+separate completion watermark. A terminal failure is visible state and needs a
+specific operator decision; do not repeatedly replay it.
 
 If a capture is persisted but not routed, verify local routing, Apple receipt,
 independent Slack, and independent Maya v2 separately. One failure does not
@@ -49,7 +51,8 @@ erase the local row or imply that another stream failed.
 
 ## Archive or iCloud mirror is degraded
 
-The local immutable object is authoritative for archive recovery. Check that the
+For audio-bearing rows, the local immutable object is authoritative for archive
+recovery. Check that the
 audio, `.md`, and `.json` files share a basename and that the manifest is last
 and hash-valid. iCloud `Penny Archive` is a mirror and may be delayed or
 rebuildable; it is not a database or backup.
@@ -81,8 +84,11 @@ receipts are unready.
 
 ## Transcription/model is unready
 
-Doctor requires the exact pinned local MLX model and `HF_HUB_OFFLINE=1`. If the
-model is missing or tampered, stop transcription, preserve staged audio, and
+Doctor requires `mlx-whisper==0.4.3`, model revision
+`a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`, and the absolute default model path
+`/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`,
+plus `HF_HUB_OFFLINE=1`. It verifies the local model manifest/weights receipt.
+If the model is missing or tampered, stop transcription, preserve staged audio, and
 run the approved provisioning/verification procedure separately. Provisioning
 is the only network boundary. Apple Speech and MacWhisper are challengers, not
 automatic fallbacks.
@@ -108,8 +114,13 @@ never replace the live database or delete evidence to make readiness green.
 - `503`: persistence or readiness boundary is unavailable; retry only after the
   canonical state is inspected.
 
-The webhook is loopback by default. A non-loopback bind requires an explicit
-protected deployment policy and still requires authentication and content limits.
+The target webhook policy is loopback. The current tracked template requests a
+non-loopback LAN bind and must converge to loopback or an explicitly protected
+non-loopback policy; Doctor reports an unprotected bind as unready. Authentication
+and content limits still apply.
+
+Missing or wrong credentials must produce `401`; valid-token routing is covered
+by hermetic tests. No live canary is implied by this document.
 
 ## What not to do
 

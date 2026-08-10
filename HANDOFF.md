@@ -19,10 +19,12 @@ only and unsupported as a storage API; a manual Share/Finder export remains the
 fallback. JPR is a Phase B pilot and must not be treated as active until its
 capture matrix passes.
 
-Penny's local SQLite database is canonical. Immutable local archive objects hold
-original audio and a same-basename `.md` transcript plus `.json` manifest. The
-iCloud Drive `Penny Archive` folder mirrors complete trios only. A versioned
-homelab backup is independent of iCloud and is verified in a scratch directory.
+Penny's local SQLite database is canonical. Audio-bearing rows may have
+immutable local archive objects and a same-basename `.md` transcript plus `.json`
+manifest. Text-only, Maya, and Tasks rows may instead be `not_applicable` with
+`no_raw_audio`. The iCloud Drive `Penny Archive` folder mirrors complete trios
+only. A versioned homelab backup is independent of iCloud and is verified in a
+scratch directory.
 Apple Notes and Reminders are projections with durable effect keys and
 read-after-write receipts.
 
@@ -35,7 +37,7 @@ not evidence of success in another.
 ## Doctor contract
 
 `venv/bin/python scripts/penny_doctor.py` is the readiness entry point. It probes
-SQLite integrity/foreign keys/schema, source watermark and retry state, archive
+SQLite integrity/foreign keys/schema, discovery cursor and retry state, archive
 metadata, offline model verification, Apple-effect receipts, Slack/Maya
 outboxes, backup verification receipt, launchd/health freshness, and ingress
 configuration. It never reads transcript or audio bodies, contacts a provider,
@@ -55,10 +57,12 @@ not deployment proof.
 ## Durable state and retry rules
 
 An ingest is acknowledged only after a typed persistence result is `inserted` or
-`duplicate`. A database failure is retryable and never routes or advances the
-Voice Memos completion watermark. Incomplete audio is quarantined until the
-source is fully materialized. Retryable work uses bounded exponential backoff;
-terminal work is visible as quarantine or dead-letter state.
+`duplicate`. Voice Memos discovery advances the SQLite
+`source_watermarks.last_discovered_id` cursor only after a durable
+`voice_memo_ingest` upsert. Processing failures remain in that table with
+retryable/backoff state or `failed_terminal`; there is no separate completion
+watermark. Incomplete audio is quarantined until the source is fully materialized.
+Retryable work uses bounded exponential backoff; terminal work remains visible.
 
 Apple effects persist a deterministic key before attempting the side effect and
 record provider identifiers plus a read-back receipt. An ambiguous timeout is
@@ -97,6 +101,13 @@ Recovery is additive and evidence-preserving:
 Never delete or replace Apple's Voice Memos database, Penny's SQLite database,
 archive objects, outboxes, or backup sets as a troubleshooting shortcut. Never
 replay, send, share, purchase, deploy, or change credentials from a health check.
+
+## Transitional gaps
+
+The current tracked webhook template still needs to converge to loopback or an
+explicitly protected non-loopback bind; Doctor treats an unprotected bind as
+unready. The callback credential is also reused by the transitional Hermes
+notification path, and ordinary logging still has a redaction follow-up.
 
 ## Future gates
 

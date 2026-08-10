@@ -11,7 +11,8 @@ templates, scripts, and tests. The runtime state directory (configured by
 `PENNY_*` paths) contains:
 
 - canonical `transcripts.db`;
-- immutable local archive objects;
+- immutable local archive objects for audio-bearing rows (text-only rows may be
+  `not_applicable`/`no_raw_audio`);
 - iCloud `Penny Archive` mirror metadata;
 - versioned backup sets and the latest verification receipt;
 - health freshness files and service diagnostics;
@@ -29,18 +30,24 @@ does not prove that a plist is loaded, approved, or running. The launchd
 | --- | --- | --- |
 | `com.penny.watcher` | Voice Memos compatibility ingest, staging, offline MLX, local routing, and outboxes | continuous/polling |
 | `com.penny.tasks` | Approved Google Tasks input and durable local routing | periodic |
-| `com.penny.webhook` | Authenticated loopback upload/ingest/callback plus `/health` and `/ready` | continuous |
+| `com.penny.webhook` | Authenticated upload/ingest/callback plus `/health` and `/ready`; loopback is the target bind policy | continuous |
 | `com.penny.export` | Versioned backup, scratch verification, and safe verification receipt | periodic |
 
 ## Preconditions
 
 1. Work from a clean, reviewed revision and run the repository trust check.
-2. Confirm the Mac has the approved arm64 Python/MLX/ffmpeg runtime.
-3. Confirm the exact pinned model is already provisioned and verifies locally.
+2. Confirm the Mac has the approved arm64 Python/MLX/ffmpeg runtime and
+   `mlx-whisper==0.4.3`.
+3. Confirm model revision `a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb` at the
+   absolute default path
+   `/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`
+   and verify its local manifest/weights receipt.
 4. Keep `HF_HUB_OFFLINE=1` for the transcription services.
 5. Load dedicated credentials through the runtime secret mechanism; never put
    values in tracked config, templates, logs, or shell history.
-6. Confirm the webhook bind policy is loopback or explicitly protected.
+6. Confirm the tracked/runtime webhook templates converge to loopback or an
+   explicitly protected non-loopback policy; Doctor fails an unprotected bind.
+   The callback credential is currently reused for Hermes notifications.
 7. Create a verified backup set before changing code/config.
 
 ## Controlled deployment
@@ -75,7 +82,8 @@ Deployment evidence must include:
 - `penny doctor` exit/status and component reason codes;
 - `/health` liveness and `/ready` readiness responses;
 - latest backup verification receipt bound to its catalog and database metadata;
-- a safe authenticated ingress canary that creates no external side effect.
+- missing/wrong-token ingress requests return `401`, oversized requests return
+  `413`, and hermetic valid-token tests pass; no live canary is implied.
 
 Do not call a deployment healthy based on process presence, `watcher.system.log`, a template,
 or a provider request. Physical Watch, Apple effect, Slack, and Maya canaries
@@ -98,6 +106,7 @@ explicit human gates.
 
 Use the Doctor for readiness and the ledger/receipt tables for durable evidence.
 Use `watcher.system.log` and other service logs only to explain a bounded reason
-code. Keep iCloud as a rebuildable mirror and homelab backup sets as the
+code. Ordinary logs still have a provider-URL/exception redaction follow-up.
+Keep iCloud as a rebuildable mirror and homelab backup sets as the
 independent recovery source; neither should be silently substituted for the
 canonical SQLite ledger.

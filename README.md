@@ -18,18 +18,23 @@ independent delivery stream. A provider outage cannot erase a locally persisted
 capture. Every retry uses durable state and a deterministic idempotency key.
 
 The iCloud Drive `Penny Archive` folder is a human-readable mirror, not the
-database and not disaster recovery. Each published object has the same basename
-for original audio, Markdown transcript, and JSON manifest. The manifest is
-published last, after hashes and complete-copy checks succeed. Versioned
-homelab backup sets contain a consistent SQLite snapshot, archive bytes, and a
-catalog; verification runs in a scratch directory only.
+database and not disaster recovery. Audio-bearing rows publish the same basename
+for original audio, Markdown transcript, and JSON manifest. Text-only, Maya, and
+Tasks rows may be recorded as `not_applicable`/`no_raw_audio` instead. The
+manifest is published last, after hashes and complete-copy checks succeed.
+Versioned homelab backup sets contain a consistent SQLite snapshot, archive
+bytes, and a catalog; verification runs in a scratch directory only.
 
 ## Phase A status and boundaries
 
 Phase A hardens the existing Voice Memos + MLX path without requiring JPR,
-macOS 27, Swift/EventKit, Apple Speech, or MacWhisper. The MLX Whisper package
-and model revision are pinned locally and the transcription path requires
-`HF_HUB_OFFLINE=1`. Model provisioning is a separate, explicit network step.
+macOS 27, Swift/EventKit, Apple Speech, or MacWhisper. The transcription
+dependency is `mlx-whisper==0.4.3`, with model revision
+`a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`, and requires `HF_HUB_OFFLINE=1`.
+The default absolute model path is
+`/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`.
+Doctor must verify the local model manifest/weights receipt before readiness;
+provisioning is a separate, explicit network step.
 
 Any remaining direct OpenRouter classification is transitional. It remains only
 until the Maya replacement is deployed, authenticated, idempotent, and verified
@@ -59,7 +64,7 @@ passing local test.
 | --- | --- |
 | `com.penny.watcher` | Polls the Voice Memos compatibility source, stages audio, transcribes offline, and drains local/Slack/Maya outboxes |
 | `com.penny.tasks` | Polls the approved Google Tasks input and persists work before local routing |
-| `com.penny.webhook` | Loopback-by-default authenticated upload, text ingest, callback, `/health`, and `/ready` |
+| `com.penny.webhook` | Authenticated upload, text ingest, callback, `/health`, and `/ready`; loopback is the target bind policy |
 | `com.penny.export` | Creates a versioned backup, verifies it in scratch, and records a safe verification receipt |
 
 ## Readiness and operations
@@ -91,10 +96,19 @@ Maya v2, and backup verification. One stream never proves another.
 
 Non-secret policy lives in `config.toml`. Secrets are runtime-only and dedicated
 by boundary. The relevant names are `PENNY_INGEST_TOKEN` for upload/ingest,
-`PENNY_WEBHOOK_SECRET` for the callback, `PENNY_SLACK_BOT_TOKEN` for the Slack
-outbox, and `MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. Values must
-never be committed, printed, or copied into Doctor output. The webhook binds to
-loopback unless an explicitly protected deployment policy says otherwise.
+`PENNY_WEBHOOK_SECRET` for the callback/Hermes notification boundary,
+`PENNY_SLACK_BOT_TOKEN` for the Slack outbox, and
+`MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. The callback/Hermes
+secret reuse is a known transitional gap; do not describe those boundaries as
+independently credentialed until a later change proves it. Values must never be
+committed, printed, or copied into Doctor output. The tracked webhook template
+currently requests a non-loopback bind for its LAN use case; it must converge to
+loopback or an explicitly protected non-loopback policy, and Doctor fails
+readiness for an unprotected bind.
+
+Current service logging still has a redaction follow-up: some provider URLs or
+exception details may appear in ordinary logs. Doctor output and deployment
+evidence must remain metadata-only until that logging gap is closed.
 
 ## Development checks
 
