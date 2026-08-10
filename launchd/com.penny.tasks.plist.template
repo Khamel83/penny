@@ -14,13 +14,14 @@
         <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <!-- Replace with actual values -->
+        <!-- This tracked file is a template; deployment injects the exact checkout SHA. -->
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
+        <key>PENNY_TRANSCRIPT_DB</key>
+        <string>/Users/macmini/.penny/transcripts.db</string>
+        <!-- Transitional direct classification only; Maya remains the target boundary. -->
         <key>OPENROUTER_API_KEY</key>
         <string>YOUR_OPENROUTER_API_KEY_HERE</string>
-        <key>TELEGRAM_BOT_TOKEN</key>
-        <string>YOUR_BOT_TOKEN_HERE</string>
-        <key>TELEGRAM_CHAT_ID</key>
-        <string>YOUR_CHAT_ID_HERE</string>
         <key>GOOGLE_CREDENTIALS_FILE</key>
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>
@@ -29,6 +30,10 @@
         <string>YOUR_MAYA_TRANSCRIPT_URL_HERE</string>
         <key>MAYA_INGEST_TOKEN</key>
         <string>YOUR_MAYA_INGEST_TOKEN_HERE</string>
+        <key>PENNY_HERMES_WEBHOOK_SECRET</key>
+        <string>YOUR_PENNY_HERMES_WEBHOOK_SECRET_HERE</string>
+        <key>HERMES_WEBHOOK_URL</key>
+        <string>YOUR_HERMES_WEBHOOK_URL_HERE</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

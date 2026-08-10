@@ -14,18 +14,23 @@
         <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- This tracked file is a template; deployment injects the exact checkout SHA. -->
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
         <!-- Transcription is strictly local; no Hugging Face resolution at runtime. -->
         <key>HF_HUB_OFFLINE</key>
         <string>1</string>
         <key>PENNY_WHISPER_MODEL_PATH</key>
         <string>/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb</string>
-        <!-- Replace with actual values -->
+        <key>PENNY_TRANSCRIPT_DB</key>
+        <string>/Users/macmini/.penny/transcripts.db</string>
+        <key>PENNY_ARCHIVE_OBJECT_ROOT</key>
+        <string>/Users/macmini/.penny/archive/objects</string>
+        <key>PENNY_ARCHIVE_MIRROR_ROOT</key>
+        <string>/Users/macmini/Library/Mobile Documents/com~apple~CloudDocs/Penny Archive</string>
+        <!-- Transitional direct classification only; Maya remains the target boundary. -->
         <key>OPENROUTER_API_KEY</key>
         <string>YOUR_OPENROUTER_API_KEY_HERE</string>
-        <key>TELEGRAM_BOT_TOKEN</key>
-        <string>YOUR_BOT_TOKEN_HERE</string>
-        <key>TELEGRAM_CHAT_ID</key>
-        <string>YOUR_CHAT_ID_HERE</string>
         <key>GOOGLE_CREDENTIALS_FILE</key>
         <string>/Users/macmini/.penny/google_credentials.json</string>
         <key>GOOGLE_TOKEN_FILE</key>
@@ -36,6 +41,12 @@
         <string>C0BKS0QT7FU</string>
         <key>PENNY_MAYA_LEDGER_CHANNEL_ID</key>
         <string>YOUR_MAYA_LEDGER_CHANNEL_ID_HERE</string>
+        <key>PENNY_WEBHOOK_SECRET</key>
+        <string>YOUR_PENNY_WEBHOOK_SECRET_HERE</string>
+        <key>PENNY_HERMES_WEBHOOK_SECRET</key>
+        <string>YOUR_PENNY_HERMES_WEBHOOK_SECRET_HERE</string>
+        <key>HERMES_WEBHOOK_URL</key>
+        <string>YOUR_HERMES_WEBHOOK_URL_HERE</string>
         <key>MAYA_TRANSCRIPT_URL</key>
         <string>YOUR_MAYA_TRANSCRIPT_URL_HERE</string>
         <key>MAYA_INGEST_TOKEN</key>

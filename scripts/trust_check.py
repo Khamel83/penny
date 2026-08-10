@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Pre-deploy trust check for Penny.
+"""Run Penny's offline, read-only repository trust checks.
 
-This script is intentionally lightweight and offline-safe:
-- compiles all Python files
-- checks for accidental duplicate __main__ entrypoints
-- validates core config invariants
-- validates launchd templates include required reliability keys
-- runs unit tests
+This command checks the source tree and its runtime contracts.  It never
+contacts a provider, changes launchd state, changes the ledger, or repairs a
+runtime service.  A template is checked as a contract; it is not treated as
+proof about an installed plist.
 """
 from __future__ import annotations
 
@@ -14,6 +12,7 @@ import ast
 import os
 import plistlib
 import py_compile
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +26,15 @@ if sys.version_info < (3, 11):
     )
 
 EXCLUDE_DIR_NAMES = {".git", "__pycache__", "venv", ".venv", "venv.brew-python.bak"}
-# Note: com.penny.export.plist.template intentionally sets RunAtLoad and
-# KeepAlive to <false/> (StartInterval-based, not persistent). The check
-# verifies the keys exist (reliability documentation), not their values.
+# The check is routinely run from an isolated worktree.  In the primary
+# checkout, avoid recursively inspecting sibling worktrees; inside one, the
+# worktree itself is the repository root and must remain visible.
+if ".worktrees" not in ROOT.parts:
+    EXCLUDE_DIR_NAMES.add(".worktrees")
+MODEL_REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+MODEL_PATH = f"/Users/macmini/.penny/models/whisper-large-v3-turbo/{MODEL_REVISION}"
+SOURCE_PLACEHOLDER = "YOUR_PENNY_SOURCE_REVISION_HERE"
+
 REQUIRED_LAUNCHD_KEYS = (
     "<key>RunAtLoad</key>",
     "<key>KeepAlive</key>",
@@ -41,6 +46,23 @@ REQUIRED_LAUNCHD_KEYS = (
     "<key>SoftResourceLimits</key>",
 )
 
+# Health automation may transport a Doctor report, but it may not mutate or
+# inspect runtime state through ad-hoc commands.
+FORBIDDEN_WORKFLOW_TOKENS = (
+    "launchctl list",
+    "launchctl kickstart",
+    "launchctl bootstrap",
+    "launchctl bootout",
+    "pgrep",
+    "tail ",
+    "open -a",
+    "rm -",
+    "reset",
+    "delete",
+    "replay",
+    "repair",
+)
+
 
 def iter_python_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*.py"):
@@ -50,7 +72,7 @@ def iter_python_files(root: Path) -> Iterable[Path]:
 
 
 def compile_all(py_files: List[Path]) -> None:
-    print("[1/7] Compiling Python files...", flush=True)
+    print("[1/8] Compiling Python files...", flush=True)
     for path in py_files:
         py_compile.compile(str(path), doraise=True)
     print(f"  OK: compiled {len(py_files)} file(s)", flush=True)
@@ -64,205 +86,258 @@ def _is_main_guard(node: ast.If) -> bool:
         return False
     if not isinstance(test.ops[0], ast.Eq):
         return False
-
     left, right = test.left, test.comparators[0]
     if not isinstance(left, ast.Name) or left.id != "__name__":
         return False
-    if isinstance(right, ast.Constant):
-        return right.value == "__main__"
-    return False
+    return isinstance(right, ast.Constant) and right.value == "__main__"
 
 
 def check_duplicate_entrypoints(py_files: List[Path]) -> None:
-    print("[2/7] Checking for duplicate __main__ entrypoints...", flush=True)
+    print("[2/8] Checking for duplicate __main__ entrypoints...", flush=True)
     offenders: List[Tuple[Path, int]] = []
     for path in py_files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        count = sum(1 for node in ast.walk(tree) if isinstance(node, ast.If) and _is_main_guard(node))
+        count = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If) and _is_main_guard(node)
+        )
         if count > 1:
             offenders.append((path, count))
     if offenders:
-        details = ", ".join(f"{path.relative_to(ROOT)} ({count})" for path, count in offenders)
-        raise SystemExit(f"FAIL: Duplicate entrypoints found: {details}")
+        details = ", ".join(
+            f"{path.relative_to(ROOT)} ({count})" for path, count in offenders
+        )
+        raise SystemExit(f"FAIL: duplicate entrypoints found: {details}")
     print("  OK: no duplicate entrypoints found", flush=True)
 
 
 def check_sqlite_context_manager_antipattern(py_files: List[Path]) -> None:
-    """Check for 'with sqlite3.connect()' which leaks connections.
-
-    The sqlite3 context manager manages TRANSACTIONS, not connections.
-    Using 'with sqlite3.connect()' leaves connections open.
-    """
-    print("[3/7] Checking for sqlite3 connection leaks...", flush=True)
-    offenders: List[Tuple[Path, int]] = []
+    """Reject the sqlite context-manager form that leaves connections open."""
+    print("[3/8] Checking for sqlite3 connection leaks...", flush=True)
+    offenders: List[Tuple[Path, list[int]]] = []
     for path in py_files:
-        # Skip test files and this script itself
         if "test_" in path.name or path.name == "trust_check.py":
             continue
-
-        text = path.read_text(encoding="utf-8")
-        # Look for the anti-pattern: with sqlite3.connect(...)
-        if "with sqlite3.connect(" in text:
-            # Find line numbers, excluding comments
-            lines = text.split("\n")
-            line_nums = []
-            for i, line in enumerate(lines):
-                if "with sqlite3.connect(" in line:
-                    # Skip if it's in a comment
-                    code = line.split("#")[0]
-                    if "with sqlite3.connect(" in code:
-                        line_nums.append(i + 1)
-            if line_nums:
-                offenders.append((path, line_nums))
+        lines = path.read_text(encoding="utf-8").splitlines()
+        line_nums = [
+            index
+            for index, line in enumerate(lines, 1)
+            if "with sqlite3.connect(" in line and not line.lstrip().startswith("#")
+        ]
+        if line_nums:
+            offenders.append((path, line_nums))
     if offenders:
         details = "; ".join(
             f"{path.relative_to(ROOT)}: line(s) {nums}" for path, nums in offenders
         )
         raise SystemExit(
-            f"FAIL: sqlite3 connection leak detected!\n"
-            f"  'with sqlite3.connect()' does NOT close connections.\n"
-            f"  Use 'conn = sqlite3.connect()' + 'finally: conn.close()' instead.\n"
+            "FAIL: sqlite3 connection leak detected; use an explicit close in a finally block.\n"
             f"  Found in: {details}"
         )
     print("  OK: no sqlite3 connection leaks found", flush=True)
 
 
 def check_config_invariants() -> None:
-    print("[4/7] Validating config invariants...", flush=True)
-
-    # Keep runtime state/log writes in /tmp during validation.
-    os.environ.setdefault("HOME", "/tmp/penny_trust_check_home")
-    os.environ.setdefault("OPENROUTER_API_KEY", "trust-check-placeholder")
-    os.environ.setdefault("TELEGRAM_BOT_TOKEN", "trust-check-placeholder")
-    os.environ.setdefault("TELEGRAM_CHAT_ID", "0")
-    os.environ.setdefault(
-        "GOOGLE_CREDENTIALS_FILE", "/tmp/penny_trust_check_home/.penny/google_credentials.json"
+    print("[4/8] Validating config invariants...", flush=True)
+    # Use harmless throwaway values and force local-only mode for this check.
+    os.environ["OPENROUTER_API_KEY"] = "trust-check-placeholder"
+    os.environ["PENNY_INGEST_TOKEN"] = "ingest-test-token"
+    os.environ.pop("PENNY_WEBHOOK_SECRET", None)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["PENNY_SOURCE_REVISION"] = "a" * 40
+    os.environ["GOOGLE_CREDENTIALS_FILE"] = (
+        "/tmp/penny_trust_check_home/.penny/google_credentials.json"
     )
-    os.environ.setdefault("GOOGLE_TOKEN_FILE", "/tmp/penny_trust_check_home/.penny/google_token.json")
+    os.environ["GOOGLE_TOKEN_FILE"] = "/tmp/penny_trust_check_home/.penny/google_token.json"
 
     sys.path.insert(0, str(ROOT))
     import config  # pylint: disable=import-outside-toplevel
 
     config._config = None
     cfg = config.get_config()
-
-    assert cfg.google_tasks.list_name == "My Tasks", (
-        "google_tasks.list_name must remain 'My Tasks' for Google Home integration"
-    )
-    assert cfg.apple_reminders.default_list in cfg.apple_reminders.lists, (
-        "apple_reminders.default_list must be present in apple_reminders.lists"
-    )
+    assert cfg.google_tasks.list_name == "My Tasks"
+    assert cfg.apple_reminders.default_list in cfg.apple_reminders.lists
     assert cfg.google_tasks.poll_interval_seconds > 0
     assert cfg.voice_memos.poll_interval_seconds > 0
     assert cfg.voice_memos.max_file_size_mb > 0
     assert cfg.voice_memos.startup_process_limit > 0
+    assert cfg.voice_memos.whisper_model_revision == MODEL_REVISION
     assert cfg.webhook.port > 0
+    assert cfg.webhook.host == "127.0.0.1"
+    assert cfg.webhook.ingest_token == "ingest-test-token"
     print("  OK: config.toml invariants validated", flush=True)
 
 
-def check_launchd_templates() -> None:
-    print("[5/7] Validating launchd templates...", flush=True)
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SystemExit(f"FAIL: cannot read required artifact {path.relative_to(ROOT)}") from exc
+
+
+def _require_environment(environment: dict[str, object], key: str, expected: object, template: Path) -> None:
+    if environment.get(key) != expected:
+        raise SystemExit(
+            f"FAIL: {template.relative_to(ROOT)} must set {key} to {expected!r}"
+        )
+
+
+def check_phase_a_contracts() -> None:
+    """Validate tracked secrets, runtime templates, workflow, and safe docs."""
+    print("[5/8] Validating Phase A contract artifacts...", flush=True)
+
+    secrets = _read_text(ROOT / "secrets.env.example")
+    if re.search(r"(?mi)^\s*TELEGRAM_(?:BOT_TOKEN|CHAT_ID)\s*=", secrets):
+        raise SystemExit("FAIL: Telegram credentials remain in secrets.env.example")
+    required_secret_keys = (
+        "PENNY_INGEST_TOKEN",
+        "PENNY_WEBHOOK_SECRET",
+        "PENNY_HERMES_WEBHOOK_SECRET",
+        "HERMES_WEBHOOK_URL",
+        "PENNY_SOURCE_REVISION",
+        "PENNY_ARCHIVE_OBJECT_ROOT",
+        "PENNY_ARCHIVE_MIRROR_ROOT",
+        "PENNY_BACKUP_ROOT",
+        "PENNY_BACKUP_REMOTE",
+        "PENNY_BACKUP_VERIFICATION_RECEIPT",
+        "PENNY_WHISPER_MODEL_PATH",
+    )
+    for key in required_secret_keys:
+        if not re.search(rf"(?m)^\s*{re.escape(key)}\s*=", secrets):
+            raise SystemExit(f"FAIL: secrets.env.example is missing {key}")
+    if "HF_HUB_OFFLINE=1" not in secrets or MODEL_REVISION not in secrets:
+        raise SystemExit("FAIL: secrets.env.example is missing the pinned offline model contract")
+    if "transitional" not in secrets.lower() or "OPENROUTER_API_KEY" not in secrets:
+        raise SystemExit("FAIL: direct OpenRouter use is not classified as transitional")
+    if "PENNY_WEBHOOK_HOST=127.0.0.1" not in secrets:
+        raise SystemExit("FAIL: secrets.env.example must default webhook to loopback")
+
     template_paths = sorted((ROOT / "launchd").glob("*.plist.template"))
     if not template_paths:
-        raise SystemExit("FAIL: No launchd templates found in launchd/")
-
+        raise SystemExit("FAIL: no launchd templates found")
     for template in template_paths:
-        text = template.read_text(encoding="utf-8")
+        text = _read_text(template)
+        if "TELEGRAM" in text:
+            raise SystemExit(f"FAIL: Telegram configuration remains in {template.relative_to(ROOT)}")
         missing = [key for key in REQUIRED_LAUNCHD_KEYS if key not in text]
         if missing:
-            raise SystemExit(f"FAIL: {template.relative_to(ROOT)} missing keys: {', '.join(missing)}")
+            raise SystemExit(
+                f"FAIL: {template.relative_to(ROOT)} missing keys: {', '.join(missing)}"
+            )
+        try:
+            environment = plistlib.loads(template.read_bytes())["EnvironmentVariables"]
+        except (OSError, plistlib.InvalidFileException, KeyError, TypeError) as exc:
+            raise SystemExit(f"FAIL: invalid launchd template {template.relative_to(ROOT)}") from exc
+        _require_environment(environment, "PENNY_SOURCE_REVISION", SOURCE_PLACEHOLDER, template)
 
-    maya_routing_templates = (
+    for template_name in (
         "com.penny.watcher.plist.template",
         "com.penny.webhook.plist.template",
         "com.penny.tasks.plist.template",
-    )
-    for template_name in maya_routing_templates:
+    ):
         template = ROOT / "launchd" / template_name
-        config = plistlib.loads(template.read_bytes())
-        environment = config["EnvironmentVariables"]
-        expected = {
-            "MAYA_TRANSCRIPT_URL": "YOUR_MAYA_TRANSCRIPT_URL_HERE",
-            "MAYA_INGEST_TOKEN": "YOUR_MAYA_INGEST_TOKEN_HERE",
-        }
-        for key, placeholder in expected.items():
-            if environment.get(key) != placeholder:
-                raise SystemExit(
-                    f"FAIL: {template.relative_to(ROOT)} must set {key} "
-                    f"to placeholder {placeholder}"
-                )
+        environment = plistlib.loads(template.read_bytes())["EnvironmentVariables"]
+        _require_environment(environment, "MAYA_TRANSCRIPT_URL", "YOUR_MAYA_TRANSCRIPT_URL_HERE", template)
+        _require_environment(environment, "MAYA_INGEST_TOKEN", "YOUR_MAYA_INGEST_TOKEN_HERE", template)
 
     watcher = plistlib.loads(
         (ROOT / "launchd" / "com.penny.watcher.plist.template").read_bytes()
-    )
-    watcher_environment = watcher["EnvironmentVariables"]
-    if watcher_environment.get("PENNY_SLACK_CHANNEL_ID") != "C0BKS0QT7FU":
-        raise SystemExit(
-            "FAIL: watcher Slack destination must be exactly C0BKS0QT7FU"
-        )
-    if (
-        watcher_environment.get("PENNY_MAYA_LEDGER_CHANNEL_ID")
-        != "YOUR_MAYA_LEDGER_CHANNEL_ID_HERE"
+    )["EnvironmentVariables"]
+    _require_environment(watcher, "HF_HUB_OFFLINE", "1", ROOT / "launchd" / "com.penny.watcher.plist.template")
+    _require_environment(watcher, "PENNY_WHISPER_MODEL_PATH", MODEL_PATH, ROOT / "launchd" / "com.penny.watcher.plist.template")
+    _require_environment(watcher, "PENNY_SLACK_CHANNEL_ID", "C0BKS0QT7FU", ROOT / "launchd" / "com.penny.watcher.plist.template")
+    _require_environment(watcher, "PENNY_MAYA_LEDGER_CHANNEL_ID", "YOUR_MAYA_LEDGER_CHANNEL_ID_HERE", ROOT / "launchd" / "com.penny.watcher.plist.template")
+    _require_environment(watcher, "MAYA_DELIVERY_TIMEOUT_SECONDS", "10", ROOT / "launchd" / "com.penny.watcher.plist.template")
+
+    webhook_path = ROOT / "launchd" / "com.penny.webhook.plist.template"
+    webhook = plistlib.loads(webhook_path.read_bytes())["EnvironmentVariables"]
+    _require_environment(webhook, "HF_HUB_OFFLINE", "1", webhook_path)
+    _require_environment(webhook, "PENNY_WHISPER_MODEL_PATH", MODEL_PATH, webhook_path)
+    _require_environment(webhook, "PENNY_WEBHOOK_HOST", "127.0.0.1", webhook_path)
+    _require_environment(webhook, "PENNY_WEBHOOK_ALLOW_NONLOOPBACK", "0", webhook_path)
+    _require_environment(webhook, "PENNY_INGEST_TOKEN", "YOUR_PENNY_INGEST_TOKEN_HERE", webhook_path)
+    _require_environment(webhook, "PENNY_WEBHOOK_SECRET", "YOUR_PENNY_WEBHOOK_SECRET_HERE", webhook_path)
+    _require_environment(webhook, "PENNY_HERMES_WEBHOOK_SECRET", "YOUR_PENNY_HERMES_WEBHOOK_SECRET_HERE", webhook_path)
+
+    for template_name in (
+        "com.penny.watcher.plist.template",
+        "com.penny.tasks.plist.template",
     ):
-        raise SystemExit(
-            "FAIL: watcher must require a dedicated Maya ledger channel"
-        )
-    if watcher_environment.get("MAYA_DELIVERY_TIMEOUT_SECONDS") != "10":
-        raise SystemExit(
-            "FAIL: watcher Maya delivery timeout must default to 10 seconds"
-        )
-    print(f"  OK: validated {len(template_paths)} launchd template(s)", flush=True)
+        template = ROOT / "launchd" / template_name
+        environment = plistlib.loads(template.read_bytes())["EnvironmentVariables"]
+        _require_environment(environment, "PENNY_HERMES_WEBHOOK_SECRET", "YOUR_PENNY_HERMES_WEBHOOK_SECRET_HERE", template)
+        _require_environment(environment, "HERMES_WEBHOOK_URL", "YOUR_HERMES_WEBHOOK_URL_HERE", template)
 
+    export_path = ROOT / "launchd" / "com.penny.export.plist.template"
+    export = plistlib.loads(export_path.read_bytes())["EnvironmentVariables"]
+    for key in (
+        "PENNY_TRANSCRIPT_DB",
+        "PENNY_ARCHIVE_OBJECT_ROOT",
+        "PENNY_BACKUP_ROOT",
+        "PENNY_BACKUP_REMOTE",
+        "PENNY_BACKUP_VERIFICATION_RECEIPT",
+        "PENNY_BACKUP_SCRATCH_ROOT",
+    ):
+        if not str(export.get(key, "")).strip():
+            raise SystemExit(f"FAIL: export template is missing {key}")
 
-def check_health_check_sync() -> None:
-    """health-check.yml must derive its expected service count from plist templates,
-    not hard-code a number. A hard-coded count drifts silently when services are added
-    or removed — this check catches that regression at push time, not 24h later.
-    """
-    print("[6/7] Checking health-check.yml uses dynamic service count...", flush=True)
-    hc_path = ROOT / ".github" / "workflows" / "health-check.yml"
-    if not hc_path.exists():
-        raise SystemExit("FAIL: .github/workflows/health-check.yml not found")
+    workflow = _read_text(ROOT / ".github" / "workflows" / "health-check.yml")
+    if "scripts/penny_doctor.py --json" not in workflow:
+        raise SystemExit("FAIL: health-check workflow must run the read-only Penny Doctor")
+    workflow_lower = workflow.lower()
+    for token in FORBIDDEN_WORKFLOW_TOKENS:
+        if token in workflow_lower:
+            raise SystemExit(f"FAIL: health-check workflow contains forbidden token {token!r}")
 
-    hc_text = hc_path.read_text(encoding="utf-8")
-
-    # The dynamic pattern reads count from plist templates at runtime.
-    # If this string is absent, the workflow has reverted to a hardcoded count.
-    if "plist.template" not in hc_text:
-        raise SystemExit(
-            "FAIL: health-check.yml does not derive service count from plist templates.\n"
-            "  Hard-coded counts drift when services are added/removed.\n"
-            "  Use: EXPECTED=$(ls launchd/com.penny.*.plist.template | wc -l | tr -d ' ')\n"
-            "  See launchd/ for the authoritative list of services."
-        )
-    print("  OK: health-check.yml derives service count dynamically", flush=True)
+    docs = {
+        "README.md": _read_text(ROOT / "README.md"),
+        "HANDOFF.md": _read_text(ROOT / "HANDOFF.md"),
+        "LLM-OVERVIEW.md": _read_text(ROOT / "LLM-OVERVIEW.md"),
+        "docs/reliability.md": _read_text(ROOT / "docs" / "reliability.md"),
+        "docs/macmini-deployment.md": _read_text(ROOT / "docs" / "macmini-deployment.md"),
+    }
+    required_doc_strings = {
+        "README.md": ("Penny Archive", "template"),
+        "HANDOFF.md": ("local routing", "independent Slack", "independent Maya v2"),
+        "LLM-OVERVIEW.md": ("transitional", "HF_HUB_OFFLINE=1"),
+        "docs/reliability.md": ("Penny Archive", "metadata-only", "watcher.system.log"),
+        "docs/macmini-deployment.md": ("runtime artifacts", "watcher.system.log"),
+    }
+    for name, needles in required_doc_strings.items():
+        for needle in needles:
+            if needle not in docs[name]:
+                raise SystemExit(f"FAIL: {name} is missing required contract phrase {needle!r}")
+    print(f"  OK: validated {len(template_paths)} launchd templates and Phase A docs", flush=True)
 
 
 def run_unit_tests() -> None:
-    print("[7/7] Running unit tests...", flush=True)
-    # Run tests in the project environment so optional runtime deps are available
-    # even when this script is launched with the system interpreter. `uv run`
-    # only auto-discovers a `.venv`; this project's venv is named `venv/`, so
-    # point at its interpreter directly rather than letting uv fall back to an
-    # unsynced ephemeral environment.
+    print("[6/8] Running hermetic unit tests...", flush=True)
     venv_python = ROOT / "venv" / "bin" / "python"
     python = str(venv_python) if venv_python.exists() else sys.executable
+    env = os.environ.copy()
+    env.update(
+        {
+            "HF_HUB_OFFLINE": "1",
+            "PENNY_INGEST_TOKEN": "ingest-test-token",
+            "PENNY_WEBHOOK_SECRET": "",
+            "OPENROUTER_API_KEY": "trust-check-placeholder",
+        }
+    )
     cmd = [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
-    subprocess.run(cmd, cwd=ROOT, check=True)
+    subprocess.run(cmd, cwd=ROOT, env=env, check=True)
     print("  OK: unit tests passed", flush=True)
 
 
 def main() -> None:
     py_files = sorted(iter_python_files(ROOT))
     if not py_files:
-        raise SystemExit("FAIL: No Python files found")
-
+        raise SystemExit("FAIL: no Python files found")
     compile_all(py_files)
     check_duplicate_entrypoints(py_files)
     check_sqlite_context_manager_antipattern(py_files)
     check_config_invariants()
-    check_launchd_templates()
-    check_health_check_sync()
+    check_phase_a_contracts()
     run_unit_tests()
     print("\nPASS: Penny trust check passed", flush=True)
 

@@ -14,6 +14,21 @@
         <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- This tracked file is a template; deployment injects the exact checkout SHA. -->
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
+        <key>PENNY_TRANSCRIPT_DB</key>
+        <string>/Users/macmini/.penny/transcripts.db</string>
+        <key>PENNY_ARCHIVE_OBJECT_ROOT</key>
+        <string>/Users/macmini/.penny/archive/objects</string>
+        <key>PENNY_BACKUP_ROOT</key>
+        <string>/Users/macmini/.penny/backup</string>
+        <key>PENNY_BACKUP_REMOTE</key>
+        <string>homelab:~/backups/penny</string>
+        <key>PENNY_BACKUP_VERIFICATION_RECEIPT</key>
+        <string>/Users/macmini/.penny/backup/last_verification.json</string>
+        <key>PENNY_BACKUP_SCRATCH_ROOT</key>
+        <string>/Users/macmini/.penny/backup-scratch</string>
     </dict>
     <key>StartInterval</key>
     <integer>21600</integer>
