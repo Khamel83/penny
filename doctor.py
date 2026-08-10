@@ -736,7 +736,12 @@ def _latest_catalog(root: Path) -> tuple[Path | None, bool]:
     return None, False
 
 
-def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
+def _default_probe_backup(
+    _config: Any = None,
+    *,
+    now: datetime | None = None,
+    **_kwargs: Any,
+) -> dict[str, Any]:
     current = _now(now)
     root = Path(os.environ.get("PENNY_BACKUP_ROOT", "~/.penny/backup")).expanduser()
     catalog_path, catalog_present = _latest_catalog(root)

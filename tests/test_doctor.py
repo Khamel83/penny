@@ -416,7 +416,9 @@ def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatc
         encoding="utf-8",
     )
     monkeypatch.setenv("PENNY_BACKUP_ROOT", str(root))
-    good = _default_probe_backup(now=datetime(2026, 8, 10, 12, 1, tzinfo=timezone.utc))
+    good = _default_probe_backup(
+        object(), now=datetime(2026, 8, 10, 12, 1, tzinfo=timezone.utc)
+    )
     assert good["verified"] is True
 
     catalog.write_text("catalog-tampered\n", encoding="utf-8")
