@@ -2721,6 +2721,53 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["leased_count"], 1)
         self.assertEqual(health["expired_lease_count"], 0)
 
+    def test_slack_claims_recover_null_and_malformed_legacy_expiries(self) -> None:
+        regular_row_id = transcript_log.insert_transcript(
+            content_hash="slack-null-expiry",
+            source="iCloud",
+            transcript="regular delivery",
+        )
+        regular = transcript_log.claim_next_slack_delivery("worker-a")
+        self.assertIsNotNone(regular)
+        self.assertEqual(regular["transcript_row_id"], regular_row_id)
+
+        transcript_log.insert_transcript(
+            content_hash="quality-invalid-expiry",
+            source="iCloud",
+            transcript="private body",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="attempt_1=control_token",
+            enqueue_slack=False,
+        )
+        quality = transcript_log.claim_next_quality_failure_delivery("worker-a")
+        self.assertIsNotNone(quality)
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE slack_deliveries SET slack_claim_expires_at = NULL "
+                "WHERE id = ?",
+                (regular["id"],),
+            )
+            conn.execute(
+                "UPDATE quality_failure_slack_deliveries "
+                "SET slack_claim_expires_at = 'not-a-time' WHERE id = ?",
+                (quality["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered_regular = transcript_log.claim_next_slack_delivery("worker-b")
+        recovered_quality = transcript_log.claim_next_quality_failure_delivery(
+            "worker-b"
+        )
+        self.assertEqual(recovered_regular["id"], regular["id"])
+        self.assertEqual(recovered_quality["id"], quality["id"])
+        self.assertEqual(recovered_regular["slack_claim_owner"], "worker-b")
+        self.assertEqual(recovered_quality["slack_claim_owner"], "worker-b")
+
     def test_quality_failure_outbox_is_body_free_durable_and_idempotent(self) -> None:
         transcript = "PRIVATE TRANSCRIPT BODY MUST NEVER ENTER THE LEDGER RECEIPT"
         row_id = transcript_log.insert_transcript(

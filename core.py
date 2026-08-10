@@ -185,7 +185,12 @@ def setup_logging(service_name: str) -> logging.Logger:
 def get_file_hash(path: Path) -> str:
     """Get an MD5 identity without following a replaced final symlink."""
     hasher = hashlib.md5()
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as f:
         if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):

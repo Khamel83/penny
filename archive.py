@@ -78,7 +78,12 @@ def _source_signature_from_stat(info: os.stat_result) -> tuple[int, int, int, in
 
 def _open_source_nofollow(path: Path) -> int:
     """Open one regular source without following its final path component."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:

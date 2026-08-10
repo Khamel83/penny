@@ -66,6 +66,15 @@ class ArchiveTests(unittest.TestCase):
 
         self.assertFalse((self.root / "objects" / "sha256").exists())
 
+    def test_stage_audio_rejects_fifo_without_blocking(self) -> None:
+        source = self.root / "special.m4a"
+        os.mkfifo(source)
+
+        with self.assertRaises(SourceChangedError):
+            stage_audio(source, self.root / "objects")
+
+        self.assertFalse((self.root / "objects" / "sha256").exists())
+
     def test_stage_audio_same_hash_keeps_alias_extension_and_single_bytes(self) -> None:
         first_source = self.root / "first.m4a"
         second_source = self.root / "renamed.wav"

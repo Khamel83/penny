@@ -2109,7 +2109,12 @@ def claim_next_slack_delivery(
                     )
                     OR (
                         deliveries.status = 'delivering'
-                        AND deliveries.slack_claim_expires_at <= datetime('now')
+                        AND (
+                            deliveries.slack_claim_expires_at IS NULL
+                            OR julianday(deliveries.slack_claim_expires_at) IS NULL
+                            OR julianday(deliveries.slack_claim_expires_at)
+                               <= julianday('now')
+                        )
                     )
                   )
             ORDER BY deliveries.created_at ASC, deliveries.id ASC
@@ -2137,7 +2142,11 @@ def claim_next_slack_delivery(
                     )
                     OR (
                         status = 'delivering'
-                        AND slack_claim_expires_at <= datetime('now')
+                        AND (
+                            slack_claim_expires_at IS NULL
+                            OR julianday(slack_claim_expires_at) IS NULL
+                            OR julianday(slack_claim_expires_at) <= julianday('now')
+                        )
                     )
                   )
             """,
@@ -2234,7 +2243,11 @@ def claim_next_quality_failure_delivery(
                   )
                OR (
                     status = 'delivering'
-                    AND slack_claim_expires_at <= datetime('now')
+                    AND (
+                        slack_claim_expires_at IS NULL
+                        OR julianday(slack_claim_expires_at) IS NULL
+                        OR julianday(slack_claim_expires_at) <= julianday('now')
+                    )
                   )
             ORDER BY created_at ASC, id ASC
             LIMIT 1
@@ -2261,7 +2274,11 @@ def claim_next_quality_failure_delivery(
                     )
                     OR (
                         status = 'delivering'
-                        AND slack_claim_expires_at <= datetime('now')
+                        AND (
+                            slack_claim_expires_at IS NULL
+                            OR julianday(slack_claim_expires_at) IS NULL
+                            OR julianday(slack_claim_expires_at) <= julianday('now')
+                        )
                     )
                   )
             """,
