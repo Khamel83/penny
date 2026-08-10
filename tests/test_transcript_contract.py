@@ -895,64 +895,23 @@ class TranscriptContractTests(unittest.TestCase):
         self.assertEqual(delivered, 1)
         slack_post.assert_called_once()
 
-    def test_unavailable_persisted_body_fails_closed_before_maya_or_local_routing(
-        self,
-    ) -> None:
-        for scenario, persisted_row in (
-            ("missing-row", None),
-            ("missing-transcript-field", {"routing_progress": None}),
+    def test_legacy_maya_route_never_reads_or_posts_transcript_body(self) -> None:
+        transcript = "Fallback text must remain inside Penny's durable stores."
+        with (
+            patch.object(core, "get_transcript") as persisted_read,
+            patch.object(core.requests, "post") as maya_post,
         ):
-            with self.subTest(scenario=scenario):
-                transcript = f"Fallback body must not be sent for {scenario}."
-                row_id = transcript_log.insert_transcript(
-                    content_hash=f"persisted-body-{scenario}-contract-hash",
+            self.assertFalse(
+                core._route_to_maya(
+                    transcript,
                     source="iCloud",
-                    transcript=transcript,
-                    ingest_state="transcribed",
+                    row_id=42,
                 )
+            )
+        persisted_read.assert_not_called()
+        maya_post.assert_not_called()
 
-                with (
-                    patch.object(core, "get_transcript", return_value=persisted_row),
-                    patch.object(core, "mark_failed", transcript_log.mark_failed),
-                    patch.object(core.requests, "post") as maya_post,
-                    patch.object(core, "detect_content_type") as detect_mock,
-                    patch.object(core, "add_note") as note_mock,
-                    patch.object(core, "add_reminder") as reminder_mock,
-                    patch.object(core, "mark_routed") as mark_routed_mock,
-                    self.assertRaisesRegex(
-                        core.RoutingError,
-                        "persisted transcript.*row_id",
-                    ),
-                ):
-                    core.classify_and_route(
-                        transcript,
-                        source="iCloud",
-                        row_id=row_id,
-                        allow_maya=True,
-                    )
-
-                maya_post.assert_not_called()
-                detect_mock.assert_not_called()
-                note_mock.assert_not_called()
-                reminder_mock.assert_not_called()
-                mark_routed_mock.assert_not_called()
-
-                failed_row = transcript_log.get_transcript(row_id)
-                self.assertEqual(failed_row["status"], "failed")
-                self.assertEqual(failed_row["ingest_state"], "failed")
-                self.assertIsNone(failed_row["routed_to"])
-                self.assertIsNone(failed_row["routing_result"])
-                self.assertIsNone(failed_row["routing_progress"])
-                self.assertEqual(
-                    len(
-                        transcript_log.get_pending_slack_deliveries(
-                            transcript_id=row_id,
-                        )
-                    ),
-                    1,
-                )
-
-    def test_icloud_transcript_contract_preserves_exact_body_across_maya_and_slack_retry(
+    def test_icloud_transcript_contract_preserves_exact_body_across_slack_retry(
         self,
     ) -> None:
         transcript = (
@@ -971,34 +930,6 @@ class TranscriptContractTests(unittest.TestCase):
         stored_row = transcript_log.get_transcript(row_id)
         self.assertEqual(stored_row["source"], "iCloud")
         self.assertEqual(stored_row["transcript"], transcript)
-
-        maya_response = unittest.mock.Mock()
-        maya_response.status_code = 200
-        maya_response.json.return_value = {
-            "ok": True,
-            "routed_to": "clio",
-            "routing_detail": "accepted",
-        }
-
-        with patch.object(core.requests, "post", return_value=maya_response) as maya_post:
-            route_result = core.classify_and_route(
-                transcript,
-                source="iCloud",
-                row_id=row_id,
-                allow_maya=True,
-            )
-
-        self.assertEqual(route_result, {"skip": True, "reason": "routed_to_maya"})
-        maya_payload = maya_post.call_args.kwargs["json"]
-        self.assertEqual(maya_payload["transcript"], transcript)
-        self.assertEqual(maya_payload["source"], "iCloud")
-        self.assertEqual(maya_payload["client_ref"], f"penny:{row_id}")
-
-        routed_row = transcript_log.get_transcript(row_id)
-        self.assertEqual(routed_row["routed_to"], "maya")
-        routing_progress = json.loads(routed_row["routing_progress"])
-        self.assertEqual(routing_progress["maya_route"]["state"], "accepted")
-        self.assertEqual(routing_progress["maya_route"]["client_ref"], f"penny:{row_id}")
 
         pending = transcript_log.get_pending_slack_deliveries(transcript_id=row_id)
         self.assertEqual(len(pending), 1)

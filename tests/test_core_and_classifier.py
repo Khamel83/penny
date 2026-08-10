@@ -90,6 +90,22 @@ class CorePipelineTests(unittest.TestCase):
                 core._route_to_maya("canonical guard", source="test", row_id=None)
         post.assert_not_called()
 
+    def test_legacy_maya_route_is_fail_closed_even_when_explicitly_allowed(self) -> None:
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+        with (
+            patch.object(core.requests, "post") as post,
+            patch.object(core, "detect_content_type", return_value="long_note"),
+        ):
+            result = core.classify_and_route(
+                "Keep provider delivery in the durable Maya v2 outbox.",
+                source="iCloud",
+                row_id=42,
+                allow_maya=True,
+            )
+        post.assert_not_called()
+        self.assertEqual(result["reason"], "long_note")
+
     def test_progress_flags_do_not_replace_apple_receipt_authority(self) -> None:
         receipt = AppleEffectReceipt(
             "a" * 64, "note", "note-id", "succeeded", actual_target="Penny",
@@ -236,7 +252,7 @@ class CorePipelineTests(unittest.TestCase):
         self.assertEqual(result["reason"], "long_note")
         maya.assert_not_called()
 
-    def test_maya_progress_stores_only_bounded_fields(self) -> None:
+    def test_disabled_legacy_maya_route_records_no_progress(self) -> None:
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
         sentinel = "MAYA_PROVIDER_BODY_SENTINEL"
@@ -248,7 +264,7 @@ class CorePipelineTests(unittest.TestCase):
             return True
 
         with (
-            patch.object(core.requests, "post", return_value=response),
+            patch.object(core.requests, "post", return_value=response) as post,
             patch.object(core, "get_transcript", return_value={"transcript": "safe body"}),
             patch.object(core, "_record_maya_route_state", side_effect=record),
         ):
@@ -259,8 +275,8 @@ class CorePipelineTests(unittest.TestCase):
         self.assertNotIn("response_excerpt", encoded)
         self.assertNotIn("error_message", encoded)
         self.assertNotIn("source", encoded)
-        self.assertEqual(states[0]["state"], "attempting")
-        self.assertEqual(states[1]["state"], "rejected")
+        self.assertEqual(states, [])
+        post.assert_not_called()
 
     def test_effect_progress_does_not_persist_user_text(self) -> None:
         sentinel = "PRIVATE_REMINDER_BODY_SENTINEL"
@@ -479,7 +495,7 @@ class CorePipelineTests(unittest.TestCase):
 
     @patch("core.requests.post")
     def test_routes_to_maya_when_configured(self, mock_post):
-        """When Maya is configured and returns 200, route via Maya, skip local."""
+        """Legacy Maya configuration cannot bypass the durable v2 outbox."""
         mock_post.return_value.status_code = 200
         mock_post.return_value.json.return_value = {
             "ok": True, "routed_to": "clio", "routing_detail": "classified as actionable"
@@ -489,20 +505,17 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
 
-        result = core.classify_and_route(
-            "write a python script to parse CSV", source="test", row_id=42,
-            allow_maya=True,
-        )
+        with patch.object(core, "detect_content_type", return_value="long_note"):
+            result = core.classify_and_route(
+                "write a python script to parse CSV", source="test", row_id=42,
+                allow_maya=True,
+            )
 
-        self.assertEqual(result.get("reason"), "routed_to_maya")
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args[1]
-        self.assertEqual(call_kwargs["json"]["transcript"], "fixture transcript")
-        self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer test-token")
-        self.assertIn("/ingest/transcript", mock_post.call_args[0][0])
+        self.assertEqual(result.get("reason"), "long_note")
+        mock_post.assert_not_called()
 
     @patch("core.requests.post")
-    def test_maya_payload_includes_full_transcript_source_and_client_ref(self, mock_post):
+    def test_legacy_maya_route_does_not_post_full_transcript(self, mock_post):
         mock_post.return_value.status_code = 200
         mock_post.return_value.json.return_value = {
             "ok": True,
@@ -521,6 +534,7 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "detect_content_type", return_value="long_note"),
         ):
             core.classify_and_route(
                 transcript,
@@ -530,14 +544,10 @@ class CorePipelineTests(unittest.TestCase):
                 duration_seconds=12.5,
             )
 
-        payload = mock_post.call_args_list[0].kwargs["json"]
-        self.assertEqual(payload["transcript"], transcript)
-        self.assertEqual(payload["source"], "iCloud")
-        self.assertEqual(payload["client_ref"], "penny:468")
-        self.assertEqual(payload["duration_seconds"], 12.5)
+        mock_post.assert_not_called()
 
     @patch("core.requests.post")
-    def test_maya_payload_uses_persisted_transcript_body_verbatim(self, mock_post):
+    def test_legacy_maya_route_does_not_post_persisted_transcript(self, mock_post):
         mock_post.return_value.status_code = 200
         mock_post.return_value.json.return_value = {
             "ok": True,
@@ -558,6 +568,7 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "get_transcript", return_value={"transcript": persisted_transcript}),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "detect_content_type", return_value="long_note"),
         ):
             core.classify_and_route(
                 persisted_transcript,
@@ -566,10 +577,9 @@ class CorePipelineTests(unittest.TestCase):
                 allow_maya=True,
             )
 
-        payload = mock_post.call_args_list[0].kwargs["json"]
-        self.assertEqual(payload["transcript"], persisted_transcript)
+        mock_post.assert_not_called()
 
-    def test_maya_success_marks_routed_only_after_response_is_accepted(self):
+    def test_allow_maya_runs_only_local_receipt_path(self):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
         events: list[str] = []
@@ -596,15 +606,16 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", side_effect=record_mark_routed),
+            patch.object(core, "detect_content_type", return_value="long_note"),
         ):
             result = core.classify_and_route(
                 "buy milk", source="test", row_id=468, allow_maya=True
             )
 
-        self.assertEqual(result.get("reason"), "routed_to_maya")
-        self.assertEqual(events, ["json", "mark_routed"])
+        self.assertEqual(result.get("reason"), "long_note")
+        self.assertEqual(events, ["mark_routed"])
 
-    def test_falls_back_when_maya_acceptance_cannot_be_persisted_locally(self):
+    def test_allow_maya_does_not_record_legacy_acceptance(self):
         core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
         core.cfg.maya.ingest_token = "test-token"
 
@@ -627,7 +638,7 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(
                 core,
                 "mark_routed",
-                side_effect=[False, True],
+                return_value=True,
             ) as mark_routed_mock,
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "ensure_note", return_value=self.note_receipt) as note_mock,
@@ -638,26 +649,15 @@ class CorePipelineTests(unittest.TestCase):
             )
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
-        self.assertEqual(
-            mark_routed_mock.call_args_list[0],
-            unittest.mock.call(
-            468,
-            {
-                "ok": True,
-                "routed_to": "clio",
-                "routing_detail": "accepted",
-            },
-            "maya",
-            ),
-        )
+        self.assertEqual(mark_routed_mock.call_count, 1)
         states = [call.kwargs["state"] for call in state_mock.call_args_list]
-        self.assertEqual(states, ["attempting", "accepted", "failed"])
+        self.assertEqual(states, [])
         note_mock.assert_called_once()
         reminder_mock.assert_called_once()
 
     @patch("core.requests.post")
-    def test_falls_back_when_maya_unavailable(self, mock_post):
-        """When Maya returns non-2xx, fall back to local routing."""
+    def test_allow_maya_ignores_unavailable_legacy_endpoint(self, mock_post):
+        """Legacy endpoint state cannot change local-first routing."""
         mock_post.return_value.status_code = 503
         mock_post.return_value.text = "Service Unavailable"
 
@@ -672,7 +672,7 @@ class CorePipelineTests(unittest.TestCase):
                 "buy milk", source="test", row_id=42, allow_maya=True
             )
 
-        mock_post.assert_called_once()
+        mock_post.assert_not_called()
         # Local routing should still happen
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
 
@@ -689,6 +689,7 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "detect_content_type", return_value="long_note"),
         ):
             result = core.classify_and_route(
                 "buy milk", source="test", row_id=468, allow_maya=True
@@ -767,7 +768,7 @@ class CorePipelineTests(unittest.TestCase):
         )
 
     @patch("core.requests.post")
-    def test_duplicate_client_ref_reuses_same_transcript_row_id(self, mock_post):
+    def test_allow_maya_does_not_emit_legacy_client_refs(self, mock_post):
         mock_post.return_value.status_code = 200
         mock_post.return_value.json.return_value = {
             "ok": True,
@@ -785,6 +786,7 @@ class CorePipelineTests(unittest.TestCase):
             ),
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "detect_content_type", return_value="long_note"),
         ):
             core.classify_and_route(
                 "same transcript", source="iCloud", row_id=470, allow_maya=True
@@ -793,8 +795,7 @@ class CorePipelineTests(unittest.TestCase):
                 "same transcript", source="iCloud", row_id=470, allow_maya=True
             )
 
-        client_refs = [call.kwargs["json"]["client_ref"] for call in mock_post.call_args_list]
-        self.assertEqual(client_refs, ["penny:470", "penny:470"])
+        mock_post.assert_not_called()
 
     def test_does_not_call_maya_when_not_configured(self):
         """When Maya URL is empty, skip Maya entirely."""

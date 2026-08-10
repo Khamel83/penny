@@ -504,121 +504,10 @@ def _route_to_maya(
     row_id: int | None = None,
     duration_seconds: float | None = None,
 ) -> bool:
-    """Route transcript to Maya POST /ingest/transcript.
-
-    Returns True if Maya handled it (caller should skip local routing).
-    Returns False if Maya is not configured or unavailable (caller should fall back).
-    Raises RoutingError if a row_id has no readable persisted transcript body.
-    """
+    """Fail closed: Phase A Maya delivery is owned by the durable v2 outbox."""
     if row_id is None:
         raise RoutingError("canonical_id_required")
-
-    log = logging.getLogger("penny.core")
-    maya_url = cfg.maya.transcript_url.strip()
-    maya_token = cfg.maya.ingest_token.strip()
-
-    if not maya_url or not maya_token:
-        return False
-
-    delivery_transcript = _persisted_transcript_body(row_id, transcript)
-    client_ref = f"penny:{row_id}" if row_id is not None else None
-    payload = {
-        "transcript": delivery_transcript,
-        "source": source or "penny_voice",
-    }
-    if duration_seconds is not None:
-        payload["duration_seconds"] = duration_seconds
-    if client_ref is not None:
-        # Maya dedupes on client_ref, so a re-sent transcript (retry, watcher
-        # replay) can never become a second drop or a duplicate Clio task.
-        payload["client_ref"] = client_ref
-
-    attempted_at = datetime.now(timezone.utc).isoformat()
-    _record_maya_route_state(
-        row_id,
-        state="attempting",
-        attempted_at=attempted_at,
-        client_ref=client_ref,
-    )
-
-    try:
-        resp = requests.post(
-            maya_url,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {maya_token}",
-                "Content-Type": "application/json",
-            },
-            timeout=10,
-        )
-    except Exception as exc:
-        _record_maya_route_state(
-            row_id,
-            state="failed",
-            attempted_at=attempted_at,
-            client_ref=client_ref,
-            error_code="transport_error",
-        )
-        log.warning(
-            "Maya routing failed row_id=%s class=%s; falling back to local routing",
-            row_id,
-            _safe_exception_class(exc),
-        )
-        return False
-
-    if resp.status_code != 200:
-        _record_maya_route_state(
-            row_id,
-            state="rejected",
-            attempted_at=attempted_at,
-            client_ref=client_ref,
-            status_code=resp.status_code,
-            error_code="http_error",
-        )
-        log.warning("Maya rejected row_id=%s status=%s", row_id, resp.status_code)
-        return False
-
-    try:
-        data = resp.json()
-    except Exception as exc:
-        _record_maya_route_state(
-            row_id,
-            state="rejected",
-            attempted_at=attempted_at,
-            client_ref=client_ref,
-            status_code=resp.status_code,
-            error_code="invalid_response",
-        )
-        log.warning(
-            "Maya response rejected row_id=%s class=%s",
-            row_id,
-            _safe_exception_class(exc),
-        )
-        return False
-
-    if not _is_valid_maya_acceptance(data):
-        _record_maya_route_state(
-            row_id,
-            state="rejected",
-            attempted_at=attempted_at,
-            client_ref=client_ref,
-            status_code=resp.status_code,
-            error_code="invalid_acceptance",
-        )
-        log.warning("Maya response rejected row_id=%s code=invalid_acceptance", row_id)
-        return False
-
-    if not _confirm_maya_acceptance(
-        row_id,
-        attempted_at=attempted_at,
-        client_ref=client_ref,
-        source=payload["source"],
-        status_code=resp.status_code,
-        data=data,
-    ):
-        return False
-    log.info("Maya accepted row_id=%s", row_id)
-    return True
+    return False
 
 
 
@@ -645,7 +534,9 @@ def classify_and_route(
     log = logging.getLogger("penny.core")
     transcript = normalize_transcript_text(transcript)
     progress = _load_routing_progress(row_id)
-    allow_maya = allow_maya and not source.lower().startswith("maya:")
+    # Retained as an input compatibility shim. Phase A never invokes the
+    # receiptless legacy Maya POST; the durable Maya v2 outbox is authoritative.
+    allow_maya = False
 
     if not transcript:
         if row_id is not None:
@@ -664,17 +555,6 @@ def classify_and_route(
             duration_seconds=duration_seconds,
             routing_started_at=datetime.now().isoformat(),
         )
-
-    # Canonical callers may use the legacy Maya route when explicitly enabled.
-    # Maya-originated content is always local to prevent a delivery loop.
-    if allow_maya:
-        try:
-            if _route_to_maya(transcript, source, row_id, duration_seconds):
-                return {"skip": True, "reason": "routed_to_maya"}
-        except RoutingError as exc:
-            if row_id is not None:
-                mark_failed(row_id, str(exc))
-            raise
 
     content_type = detect_content_type(
         transcript,

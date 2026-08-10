@@ -50,8 +50,8 @@ from transcript_log import (
     QUALITY_FAILURE_DESTINATION,
     SLACK_API_ERROR_CODES,
     SLACK_DELIVERY_PLAN_BLOCK_KIT_V2,
-    get_pending_quality_failure_deliveries,
-    get_pending_slack_deliveries,
+    claim_next_quality_failure_delivery,
+    claim_next_slack_delivery,
     mark_quality_failure_delivery_failed,
     mark_quality_failure_delivery_sent,
     mark_slack_delivery_chunk_sent,
@@ -325,12 +325,16 @@ def _record_delivery_failure(
     safe_error: str,
     *,
     retry_after_seconds: int,
+    claim_token: str,
+    claim_owner: str,
 ) -> None:
     try:
         mark_slack_delivery_failed(
             delivery_id,
             safe_error,
             retry_after_seconds=retry_after_seconds,
+            claim_token=claim_token,
+            claim_owner=claim_owner,
         )
     except Exception as ack_exc:
         log.error(
@@ -344,12 +348,23 @@ def _record_delivery_failure(
 def process_pending_slack_deliveries(limit: int = 20) -> int:
     delivered = 0
     attempted_posts = 0
-    for row in get_pending_slack_deliveries(limit=limit):
+    claim_owner = f"slack-worker:{os.getpid()}:{uuid.uuid4()}"
+    for _ in range(max(0, limit)):
+        if attempted_posts >= MAX_SLACK_POSTS_PER_PASS:
+            break
+        row = claim_next_slack_delivery(claim_owner)
+        if row is None:
+            break
         delivery_id = int(row["id"])
+        claim_token = str(row["slack_claim_token"])
         chunk_attempt_count = int(row.get("chunk_attempt_count") or 0)
         if row.get("delivery_plan_version") != SLACK_DELIVERY_PLAN_BLOCK_KIT_V2:
             try:
-                mark_slack_delivery_reconciliation_required(delivery_id)
+                mark_slack_delivery_reconciliation_required(
+                    delivery_id,
+                    claim_token=claim_token,
+                    claim_owner=claim_owner,
+                )
             except Exception as exc:
                 log.error(
                     "Failed to reconcile Slack delivery id=%s: %s",
@@ -367,11 +382,10 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
                 delivery_id,
                 "destination_mismatch",
                 retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
             continue
-
-        if attempted_posts >= MAX_SLACK_POSTS_PER_PASS:
-            break
 
         message = build_transcript_message(
             int(row["transcript_row_id"]),
@@ -402,6 +416,8 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
                 exc.safe_error,
                 retry_after_seconds=exc.retry_after_seconds
                 or _fallback_retry_after(chunk_attempt_count),
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
             break
         except SlackConfigurationError:
@@ -409,13 +425,23 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
                 delivery_id,
                 "configuration_error",
                 retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
             break
         except Exception as exc:
+            error_category = (
+                "uncertain_delivery"
+                if type(exc).__name__
+                in {"Timeout", "TimeoutError", "ReadTimeout", "ConnectTimeout"}
+                else "provider_error"
+            )
             _record_delivery_failure(
                 delivery_id,
-                _classified_error("provider_error", exc),
+                _classified_error(error_category, exc),
                 retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
             break
 
@@ -425,12 +451,16 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
                 chunk_index=chunk_index,
                 chunk_count=len(posts),
                 provider_ts=provider_ts,
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
         except Exception as exc:
             _record_delivery_failure(
                 delivery_id,
                 _classified_error("acknowledgement_error", exc),
                 retry_after_seconds=_fallback_retry_after(chunk_attempt_count),
+                claim_token=claim_token,
+                claim_owner=claim_owner,
             )
             break
 
@@ -442,8 +472,13 @@ def process_pending_slack_deliveries(limit: int = 20) -> int:
 def process_pending_quality_failure_deliveries(limit: int = 20) -> int:
     """Post body-free operational metadata to the configured Maya ledger."""
     delivered = 0
-    for row in get_pending_quality_failure_deliveries(limit=limit):
+    claim_owner = f"quality-slack-worker:{os.getpid()}:{uuid.uuid4()}"
+    for _ in range(max(0, limit)):
+        row = claim_next_quality_failure_delivery(claim_owner)
+        if row is None:
+            break
         delivery_id = int(row["id"])
+        claim_token = str(row["slack_claim_token"])
         attempt_count = int(row.get("attempt_count") or 0)
         safe_error: str | None = None
         retry_after = _fallback_retry_after(attempt_count)
@@ -476,12 +511,20 @@ def process_pending_quality_failure_deliveries(limit: int = 20) -> int:
             except SlackConfigurationError:
                 safe_error = "configuration_error"
             except Exception as exc:
-                safe_error = _classified_error("provider_error", exc)
+                error_category = (
+                    "uncertain_delivery"
+                    if type(exc).__name__
+                    in {"Timeout", "TimeoutError", "ReadTimeout", "ConnectTimeout"}
+                    else "provider_error"
+                )
+                safe_error = _classified_error(error_category, exc)
             else:
                 try:
                     mark_quality_failure_delivery_sent(
                         delivery_id,
                         provider_ts,
+                        claim_token=claim_token,
+                        claim_owner=claim_owner,
                     )
                 except Exception:
                     safe_error = "acknowledgement_error:Exception"
@@ -494,6 +537,8 @@ def process_pending_quality_failure_deliveries(limit: int = 20) -> int:
                     delivery_id,
                     safe_error,
                     retry_after_seconds=retry_after,
+                    claim_token=claim_token,
+                    claim_owner=claim_owner,
                 )
             except Exception as exc:
                 log.error(

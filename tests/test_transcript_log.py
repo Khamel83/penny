@@ -2667,6 +2667,60 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["transcript_row_id"], row_id)
 
+    def test_slack_claim_is_atomic_owner_bound_and_expired_claims_recover(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="slack-claim-cas",
+            source="iCloud",
+            transcript="Only one Slack worker may own this attempt.",
+            ingest_state="routed",
+        )
+
+        first = transcript_log.claim_next_slack_delivery("worker-a", lease_seconds=60)
+        self.assertIsNotNone(first)
+        self.assertEqual(first["transcript_row_id"], row_id)
+        self.assertEqual(first["slack_claim_owner"], "worker-a")
+        self.assertIsNone(transcript_log.claim_next_slack_delivery("worker-b"))
+
+        with self.assertRaisesRegex(ValueError, "Slack claim owner mismatch"):
+            transcript_log.mark_slack_delivery_failed(
+                int(first["id"]),
+                "delivery_error",
+                claim_token=first["slack_claim_token"],
+                claim_owner="worker-b",
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE slack_deliveries "
+                "SET slack_claim_expires_at = datetime('now', '-1 second') "
+                "WHERE id = ?",
+                (first["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        recovered = transcript_log.claim_next_slack_delivery("worker-b", lease_seconds=60)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered["id"], first["id"])
+        self.assertEqual(recovered["slack_claim_owner"], "worker-b")
+        self.assertNotEqual(recovered["slack_claim_token"], first["slack_claim_token"])
+
+        with self.assertRaisesRegex(ValueError, "Slack claim owner mismatch"):
+            transcript_log.mark_slack_delivery_chunk_sent(
+                int(first["id"]),
+                chunk_index=0,
+                chunk_count=1,
+                provider_ts="stale.001",
+                claim_token=first["slack_claim_token"],
+                claim_owner="worker-a",
+            )
+
+        health = transcript_log.get_slack_delivery_health()
+        self.assertEqual(health["leased_count"], 1)
+        self.assertEqual(health["expired_lease_count"], 0)
+
     def test_quality_failure_outbox_is_body_free_durable_and_idempotent(self) -> None:
         transcript = "PRIVATE TRANSCRIPT BODY MUST NEVER ENTER THE LEDGER RECEIPT"
         row_id = transcript_log.insert_transcript(

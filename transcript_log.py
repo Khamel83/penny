@@ -119,7 +119,8 @@ _SAFE_DELIVERY_ERROR_VALUES = SLACK_API_ERROR_CODES | {
     SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR,
 }
 _SAFE_CLASSIFIED_ERROR_RE = re.compile(
-    r"(?:provider|acknowledgement)_error:[A-Za-z][A-Za-z0-9_]{0,47}"
+    r"(?:(?:provider|acknowledgement)_error|uncertain_delivery):"
+    r"[A-Za-z][A-Za-z0-9_]{0,47}"
 )
 _SAFE_EXCEPTION_CLASS_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}")
 
@@ -255,6 +256,10 @@ def init_db() -> None:
                 next_chunk_index INTEGER NOT NULL DEFAULT 0,
                 chunk_attempt_count INTEGER NOT NULL DEFAULT 0,
                 chunk_provider_ts TEXT NOT NULL DEFAULT '[]',
+                slack_claim_token TEXT,
+                slack_claim_owner TEXT,
+                slack_claimed_at TEXT,
+                slack_claim_expires_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
@@ -283,6 +288,10 @@ def init_db() -> None:
                 next_attempt_at TEXT,
                 last_error TEXT,
                 provider_ts TEXT,
+                slack_claim_token TEXT,
+                slack_claim_owner TEXT,
+                slack_claimed_at TEXT,
+                slack_claim_expires_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 sent_at TEXT,
@@ -291,6 +300,7 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_quality_failure_slack_delivery_columns(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_quality_failure_slack_due "
             "ON quality_failure_slack_deliveries(status, next_attempt_at)"
@@ -1461,6 +1471,18 @@ def _ensure_slack_delivery_columns(conn: sqlite3.Connection) -> set[str]:
             "ALTER TABLE slack_deliveries "
             "ADD COLUMN chunk_provider_ts TEXT NOT NULL DEFAULT '[]'"
         ),
+        "slack_claim_token": (
+            "ALTER TABLE slack_deliveries ADD COLUMN slack_claim_token TEXT"
+        ),
+        "slack_claim_owner": (
+            "ALTER TABLE slack_deliveries ADD COLUMN slack_claim_owner TEXT"
+        ),
+        "slack_claimed_at": (
+            "ALTER TABLE slack_deliveries ADD COLUMN slack_claimed_at TEXT"
+        ),
+        "slack_claim_expires_at": (
+            "ALTER TABLE slack_deliveries ADD COLUMN slack_claim_expires_at TEXT"
+        ),
     }
     added: set[str] = set()
     for column, sql in required_columns.items():
@@ -1612,6 +1634,36 @@ def _migrate_slack_delivery_rows(
         """,
         (SLACK_MAX_ATTEMPTS,),
     )
+
+
+def _ensure_quality_failure_slack_delivery_columns(
+    conn: sqlite3.Connection,
+) -> None:
+    required_columns = {
+        "slack_claim_token": (
+            "ALTER TABLE quality_failure_slack_deliveries "
+            "ADD COLUMN slack_claim_token TEXT"
+        ),
+        "slack_claim_owner": (
+            "ALTER TABLE quality_failure_slack_deliveries "
+            "ADD COLUMN slack_claim_owner TEXT"
+        ),
+        "slack_claimed_at": (
+            "ALTER TABLE quality_failure_slack_deliveries "
+            "ADD COLUMN slack_claimed_at TEXT"
+        ),
+        "slack_claim_expires_at": (
+            "ALTER TABLE quality_failure_slack_deliveries "
+            "ADD COLUMN slack_claim_expires_at TEXT"
+        ),
+    }
+    for column, sql in required_columns.items():
+        _add_column_if_missing(
+            conn,
+            table="quality_failure_slack_deliveries",
+            column=column,
+            sql=sql,
+        )
 
 
 def _should_queue_slack_delivery(
@@ -1997,6 +2049,128 @@ def get_pending_slack_deliveries(
             conn.close()
 
 
+def _validate_slack_claim_arguments(
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> None:
+    if (claim_token is None) != (claim_owner is None):
+        raise ValueError("Slack claim token and owner must be provided together")
+    if claim_token is not None and (
+        not str(claim_token).strip() or not str(claim_owner).strip()
+    ):
+        raise ValueError("Slack claim token and owner must be nonempty")
+
+
+def _slack_claim_matches(
+    row: sqlite3.Row,
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> bool:
+    return (
+        claim_token is not None
+        and claim_owner is not None
+        and row["slack_claim_token"] == claim_token
+        and row["slack_claim_owner"] == claim_owner
+    )
+
+
+def claim_next_slack_delivery(
+    claim_owner: str,
+    *,
+    lease_seconds: int = 60,
+) -> dict[str, Any] | None:
+    """Atomically lease one due Slack row, including an expired prior lease."""
+    owner = str(claim_owner).strip()
+    if not owner:
+        raise ValueError("Slack claim owner is required")
+    lease = max(1, min(int(lease_seconds), 3600))
+    claim_token = secrets.token_hex(16)
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT deliveries.id
+            FROM slack_deliveries AS deliveries
+            LEFT JOIN transcripts
+              ON transcripts.id = deliveries.transcript_row_id
+            WHERE transcripts.quality_status = 'passed'
+              AND (
+                    (
+                        deliveries.status = 'pending'
+                        AND (
+                            deliveries.next_attempt_at IS NULL
+                            OR deliveries.next_attempt_at <= datetime('now')
+                        )
+                    )
+                    OR (
+                        deliveries.status = 'delivering'
+                        AND deliveries.slack_claim_expires_at <= datetime('now')
+                    )
+                  )
+            ORDER BY deliveries.created_at ASC, deliveries.id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        delivery_id = int(row["id"])
+        cursor = conn.execute(
+            """
+            UPDATE slack_deliveries
+            SET status = 'delivering',
+                slack_claim_token = ?,
+                slack_claim_owner = ?,
+                slack_claimed_at = datetime('now'),
+                slack_claim_expires_at = datetime('now', '+' || ? || ' seconds'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND (
+                    (
+                        status = 'pending'
+                        AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+                    )
+                    OR (
+                        status = 'delivering'
+                        AND slack_claim_expires_at <= datetime('now')
+                    )
+                  )
+            """,
+            (claim_token, owner, lease, delivery_id),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        claimed = conn.execute(
+            """
+            SELECT id, transcript_row_id, channel_id, message_text,
+                   delivery_plan_version, status, attempt_count,
+                   next_attempt_at, last_error, provider_ts, next_chunk_index,
+                   chunk_attempt_count, chunk_provider_ts,
+                   slack_claim_token, slack_claim_owner, slack_claimed_at,
+                   slack_claim_expires_at, created_at, updated_at, sent_at
+            FROM slack_deliveries
+            WHERE id = ?
+            """,
+            (delivery_id,),
+        ).fetchone()
+        conn.commit()
+        return dict(claimed) if claimed is not None else None
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to claim Slack delivery: %s",
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
 def get_pending_quality_failure_deliveries(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
@@ -2032,28 +2206,130 @@ def get_pending_quality_failure_deliveries(
             conn.close()
 
 
-def mark_quality_failure_delivery_sent(
-    delivery_id: int,
-    provider_ts: str,
-) -> None:
+def claim_next_quality_failure_delivery(
+    claim_owner: str,
+    *,
+    lease_seconds: int = 60,
+) -> dict[str, Any] | None:
+    """Atomically lease one due body-free quality-failure projection."""
+    owner = str(claim_owner).strip()
+    if not owner:
+        raise ValueError("Slack claim owner is required")
+    lease = max(1, min(int(lease_seconds), 3600))
+    claim_token = secrets.token_hex(16)
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id
+            FROM quality_failure_slack_deliveries
+            WHERE (
+                    status = 'pending'
+                    AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+                  )
+               OR (
+                    status = 'delivering'
+                    AND slack_claim_expires_at <= datetime('now')
+                  )
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        delivery_id = int(row["id"])
+        cursor = conn.execute(
+            """
+            UPDATE quality_failure_slack_deliveries
+            SET status = 'delivering',
+                slack_claim_token = ?,
+                slack_claim_owner = ?,
+                slack_claimed_at = datetime('now'),
+                slack_claim_expires_at = datetime('now', '+' || ? || ' seconds'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND (
+                    (
+                        status = 'pending'
+                        AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+                    )
+                    OR (
+                        status = 'delivering'
+                        AND slack_claim_expires_at <= datetime('now')
+                    )
+                  )
+            """,
+            (claim_token, owner, lease, delivery_id),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        claimed = conn.execute(
+            """
+            SELECT id, transcript_row_id, idempotency_key, content_kind,
+                   destination, message_text, status, attempt_count,
+                   next_attempt_at, last_error, provider_ts,
+                   slack_claim_token, slack_claim_owner, slack_claimed_at,
+                   slack_claim_expires_at, created_at, updated_at, sent_at
+            FROM quality_failure_slack_deliveries
+            WHERE id = ?
+            """,
+            (delivery_id,),
+        ).fetchone()
+        conn.commit()
+        return dict(claimed) if claimed is not None else None
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to claim quality-failure delivery: %s",
+            _safe_exception_class(e),
+        )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_quality_failure_delivery_sent(
+    delivery_id: int,
+    provider_ts: str,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
+    _validate_slack_claim_arguments(claim_token, claim_owner)
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
             """
             UPDATE quality_failure_slack_deliveries
             SET status = 'sent',
                 last_error = NULL,
                 provider_ts = ?,
                 next_attempt_at = NULL,
+                slack_claim_token = NULL,
+                slack_claim_owner = NULL,
+                slack_claimed_at = NULL,
+                slack_claim_expires_at = NULL,
                 sent_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE id = ?
               AND status != 'sent'
               AND sent_at IS NULL
+              AND (
+                    status != 'delivering'
+                    OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                  )
             """,
-            (provider_ts, delivery_id),
+            (provider_ts, delivery_id, claim_token, claim_owner),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2071,13 +2347,17 @@ def mark_quality_failure_delivery_failed(
     delivery_id: int,
     error_message: str,
     retry_after_seconds: int = 60,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
 ) -> None:
+    _validate_slack_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         conn = _get_conn()
         safe_error = _safe_delivery_error(error_message)
         delay = max(1, min(int(retry_after_seconds), 3600))
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE quality_failure_slack_deliveries
             SET status = CASE
@@ -2090,10 +2370,18 @@ def mark_quality_failure_delivery_failed(
                     WHEN attempt_count + 1 >= ? THEN NULL
                     ELSE datetime('now', '+' || ? || ' seconds')
                 END,
+                slack_claim_token = NULL,
+                slack_claim_owner = NULL,
+                slack_claimed_at = NULL,
+                slack_claim_expires_at = NULL,
                 updated_at = datetime('now')
             WHERE id = ?
               AND status != 'sent'
               AND sent_at IS NULL
+              AND (
+                    status != 'delivering'
+                    OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                  )
             """,
             (
                 SLACK_MAX_ATTEMPTS,
@@ -2101,8 +2389,12 @@ def mark_quality_failure_delivery_failed(
                 SLACK_MAX_ATTEMPTS,
                 delay,
                 delivery_id,
+                claim_token,
+                claim_owner,
             ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2116,22 +2408,50 @@ def mark_quality_failure_delivery_failed(
             conn.close()
 
 
-def mark_slack_delivery_sent(delivery_id: int, provider_ts: str | None = None) -> None:
+def mark_slack_delivery_sent(
+    delivery_id: int,
+    provider_ts: str | None = None,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
+    _validate_slack_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        current = conn.execute(
+            "SELECT status, slack_claim_token, slack_claim_owner "
+            "FROM slack_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Slack delivery row does not exist")
+        if current["status"] == "delivering" and not _slack_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("Slack claim owner mismatch")
+        cursor = conn.execute(
             """UPDATE slack_deliveries
                SET status = 'sent',
                    last_error = NULL,
                    provider_ts = ?,
                    next_attempt_at = NULL,
                    chunk_attempt_count = 0,
+                   slack_claim_token = NULL,
+                   slack_claim_owner = NULL,
+                   slack_claimed_at = NULL,
+                   slack_claim_expires_at = NULL,
                    sent_at = datetime('now'),
                    updated_at = datetime('now')
-               WHERE id = ?""",
-            (provider_ts, delivery_id),
+               WHERE id = ?
+                 AND (
+                       status != 'delivering'
+                       OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                     )""",
+            (provider_ts, delivery_id, claim_token, claim_owner),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2149,12 +2469,27 @@ def mark_slack_delivery_failed(
     delivery_id: int,
     error_message: str,
     retry_after_seconds: int = 60,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
 ) -> None:
+    _validate_slack_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         conn = _get_conn()
         safe_error = _safe_delivery_error(error_message)
         delay = max(1, min(int(retry_after_seconds), 3600))
+        current = conn.execute(
+            "SELECT status, sent_at, slack_claim_token, slack_claim_owner "
+            "FROM slack_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Slack delivery row does not exist")
+        if current["status"] == "delivering" and not _slack_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("Slack claim owner mismatch")
         cursor = conn.execute(
             """UPDATE slack_deliveries
                SET status = CASE
@@ -2170,16 +2505,26 @@ def mark_slack_delivery_failed(
                            THEN NULL
                        ELSE datetime('now', '+' || ? || ' seconds')
                    END,
+                   slack_claim_token = NULL,
+                   slack_claim_owner = NULL,
+                   slack_claimed_at = NULL,
+                   slack_claim_expires_at = NULL,
                    updated_at = datetime('now')
                WHERE id = ?
                  AND status != 'sent'
-                 AND sent_at IS NULL""",
+                 AND sent_at IS NULL
+                 AND (
+                       status != 'delivering'
+                       OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                     )""",
             (
                 SLACK_MAX_ATTEMPTS,
                 safe_error,
                 SLACK_MAX_ATTEMPTS,
                 delay,
                 delivery_id,
+                claim_token,
+                claim_owner,
             ),
         )
         if cursor.rowcount == 0:
@@ -2196,6 +2541,7 @@ def mark_slack_delivery_failed(
             ):
                 conn.rollback()
                 return
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2209,23 +2555,56 @@ def mark_slack_delivery_failed(
             conn.close()
 
 
-def mark_slack_delivery_reconciliation_required(delivery_id: int) -> None:
+def mark_slack_delivery_reconciliation_required(
+    delivery_id: int,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
     """Fail closed when persisted progress cannot use the current plan."""
+    _validate_slack_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         conn = _get_conn()
-        conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT status, slack_claim_token, slack_claim_owner "
+            "FROM slack_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Slack delivery row does not exist")
+        if current["status"] == "delivering" and not _slack_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("Slack claim owner mismatch")
+        cursor = conn.execute(
             """
             UPDATE slack_deliveries
             SET status = 'failed',
                 last_error = ?,
                 next_attempt_at = NULL,
+                slack_claim_token = NULL,
+                slack_claim_owner = NULL,
+                slack_claimed_at = NULL,
+                slack_claim_expires_at = NULL,
                 updated_at = datetime('now')
             WHERE id = ?
               AND status != 'sent'
+              AND (
+                    status != 'delivering'
+                    OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                  )
             """,
-            (SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR, delivery_id),
+            (
+                SLACK_LEGACY_PARTIAL_RECONCILIATION_ERROR,
+                delivery_id,
+                claim_token,
+                claim_owner,
+            ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -2245,14 +2624,18 @@ def mark_slack_delivery_chunk_sent(
     chunk_index: int,
     chunk_count: int,
     provider_ts: str | None,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
 ) -> None:
     """Persist one accepted chunk and mark the delivery sent only when complete."""
+    _validate_slack_claim_arguments(claim_token, claim_owner)
     conn = None
     try:
         conn = _get_conn()
         current = conn.execute(
             """
-            SELECT next_chunk_index, chunk_provider_ts
+            SELECT status, next_chunk_index, chunk_provider_ts,
+                   slack_claim_token, slack_claim_owner
             FROM slack_deliveries
             WHERE id = ?
             """,
@@ -2260,6 +2643,10 @@ def mark_slack_delivery_chunk_sent(
         ).fetchone()
         if current is None:
             raise LookupError("Slack delivery row does not exist")
+        if current["status"] == "delivering" and not _slack_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("Slack claim owner mismatch")
 
         next_chunk_index = int(current["next_chunk_index"] or 0)
         if next_chunk_index > chunk_index:
@@ -2273,7 +2660,7 @@ def mark_slack_delivery_chunk_sent(
         timestamps.append(provider_ts)
         following_chunk = chunk_index + 1
         complete = following_chunk >= chunk_count
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE slack_deliveries
             SET status = ?,
@@ -2283,9 +2670,17 @@ def mark_slack_delivery_chunk_sent(
                 provider_ts = COALESCE(provider_ts, ?),
                 last_error = NULL,
                 next_attempt_at = NULL,
+                slack_claim_token = NULL,
+                slack_claim_owner = NULL,
+                slack_claimed_at = NULL,
+                slack_claim_expires_at = NULL,
                 sent_at = CASE WHEN ? THEN datetime('now') ELSE sent_at END,
                 updated_at = datetime('now')
             WHERE id = ?
+              AND (
+                    status != 'delivering'
+                    OR (slack_claim_token = ? AND slack_claim_owner = ?)
+                  )
             """,
             (
                 "sent" if complete else "pending",
@@ -2294,8 +2689,12 @@ def mark_slack_delivery_chunk_sent(
                 provider_ts,
                 1 if complete else 0,
                 delivery_id,
+                claim_token,
+                claim_owner,
             ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("Slack claim owner mismatch")
         conn.commit()
     except Exception as e:
         log.error(
@@ -3089,9 +3488,15 @@ def get_slack_delivery_health() -> dict[str, int]:
     conn = None
     health = {
         "pending_count": 0,
+        "leased_count": 0,
+        "expired_lease_count": 0,
+        "uncertain_count": 0,
         "sent_count": 0,
         "failed_count": 0,
         "quality_failure_pending_count": 0,
+        "quality_failure_leased_count": 0,
+        "quality_failure_expired_lease_count": 0,
+        "quality_failure_uncertain_count": 0,
         "quality_failure_failed_count": 0,
         "query_ok": 1,
         "health_error": 0,
@@ -3110,10 +3515,32 @@ def get_slack_delivery_health() -> dict[str, int]:
             count = int(row["count"])
             if status == "pending":
                 health["pending_count"] = count
+            elif status == "delivering":
+                health["leased_count"] = count
             elif status == "sent":
                 health["sent_count"] = count
             elif status == "failed":
                 health["failed_count"] = count
+        health["expired_lease_count"] = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM slack_deliveries
+                WHERE status = 'delivering'
+                  AND slack_claim_expires_at <= datetime('now')
+                """
+            ).fetchone()[0]
+        )
+        health["uncertain_count"] = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM slack_deliveries
+                WHERE last_error LIKE 'uncertain_delivery:%'
+                  AND status != 'sent'
+                """
+            ).fetchone()[0]
+        )
         quality_rows = conn.execute(
             """
             SELECT status, COUNT(*) AS count
@@ -3125,8 +3552,30 @@ def get_slack_delivery_health() -> dict[str, int]:
             status = str(row["status"])
             if status == "pending":
                 health["quality_failure_pending_count"] = int(row["count"])
+            elif status == "delivering":
+                health["quality_failure_leased_count"] = int(row["count"])
             elif status == "failed":
                 health["quality_failure_failed_count"] = int(row["count"])
+        health["quality_failure_expired_lease_count"] = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM quality_failure_slack_deliveries
+                WHERE status = 'delivering'
+                  AND slack_claim_expires_at <= datetime('now')
+                """
+            ).fetchone()[0]
+        )
+        health["quality_failure_uncertain_count"] = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM quality_failure_slack_deliveries
+                WHERE last_error LIKE 'uncertain_delivery:%'
+                  AND status != 'sent'
+                """
+            ).fetchone()[0]
+        )
         return health
     except Exception as e:
         log.error(

@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -138,6 +139,157 @@ class SlackDeliveryTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(dict(delivery)["provider_ts"], "123.456")
+
+    def test_two_workers_claim_one_delivery_and_post_once(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        transcript_log.insert_transcript(
+            content_hash="atomic-slack-claim",
+            source="iCloud",
+            transcript="Only one worker may post this delivery.",
+            ingest_state="routed",
+        )
+        import slack_delivery
+
+        post_started = threading.Event()
+        release_post = threading.Event()
+        outcomes: list[int] = []
+
+        def accepted_post(*_args, **_kwargs):
+            post_started.set()
+            self.assertTrue(release_post.wait(timeout=5))
+            return _SlackResponse({"ok": True, "ts": "atomic.001"})
+
+        def run_worker() -> None:
+            outcomes.append(slack_delivery.process_pending_slack_deliveries())
+
+        with patch.object(slack_delivery.requests, "post", side_effect=accepted_post) as post:
+            first = threading.Thread(target=run_worker)
+            first.start()
+            self.assertTrue(post_started.wait(timeout=5))
+            second = threading.Thread(target=run_worker)
+            second.start()
+            second.join(timeout=5)
+            release_post.set()
+            first.join(timeout=5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(sorted(outcomes), [0, 1])
+
+    def test_two_workers_claim_one_quality_delivery_and_post_once(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        os.environ["PENNY_MAYA_LEDGER_CHANNEL_ID"] = "C-MAYA-LEDGER"
+        transcript_log.insert_transcript(
+            content_hash="atomic-quality-slack-claim",
+            source="iCloud",
+            transcript="Private body stays out of the ledger projection.",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="attempt_2=control_token",
+            enqueue_slack=False,
+        )
+        import slack_delivery
+
+        post_started = threading.Event()
+        release_post = threading.Event()
+        outcomes: list[int] = []
+
+        def accepted_post(*_args, **_kwargs):
+            post_started.set()
+            self.assertTrue(release_post.wait(timeout=5))
+            return _SlackResponse({"ok": True, "ts": "quality.atomic.001"})
+
+        def run_worker() -> None:
+            outcomes.append(slack_delivery.process_pending_quality_failure_deliveries())
+
+        with patch.object(slack_delivery.requests, "post", side_effect=accepted_post) as post:
+            first = threading.Thread(target=run_worker)
+            first.start()
+            self.assertTrue(post_started.wait(timeout=5))
+            second = threading.Thread(target=run_worker)
+            second.start()
+            second.join(timeout=5)
+            release_post.set()
+            first.join(timeout=5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(sorted(outcomes), [0, 1])
+
+    def test_active_claim_and_terminal_rows_are_never_posted(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        active_row_id = transcript_log.insert_transcript(
+            content_hash="active-slack-claim",
+            source="iCloud",
+            transcript="An active claim is invisible to another worker.",
+            ingest_state="routed",
+        )
+        terminal_row_id = transcript_log.insert_transcript(
+            content_hash="terminal-slack-row",
+            source="iCloud",
+            transcript="A sent row is terminal.",
+            ingest_state="routed",
+        )
+        claim = transcript_log.claim_next_slack_delivery("worker-a")
+        self.assertEqual(claim["transcript_row_id"], active_row_id)
+        terminal_delivery = transcript_log.get_pending_slack_deliveries(
+            transcript_id=terminal_row_id
+        )[0]
+        transcript_log.mark_slack_delivery_sent(
+            int(terminal_delivery["id"]), provider_ts="terminal.001"
+        )
+
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post:
+            self.assertEqual(slack_delivery.process_pending_slack_deliveries(), 0)
+        post.assert_not_called()
+
+    def test_transport_timeout_is_uncertain_and_retries_same_client_msg_id(self) -> None:
+        os.environ["PENNY_SLACK_BOT_TOKEN"] = "xoxb-test"
+        row_id = transcript_log.insert_transcript(
+            content_hash="uncertain-timeout-identity",
+            source="iCloud",
+            transcript="Retry this uncertain transport with one stable identity.",
+            ingest_state="routed",
+        )
+        import slack_delivery
+
+        with patch.object(slack_delivery.requests, "post") as post:
+            post.side_effect = [
+                TimeoutError("response lost after write"),
+                _SlackResponse({"ok": True, "ts": "uncertain.001"}),
+            ]
+            self.assertEqual(slack_delivery.process_pending_slack_deliveries(), 0)
+            conn = transcript_log._get_conn()
+            try:
+                state = dict(
+                    conn.execute(
+                        "SELECT status, last_error FROM slack_deliveries "
+                        "WHERE transcript_row_id = ?",
+                        (row_id,),
+                    ).fetchone()
+                )
+                conn.execute(
+                    "UPDATE slack_deliveries "
+                    "SET next_attempt_at = datetime('now', '-1 second') "
+                    "WHERE transcript_row_id = ?",
+                    (row_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self.assertEqual(slack_delivery.process_pending_slack_deliveries(), 1)
+
+        self.assertEqual(state["status"], "pending")
+        self.assertEqual(state["last_error"], "uncertain_delivery:TimeoutError")
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["json"]["client_msg_id"],
+            post.call_args_list[1].kwargs["json"]["client_msg_id"],
+        )
 
     def test_quality_failure_posts_metadata_once_to_dedicated_ledger_channel(
         self,
