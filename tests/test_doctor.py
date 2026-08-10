@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -84,6 +85,70 @@ def test_doctor_rejects_naive_and_future_timestamps(tmp_path: Path):
     assert _parse_observed_timestamp("2026-08-10T10:00:00") is None
     future = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
     assert _parse_observed_timestamp(future) is None
+
+
+def test_required_explicit_unknown_does_not_infer_ready(tmp_path: Path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["voice_memos"] = {"state": "unknown", "terminal_failure_count": 0}
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.overall == "unready"
+    assert report.components["voice_memos"].state == "unready"
+    assert report.components["voice_memos"].reason == "unknown"
+
+
+def test_slack_configuration_and_apple_failures_are_truthful(tmp_path: Path, monkeypatch):
+    from doctor import run_doctor
+
+    monkeypatch.delenv("PENNY_SLACK_BOT_TOKEN", raising=False)
+    probes = _ready_probes(tmp_path)
+    probes["slack"] = {"configured": False, "query_ok": 1, "pending_count": 0}
+    probes["apple_effects"] = {"query_ok": 1, "failed_count": 1, "migration_quarantine_count": 0}
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.components["slack"].reason == "configuration_missing"
+    assert report.components["apple_effects"].reason == "provider_failure"
+
+
+def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatch):
+    from doctor import _default_probe_backup
+
+    root = tmp_path / "backup"
+    old_set = root / "sets" / "20260809T120000Z"
+    latest_set = root / "sets" / "20260810T120000Z"
+    old_set.mkdir(parents=True)
+    latest_set.mkdir(parents=True)
+    catalog = latest_set / "catalog.json"
+    catalog.write_text("catalog-v1\n", encoding="utf-8")
+    digest = hashlib.sha256(catalog.read_bytes()).hexdigest()
+    receipt = root / "last_verification.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "verified",
+                "valid": True,
+                "backup_set_id": latest_set.name,
+                "catalog_sha256": digest,
+                "verified_at": "2026-08-10T12:00:00Z",
+                "remote_catalog_verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENNY_BACKUP_ROOT", str(root))
+    good = _default_probe_backup(now=datetime(2026, 8, 10, 12, 1, tzinfo=timezone.utc))
+    assert good["verified"] is True
+
+    catalog.write_text("catalog-tampered\n", encoding="utf-8")
+    tampered = _default_probe_backup(now=datetime(2026, 8, 10, 12, 1, tzinfo=timezone.utc))
+    assert tampered["verified"] is False
+
+    receipt_data = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt_data["backup_set_id"] = old_set.name
+    receipt.write_text(json.dumps(receipt_data), encoding="utf-8")
+    mismatched = _default_probe_backup(now=datetime(2026, 8, 10, 12, 1, tzinfo=timezone.utc))
+    assert mismatched["verified"] is False
 
 
 def test_doctor_probes_are_read_only_and_do_not_open_bodies_or_tcc(tmp_path: Path, monkeypatch):

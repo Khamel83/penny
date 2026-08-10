@@ -281,7 +281,6 @@ def update_health_check() -> None:
         and int(slack_health.get("failed_count", 0)) == 0
         and int(slack_health.get("quality_failure_failed_count", 0)) == 0
         and not maya_health_error
-        and maya_configured
         and int(maya_health.get("failed_count", 0)) == 0
         and int(vm_health.get("terminal_failure_count", 0)) == 0
         and not int(archive_health.get("health_error", 0))

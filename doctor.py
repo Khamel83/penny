@@ -10,6 +10,7 @@ macOS TCC database, contacts a provider, or repairs state.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -112,6 +113,8 @@ _SAFE_DETAIL_KEYS = frozenset(
         "max_transcript_id",
         "configured",
         "configuration_partial",
+        "migration_quarantine_count",
+        "latest_set_matches_receipt",
         "protected_bind",
         "timestamp_valid",
         "latest_set_present",
@@ -240,6 +243,17 @@ def _safe_reason(value: object, fallback: str = "probe_error") -> str:
 def _safe_state(value: object) -> str:
     candidate = str(value or "").strip().lower()
     return candidate if candidate in _STATE_VALUES else "unknown"
+
+
+def _sha256_file(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except (OSError, ValueError):
+        return None
+    return digest.hexdigest()
 
 
 def _source_revision() -> str:
@@ -386,6 +400,7 @@ def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **
     del now
     health = transcript_log.get_slack_delivery_health()
     return {
+        "configured": bool(os.environ.get("PENNY_SLACK_BOT_TOKEN", "").strip()),
         "query_ok": health.get("query_ok", 0),
         "health_error": health.get("health_error", 1),
         "pending_count": health.get("pending_count", 0),
@@ -524,6 +539,9 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
             and receipt_set_catalog.is_file()
         )
         data["backup_set_present"] = receipt_set_present
+        latest_set_matches = bool(catalog_path is not None and catalog_path.parent.name == receipt_id)
+        data["latest_set_matches_receipt"] = latest_set_matches
+        actual_catalog_sha = _sha256_file(receipt_set_catalog) if receipt_set_present else None
         valid = bool(
             receipt.get("schema_version") == 1
             and receipt.get("status") == "verified"
@@ -532,6 +550,8 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
             and _SET_ID_RE.fullmatch(receipt_id)
             and re.fullmatch(r"[0-9a-f]{64}", receipt_hash)
             and receipt_set_present
+            and latest_set_matches
+            and actual_catalog_sha == receipt_hash
         )
         timestamp = receipt.get("verified_at") or receipt.get("observed_at") or receipt.get("created_at")
         age, timestamp_valid = _age_seconds(timestamp, now=current)
@@ -575,7 +595,9 @@ def _default_probe_ingress(config: Any, *, now: datetime | None = None, **_kwarg
 def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     values = data if isinstance(data, Mapping) else {}
     explicit = _safe_state(values.get("state")) if values.get("state") is not None else None
-    if explicit and explicit != "unknown":
+    if explicit is not None:
+        if explicit == "unknown":
+            return "unknown", _safe_reason(values.get("reason"), "unknown")
         return explicit, _safe_reason(values.get("reason"), "ok")
     if not values:
         return "unknown", "unknown"
@@ -620,6 +642,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "unready", "database_unavailable"
         if int(values.get("uncertain_count", 0) or 0) > 0:
             return "unready", "uncertain_effect"
+        if int(values.get("failed_count", 0) or 0) > 0:
+            return "unready", "provider_failure"
+        if int(values.get("migration_quarantine_count", 0) or 0) > 0:
+            return "unready", "quarantine"
         if int(values.get("stale_in_flight_count", 0) or 0) > 0:
             return "degraded", "backlog"
         if int(values.get("quarantined_count", 0) or 0) > 0:
@@ -640,6 +666,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "degraded", "backlog"
         return "ready", "ok"
     if name == "slack":
+        if not values.get("configured", False):
+            return "unready", "configuration_missing"
         if not values.get("query_ok", 1) or values.get("health_error", 0):
             return "unready", "database_unavailable"
         if int(values.get("failed_count", 0) or 0) + int(values.get("slack_failed_count", 0) or 0) > 0:
