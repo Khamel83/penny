@@ -280,6 +280,93 @@ class BackupTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
 
+    def test_backup_rejects_destination_prefix_symlink_without_outside_write(self) -> None:
+        source = self._add_object()
+        outside = self.root / "outside-destination"
+        outside.mkdir()
+        prefix_root = self.backup / "objects" / "sha256"
+        prefix_root.mkdir(parents=True)
+        (prefix_root / source.parent.name).symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(BackupError):
+            create_backup_set(self.db, self.archive, self.backup, self.now)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_backup_rejects_intermediate_archive_symlink(self) -> None:
+        source = self._add_object()
+        real_archive = self.root / "real-archive"
+        real_archive.mkdir()
+        (real_archive / "sha256").mkdir()
+        target = real_archive / "sha256" / source.parent.name
+        target.mkdir()
+        target.joinpath(source.name).write_bytes(source.read_bytes())
+        linked_parent = self.root / "linked-archive"
+        linked_parent.symlink_to(real_archive, target_is_directory=True)
+        with self.assertRaises(BackupError):
+            create_backup_set(self.db, linked_parent, self.backup, self.now)
+
+    def test_verifier_rejects_omitted_object_file_inventory(self) -> None:
+        self._add_object()
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        catalog = json.loads(receipt.catalog_path.read_text(encoding="utf-8"))
+        catalog["files"] = [
+            item for item in catalog["files"] if not item["path"].startswith("objects/")
+        ]
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        result = verify_backup_set(receipt.set_path, self.root / "scratch")
+        self.assertFalse(result.valid)
+
+    def test_verifier_rejects_malformed_catalog_object_types_and_cli_is_invalid(self) -> None:
+        self._add_object()
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        catalog = json.loads(receipt.catalog_path.read_text(encoding="utf-8"))
+        catalog["objects"] = [None]
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        result = verify_backup_set(receipt.set_path, self.root / "scratch")
+        self.assertFalse(result.valid)
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "verify_penny_backup.py"),
+                str(receipt.set_path),
+                str(self.root / "scratch-cli"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(cli.returncode, 1)
+
+    def test_verifier_rejects_malformed_catalog_numeric_fields(self) -> None:
+        self._add_object()
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        catalog = json.loads(receipt.catalog_path.read_text(encoding="utf-8"))
+        catalog["files"][0]["size"] = None
+        receipt.catalog_path.chmod(0o600)
+        receipt.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        result = verify_backup_set(receipt.set_path, self.root / "scratch")
+        self.assertFalse(result.valid)
+
+    def test_verifier_rejects_set_extra_and_permissive_or_hardlinked_files(self) -> None:
+        source = self._add_object()
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        (receipt.set_path / "unexpected.txt").write_text("extra", encoding="utf-8")
+        result = verify_backup_set(receipt.set_path, self.root / "scratch")
+        self.assertFalse(result.valid)
+
+        (receipt.set_path / "unexpected.txt").unlink()
+        object_path = receipt.backup_root / "objects" / "sha256" / source.parent.name / source.name
+        object_path.chmod(0o644)
+        result = verify_backup_set(receipt.set_path, self.root / "scratch-mode")
+        self.assertFalse(result.valid)
+
+        object_path.chmod(0o400)
+        hardlink = self.root / "hardlink-object"
+        os.link(object_path, hardlink)
+        result = verify_backup_set(receipt.set_path, self.root / "scratch-hardlink")
+        self.assertFalse(result.valid)
+
 
 if __name__ == "__main__":
     unittest.main()

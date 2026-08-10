@@ -120,6 +120,16 @@ def _safe_regular(path: Path, *, label: str) -> os.stat_result:
     return info
 
 
+def _safe_immutable_file(path: Path, *, label: str) -> os.stat_result:
+    """Validate the immutable-file contract used by published backups."""
+    info = _safe_regular(path, label=label)
+    if info.st_nlink != 1:
+        raise BackupError(f"{label}_hardlink")
+    if stat.S_IMODE(info.st_mode) != 0o400:
+        raise BackupError(f"{label}_mode_invalid")
+    return info
+
+
 def _reject_symlink_components(path: Path, *, label: str) -> None:
     """Reject symlinked components that could redirect a backup destination."""
     current = Path(path.anchor) if path.is_absolute() else Path()
@@ -127,7 +137,20 @@ def _reject_symlink_components(path: Path, *, label: str) -> None:
         current = current / part
         try:
             if current.is_symlink():
-                raise BackupError(f"{label}_symlink")
+                resolved = current.resolve(strict=True)
+                # macOS exposes a few system aliases (`/var`, `/tmp`, and
+                # `/etc`) as stable links into `/private`.  They cannot be
+                # used to redirect a caller-selected backup path, so permit
+                # only those exact, canonical aliases and continue checking
+                # later components from the resolved directory.
+                allowed_aliases = {
+                    Path("/var"): Path("/private/var"),
+                    Path("/tmp"): Path("/private/tmp"),
+                    Path("/etc"): Path("/private/etc"),
+                }
+                if allowed_aliases.get(current) != resolved:
+                    raise BackupError(f"{label}_symlink")
+                current = resolved
         except OSError as exc:
             raise BackupError(f"{label}_unreadable") from exc
 
@@ -202,6 +225,7 @@ def _copy_immutable(source: Path, destination: Path, *, expected_sha: str, expec
         os.chmod(destination, 0o400)
         return
 
+    _reject_symlink_components(destination.parent, label="backup_object")
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(destination.parent, 0o700)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.partial")
@@ -228,6 +252,7 @@ def _copy_immutable(source: Path, destination: Path, *, expected_sha: str, expec
 def _archive_objects(archive_root: Path) -> list[tuple[str, Path, int, str]]:
     archive_root = Path(archive_root).expanduser()
     _reject_cloud_root(archive_root)
+    _reject_symlink_components(archive_root, label="archive_root")
     if not archive_root.exists() and not archive_root.is_symlink():
         # A first backup may legitimately precede the first durable audio
         # object.  Treat a missing local object root as an empty authority;
@@ -334,6 +359,15 @@ def _snapshot_database(source_path: Path, destination: Path) -> dict[str, Any]:
     _fsync_file(destination)
     os.chmod(destination, 0o400)
     metadata = _database_metadata(destination)
+    # Opening a WAL-mode snapshot for metadata can recreate transient journal
+    # sidecars.  Remove them only after that read-only pass and before the
+    # staging directory is published.
+    for suffix in ("-wal", "-shm"):
+        sidecar = destination.with_name(destination.name + suffix)
+        if sidecar.is_symlink():
+            raise BackupError("database_sidecar_symlink")
+        sidecar.unlink(missing_ok=True)
+    fsync_directory(destination.parent)
     if metadata["integrity"] != "ok" or metadata["foreign_key_violations"]:
         raise BackupError("database_snapshot_invalid")
     return metadata
@@ -370,6 +404,7 @@ def create_backup_set(
     db_path = Path(db_path).expanduser()
     archive_root = Path(archive_root).expanduser()
     backup_root = Path(backup_root).expanduser()
+    _reject_symlink_components(backup_root, label="backup_root")
     if not backup_root.is_absolute():
         backup_root = backup_root.resolve()
     if backup_root.exists() and backup_root.is_symlink():
@@ -384,6 +419,8 @@ def create_backup_set(
     os.chmod(backup_root, 0o700)
     objects_root = backup_root / "objects" / "sha256"
     sets_root = backup_root / "sets"
+    _reject_symlink_components(objects_root, label="backup_objects_root")
+    _reject_symlink_components(sets_root, label="backup_sets_root")
     if (backup_root / "objects").is_symlink() or (backup_root / "sets").is_symlink():
         raise BackupError("backup_root_symlink")
     objects_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -461,11 +498,13 @@ def _safe_set_and_root(set_path: Path) -> tuple[Path, Path]:
     set_path = Path(set_path)
     if not set_path.is_absolute():
         raise BackupError("backup_set_path_must_be_absolute")
+    _reject_symlink_components(set_path, label="backup_set_path")
     if set_path.is_symlink() or not set_path.is_dir():
         raise BackupError("backup_set_path_invalid")
     if not _SET_ID_RE.fullmatch(set_path.name) or set_path.parent.name != "sets":
         raise BackupError("backup_set_path_invalid")
     backup_root = set_path.parent.parent
+    _reject_symlink_components(backup_root, label="backup_root")
     if backup_root.name == "" or backup_root.is_symlink():
         raise BackupError("backup_root_invalid")
     try:
@@ -512,11 +551,23 @@ def _catalog_entry_path(backup_root: Path, value: object) -> Path:
     return candidate
 
 
+def _catalog_size(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise BackupError("catalog_size_invalid")
+    return value
+
+
+def _catalog_sha(value: object) -> str:
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise BackupError("catalog_hash_invalid")
+    return value
+
+
 def _verify_database(path: Path, expected: dict[str, Any]) -> tuple[int, int | None]:
-    _safe_regular(path, label="snapshot")
-    if path.stat().st_size != int(expected.get("size", -1)):
+    _safe_immutable_file(path, label="snapshot")
+    if path.stat().st_size != _catalog_size(expected.get("size")):
         raise BackupError("database_size_mismatch")
-    if sha256_file(path) != str(expected.get("sha256", "")):
+    if sha256_file(path) != _catalog_sha(expected.get("sha256")):
         raise BackupError("database_hash_mismatch")
     uri = f"file:{path.resolve()}?mode=ro"
     try:
@@ -539,7 +590,12 @@ def _verify_database(path: Path, expected: dict[str, Any]) -> tuple[int, int | N
             pass
     if integrity != "ok" or foreign_keys:
         raise BackupError("database_integrity_failed")
-    if user_version != int(expected.get("user_version", -1)):
+    expected_user_version = expected.get("user_version")
+    if (
+        isinstance(expected_user_version, bool)
+        or not isinstance(expected_user_version, int)
+        or user_version != expected_user_version
+    ):
         raise BackupError("database_user_version_mismatch")
     actual_schema = [
         {
@@ -551,9 +607,18 @@ def _verify_database(path: Path, expected: dict[str, Any]) -> tuple[int, int | N
     ]
     if actual_schema != expected.get("schema"):
         raise BackupError("database_schema_mismatch")
-    if int(row[0]) != int(expected.get("row_count", -1)):
+    expected_row_count = expected.get("row_count")
+    if (
+        isinstance(expected_row_count, bool)
+        or not isinstance(expected_row_count, int)
+        or int(row[0]) != expected_row_count
+    ):
         raise BackupError("database_row_count_mismatch")
     expected_max = expected.get("max_transcript_id")
+    if expected_max is not None and (
+        isinstance(expected_max, bool) or not isinstance(expected_max, int)
+    ):
+        raise BackupError("database_max_id_invalid")
     actual_max = None if row[1] is None else int(row[1])
     if actual_max != expected_max:
         raise BackupError("database_max_id_mismatch")
@@ -577,7 +642,11 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
     backup_set_id: str | None = None
     try:
         catalog_path = set_path / "catalog.json"
-        _safe_regular(catalog_path, label="catalog")
+        _safe_immutable_file(catalog_path, label="catalog")
+        allowed_set_files = {"catalog.json", "transcripts.db"}
+        for child in set_path.iterdir():
+            if child.name not in allowed_set_files:
+                raise BackupError("set_extra_file")
         try:
             catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -591,53 +660,61 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
         if not isinstance(files, list) or not files:
             raise BackupError("catalog_files_invalid")
         expected_paths: set[str] = set()
+        file_entries: dict[str, tuple[int, str]] = {}
+        database_relative = f"sets/{set_path.name}/transcripts.db"
         for item in files:
             if not isinstance(item, dict):
                 raise BackupError("catalog_entry_invalid")
             relative = _safe_relative(item.get("path"))
             if relative in expected_paths:
                 raise BackupError("catalog_duplicate_path")
+            if relative != database_relative and not relative.startswith("objects/sha256/"):
+                raise BackupError("catalog_entry_scope_invalid")
             expected_paths.add(relative)
             candidate = _catalog_entry_path(backup_root, relative)
-            info = _safe_regular(candidate, label="catalog_entry")
-            if info.st_size != int(item.get("size", -1)) or sha256_file(candidate) != str(
-                item.get("sha256", "")
-            ):
+            info = _safe_immutable_file(candidate, label="catalog_entry")
+            expected_size = _catalog_size(item.get("size"))
+            expected_sha = _catalog_sha(item.get("sha256"))
+            if info.st_size != expected_size or sha256_file(candidate) != expected_sha:
                 raise BackupError("catalog_hash_mismatch")
+            file_entries[relative] = (expected_size, expected_sha)
 
         database_meta = catalog.get("database")
         if not isinstance(database_meta, dict):
             raise BackupError("catalog_database_invalid")
-        database_path = _catalog_entry_path(backup_root, f"sets/{set_path.name}/transcripts.db")
+        if database_relative not in file_entries:
+            raise BackupError("catalog_database_missing")
+        database_size = _catalog_size(database_meta.get("size"))
+        database_sha = _catalog_sha(database_meta.get("sha256"))
+        if file_entries[database_relative] != (database_size, database_sha):
+            raise BackupError("catalog_database_mismatch")
+        database_path = _catalog_entry_path(backup_root, database_relative)
         object_metadata = catalog.get("objects")
         if not isinstance(object_metadata, list):
             raise BackupError("catalog_objects_invalid")
-        catalog_objects = {
-            (
-                _safe_relative(item.get("path")),
-                int(item.get("size", -1)),
-                str(item.get("sha256", "")),
+        catalog_objects: dict[str, tuple[int, str]] = {}
+        for item in object_metadata:
+            if not isinstance(item, dict):
+                raise BackupError("catalog_object_invalid")
+            relative = _safe_relative(item.get("path"))
+            if not relative.startswith("objects/sha256/"):
+                raise BackupError("catalog_object_scope_invalid")
+            if relative in catalog_objects:
+                raise BackupError("catalog_duplicate_object")
+            catalog_objects[relative] = (
+                _catalog_size(item.get("size")),
+                _catalog_sha(item.get("sha256")),
             )
-            for item in object_metadata
-            if isinstance(item, dict)
-        }
         file_objects = {
-            (
-                path,
-                int(item.get("size", -1)),
-                str(item.get("sha256", "")),
-            )
-            for item in files
-            if isinstance(item, dict)
-            for path in [_safe_relative(item.get("path"))]
+            path: metadata
+            for path, metadata in file_entries.items()
             if path.startswith("objects/sha256/")
         }
         if catalog_objects != file_objects:
             raise BackupError("catalog_objects_mismatch")
-        if f"sets/{set_path.name}/transcripts.db" not in expected_paths:
-            raise BackupError("catalog_database_missing")
         scratch_db = owned / "transcripts.db"
         shutil.copyfile(database_path, scratch_db)
+        os.chmod(scratch_db, 0o400)
         _fsync_file(scratch_db)
         row_count, max_id = _verify_database(scratch_db, database_meta)
 
@@ -649,10 +726,10 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
             if objects_root.is_symlink():
                 raise BackupError("backup_object_symlink")
             for candidate in sorted(objects_root.rglob("*"), key=lambda item: item.as_posix()):
-                if candidate.is_dir():
-                    continue
                 if candidate.is_symlink():
                     raise BackupError("backup_object_symlink")
+                if candidate.is_dir():
+                    continue
                 relative = candidate.relative_to(backup_root).as_posix()
                 if relative not in listed_objects:
                     warnings.append("extra_object")
@@ -668,6 +745,19 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
         )
     except BackupError as exc:
         errors.append(str(exc))
+        return VerificationReceipt(
+            valid=False,
+            status="invalid",
+            backup_set_id=backup_set_id,
+            errors=tuple(errors),
+            warnings=tuple(sorted(set(warnings))),
+            row_count=row_count,
+            max_transcript_id=max_id,
+        )
+    except (TypeError, ValueError, OverflowError, KeyError, IndexError, OSError, sqlite3.Error):
+        # A malformed or truncated catalog is an invalid backup, not an
+        # operator path/usage error.  Keep the receipt and CLI output bounded.
+        errors.append("catalog_invalid")
         return VerificationReceipt(
             valid=False,
             status="invalid",
