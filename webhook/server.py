@@ -167,7 +167,7 @@ def upload():
             return jsonify({"error": "Transcript needs review"}), 422
 
         transcript = transcription.text
-        log.info("Transcript: %s...", transcript[:100])
+        log.info("Upload transcript accepted (%d characters)", len(transcript))
 
         row_id = insert_transcript(
             content_hash=file_hash,
@@ -221,7 +221,7 @@ def ingest():
         return jsonify({"error": "text too large"}), 413
 
     source = data.get("source", "text")
-    log.info("Ingest (%s): %s...", source, text[:100])
+    log.info("Ingest accepted (%d characters)", len(text))
 
     import hashlib as _hashlib
 

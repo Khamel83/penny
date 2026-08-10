@@ -2,6 +2,7 @@
 """Tests for Penny webhook server (webhook/server.py)."""
 import hashlib
 import io
+import logging
 import os
 import sys
 import unittest
@@ -262,6 +263,68 @@ def test_upload_rejects_missing_token_before_transcription(client, monkeypatch):
     )
     assert response.status_code == 401
     transcribe.assert_not_called()
+
+
+def test_upload_does_not_log_raw_transcript(client, monkeypatch, caplog):
+    transcript = "private upload transcript must not appear in logs"
+    monkeypatch.setattr(server_module, "get_file_hash", lambda _: "upload-log-hash")
+    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(
+        server_module,
+        "transcribe",
+        lambda _: TranscriptionResult(transcript, QualityResult(True), 1),
+    )
+    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(
+        server_module, "classify_and_route", lambda *_, **__: {"items": []}
+    )
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"audio"), "memo.m4a")},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 200
+    assert transcript not in caplog.text
+
+
+def test_ingest_does_not_log_raw_text(client, monkeypatch, caplog):
+    text = "private ingest text must not appear in logs"
+    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
+    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(
+        server_module, "classify_and_route", lambda *_, **__: {"items": []}
+    )
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post("/ingest", json={"text": text}, headers=_ingest_auth())
+
+    assert response.status_code == 200
+    assert text not in caplog.text
+
+
+def test_oversized_upload_is_rejected_before_processing(client, monkeypatch):
+    transcribe = MagicMock()
+    route = MagicMock()
+    temp_file = MagicMock()
+    monkeypatch.setattr(server_module, "transcribe", transcribe)
+    monkeypatch.setattr(server_module, "classify_and_route", route)
+    monkeypatch.setattr(server_module.tempfile, "NamedTemporaryFile", temp_file)
+
+    response = client.post(
+        "/upload",
+        data=b"x" * (server_module.cfg.webhook.max_request_bytes + 1),
+        content_type="audio/m4a",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 413
+    transcribe.assert_not_called()
+    route.assert_not_called()
+    temp_file.assert_not_called()
 
 
 def test_ingest_token_cannot_authorize_deliver(client, monkeypatch):
