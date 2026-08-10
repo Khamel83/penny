@@ -63,6 +63,17 @@ class TranscriptLogTests(unittest.TestCase):
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
 
+    def _maya_claim(
+        self,
+        row_id: int,
+        *,
+        owner: str = "test-worker",
+        now: datetime | str = "2026-08-10T12:00:00Z",
+    ) -> dict[str, str]:
+        claim = transcript_log.claim_maya_delivery(row_id, owner, now=now)
+        self.assertIsNotNone(claim)
+        return claim
+
     def test_insert_and_retrieve(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="abc123",
@@ -1081,9 +1092,12 @@ class TranscriptLogTests(unittest.TestCase):
         )
         self.assertIsNotNone(row_id)
 
+        claim = self._maya_claim(int(row_id))
         transcript_log.mark_maya_delivery_failed(
             int(row_id),
             "raw provider response must not be persisted",
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
         failed = transcript_log.get_transcript(int(row_id))
         self.assertEqual(failed["maya_delivery_status"], "failed")
@@ -1095,7 +1109,13 @@ class TranscriptLogTests(unittest.TestCase):
                 int(row_id), now="2026-08-10T12:00:00Z"
             )
         )
-        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
+        claim = self._maya_claim(int(row_id))
+        transcript_log.mark_maya_delivery_sent(
+            int(row_id),
+            "drop-penny-v2-123",
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
+        )
         transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
         sent = transcript_log.get_transcript(int(row_id))
         self.assertEqual(sent["maya_delivery_status"], "sent")
@@ -1125,8 +1145,14 @@ class TranscriptLogTests(unittest.TestCase):
         finally:
             conn.close()
 
+        claim = self._maya_claim(int(row_id), now=now)
         transcript_log.mark_maya_delivery_retryable(
-            int(row_id), "timeout", retry_after_seconds=1, now=now
+            int(row_id),
+            "timeout",
+            retry_after_seconds=1,
+            now=now,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
 
         stored = transcript_log.get_transcript(int(row_id))
@@ -1162,8 +1188,14 @@ class TranscriptLogTests(unittest.TestCase):
         finally:
             conn.close()
 
+        claim = self._maya_claim(int(row_id), now=now)
         transcript_log.mark_maya_delivery_retryable(
-            int(row_id), "timeout", retry_after_seconds=1, now=now
+            int(row_id),
+            "timeout",
+            retry_after_seconds=1,
+            now=now,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
 
         stored = transcript_log.get_transcript(int(row_id))
@@ -1207,8 +1239,13 @@ class TranscriptLogTests(unittest.TestCase):
                     conn.commit()
                 finally:
                     conn.close()
+                claim = self._maya_claim(int(row_id), now=now)
                 transcript_log.mark_maya_delivery_retryable(
-                    int(row_id), "timeout", now=now
+                    int(row_id),
+                    "timeout",
+                    now=now,
+                    claim_token=claim["maya_claim_token"],
+                    claim_owner=claim["maya_claim_owner"],
                 )
                 stored = transcript_log.get_transcript(int(row_id))
                 self.assertEqual(stored["maya_delivery_status"], expected_status)
@@ -1246,8 +1283,22 @@ class TranscriptLogTests(unittest.TestCase):
         finally:
             conn.close()
 
-        transcript_log.mark_maya_delivery_retryable(int(malformed), "timeout", now=now)
-        transcript_log.mark_maya_delivery_retryable(int(future), "timeout", now=now)
+        malformed_claim = self._maya_claim(int(malformed), now=now)
+        transcript_log.mark_maya_delivery_retryable(
+            int(malformed),
+            "timeout",
+            now=now,
+            claim_token=malformed_claim["maya_claim_token"],
+            claim_owner=malformed_claim["maya_claim_owner"],
+        )
+        future_claim = self._maya_claim(int(future), now=now)
+        transcript_log.mark_maya_delivery_retryable(
+            int(future),
+            "timeout",
+            now=now,
+            claim_token=future_claim["maya_claim_token"],
+            claim_owner=future_claim["maya_claim_owner"],
+        )
 
         malformed_row = transcript_log.get_transcript(int(malformed))
         future_row = transcript_log.get_transcript(int(future))
@@ -1283,7 +1334,13 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(stored["maya_dead_letter_at"], now)
 
         self.assertTrue(transcript_log.replay_maya_delivery(int(row_id), now=now))
-        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-immutable")
+        claim = self._maya_claim(int(row_id), now=now)
+        transcript_log.mark_maya_delivery_sent(
+            int(row_id),
+            "drop-immutable",
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
+        )
         self.assertFalse(
             transcript_log.mark_maya_delivery_dead_letter(
                 int(row_id), "age_cap", now="2026-08-10T13:00:00Z"
@@ -1508,6 +1565,38 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(stored["maya_delivery_status"], "pending")
         self.assertEqual(stored["maya_claim_owner"], "worker-a")
 
+    def test_unclaimed_pending_maya_worker_transitions_are_rejected(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-unclaimed-transition-rejection",
+            source="iCloud",
+            transcript="Pending worker transitions require a claim.",
+            ingest_state="transcribed",
+            recorded_at="2026-08-10T12:00:00Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_sent(int(row_id), "drop-unclaimed")
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_failed(int(row_id), "provider_error")
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_retryable(
+                int(row_id), "timeout", now="2026-08-10T12:00:00Z"
+            )
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_retryable(
+                int(row_id),
+                "timeout",
+                now="2026-08-10T12:00:00Z",
+                claim_token=" ",
+                claim_owner="worker-a",
+            )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "pending")
+        self.assertIsNone(stored["maya_claim_token"])
+
     def test_maya_pending_row_with_drop_id_cannot_overwrite_receipt(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="maya-pending-drop-invariant",
@@ -1647,7 +1736,13 @@ class TranscriptLogTests(unittest.TestCase):
             maya_delivery_eligible=True,
             enqueue_slack=False,
         )
-        transcript_log.mark_maya_delivery_failed(int(row_id), "provider_error")
+        claim = self._maya_claim(int(row_id))
+        transcript_log.mark_maya_delivery_failed(
+            int(row_id),
+            "provider_error",
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
+        )
         with self.assertRaises(ValueError):
             transcript_log.mark_maya_delivery_sent(int(row_id), "drop-no-replay")
         self.assertEqual(
@@ -1688,6 +1783,11 @@ class TranscriptLogTests(unittest.TestCase):
             enqueue_slack=False,
         )
         self.assertIsNotNone(row_id)
+        claim = self._maya_claim(int(row_id), owner="receipt-race")
+        claim_kwargs = {
+            "claim_token": claim["maya_claim_token"],
+            "claim_owner": claim["maya_claim_owner"],
+        }
         select_gate = threading.Barrier(2)
         real_get_conn = transcript_log._get_conn
 
@@ -1711,7 +1811,9 @@ class TranscriptLogTests(unittest.TestCase):
 
         def acknowledge(drop_id: str) -> None:
             try:
-                transcript_log.mark_maya_delivery_sent(int(row_id), drop_id)
+                transcript_log.mark_maya_delivery_sent(
+                    int(row_id), drop_id, **claim_kwargs
+                )
             except Exception as exc:
                 outcome: object = exc
             else:
@@ -1751,7 +1853,13 @@ class TranscriptLogTests(unittest.TestCase):
             enqueue_slack=False,
         )
         self.assertIsNotNone(row_id)
-        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-terminal")
+        claim = self._maya_claim(int(row_id), owner="sent-terminal")
+        transcript_log.mark_maya_delivery_sent(
+            int(row_id),
+            "drop-terminal",
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
+        )
 
         transcript_log.mark_maya_delivery_failed(int(row_id), "delivery_error")
 
@@ -2948,14 +3056,20 @@ class TranscriptLogTests(unittest.TestCase):
             quality_detail="attempt_1=repetition;attempt_2=control_token",
             enqueue_slack=False,
         )
+        backoff_claim = self._maya_claim(int(backoff_id), owner="health-retry")
         transcript_log.mark_maya_delivery_retryable(
             int(backoff_id),
             "delivery_error",
             retry_after_seconds=120,
+            claim_token=backoff_claim["maya_claim_token"],
+            claim_owner=backoff_claim["maya_claim_owner"],
         )
+        failed_claim = self._maya_claim(int(failed_id), owner="health-failed")
         transcript_log.mark_maya_delivery_failed(
             int(failed_id),
             "provider_error",
+            claim_token=failed_claim["maya_claim_token"],
+            claim_owner=failed_claim["maya_claim_owner"],
         )
         conn = transcript_log._get_conn()
         try:

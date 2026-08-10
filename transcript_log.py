@@ -1316,14 +1316,27 @@ def _validate_maya_claim_arguments(
         raise ValueError("Maya claim token and owner are both required")
 
 
+def _require_maya_claim_arguments(
+    claim_token: str | None,
+    claim_owner: str | None,
+) -> None:
+    """Require a non-empty claim pair for every pending worker transition."""
+    _validate_maya_claim_arguments(claim_token, claim_owner)
+    if (
+        not isinstance(claim_token, str)
+        or not claim_token.strip()
+        or not isinstance(claim_owner, str)
+        or not claim_owner.strip()
+    ):
+        raise ValueError("Maya claim token and owner are required")
+
+
 def _maya_claim_matches(
     row: sqlite3.Row,
     claim_token: str | None,
     claim_owner: str | None,
 ) -> bool:
-    _validate_maya_claim_arguments(claim_token, claim_owner)
-    if claim_token is None:
-        return row["maya_claim_token"] is None and row["maya_claim_owner"] is None
+    _require_maya_claim_arguments(claim_token, claim_owner)
     return (
         row["maya_claim_token"] == claim_token
         and row["maya_claim_owner"] == claim_owner

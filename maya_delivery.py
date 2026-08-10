@@ -63,7 +63,7 @@ def _schedule_retry(
     row_id: int,
     delivery: dict[str, Any],
     error_message: str,
-    claim: dict[str, str] | None = None,
+    claim: dict[str, str],
 ) -> None:
     try:
         mark_maya_delivery_retryable(
@@ -72,8 +72,8 @@ def _schedule_retry(
             retry_after_seconds=_retry_delay_seconds(delivery),
             max_attempts=getattr(cfg.maya, "max_attempts", 20),
             max_age_days=getattr(cfg.maya, "max_age_days", 7),
-            claim_token=claim.get("maya_claim_token") if claim else None,
-            claim_owner=claim.get("maya_claim_owner") if claim else None,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
     except Exception as exc:
         log.error(
@@ -86,14 +86,14 @@ def _schedule_retry(
 def _record_invalid_receipt(
     row_id: int,
     error_message: str,
-    claim: dict[str, str] | None = None,
+    claim: dict[str, str],
 ) -> None:
     try:
         mark_maya_delivery_failed(
             row_id,
             error_message,
-            claim_token=claim.get("maya_claim_token") if claim else None,
-            claim_owner=claim.get("maya_claim_owner") if claim else None,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
     except Exception as exc:
         log.error(
@@ -148,14 +148,14 @@ def _validated_drop_id(
 def _mark_permanent_failure(
     row_id: int,
     error_code: str,
-    claim: dict[str, str] | None = None,
+    claim: dict[str, str],
 ) -> None:
     try:
         mark_maya_delivery_failed(
             row_id,
             error_code,
-            claim_token=claim.get("maya_claim_token") if claim else None,
-            claim_owner=claim.get("maya_claim_owner") if claim else None,
+            claim_token=claim["maya_claim_token"],
+            claim_owner=claim["maya_claim_owner"],
         )
     except Exception as exc:
         log.error(
@@ -273,8 +273,8 @@ def _process_one_maya_delivery(
     except Exception as exc:
         release_maya_delivery_claim(
             row_id,
-            claim.get("maya_claim_token"),
-            claim.get("maya_claim_owner"),
+            claim["maya_claim_token"],
+            claim["maya_claim_owner"],
         )
         log.error(
             "Maya receipt persistence failed for transcript=%s: %s",
