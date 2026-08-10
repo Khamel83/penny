@@ -2455,13 +2455,14 @@ def get_voice_memo_health() -> dict[str, Any]:
         ).fetchone()
         health["failed_count"] = int(failed[0] or 0)
 
+        retry_due_at = _voice_memo_iso(_voice_memo_now(None))
         retry_due = conn.execute(
             """SELECT COUNT(*) FROM voice_memo_ingest
                WHERE retryable = 1
                  AND transcript_row_id IS NULL
                  AND attempt_count < ?
-                 AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))""",
-            (VOICE_MEMO_MAX_ATTEMPTS,),
+                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)""",
+            (VOICE_MEMO_MAX_ATTEMPTS, retry_due_at),
         ).fetchone()
         health["retry_due_count"] = int(retry_due[0] or 0)
 

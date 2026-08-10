@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -2145,6 +2146,34 @@ class TranscriptLogTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_voice_memo_health_counts_same_day_iso_due_rows(self) -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        due_at = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+        future_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+        for pk, next_attempt_at in ((297, due_at), (298, future_at)):
+            transcript_log.upsert_voice_memo_recording(
+                pk, label="health", raw_path=f"{pk}.m4a", duration_seconds=1.0
+            )
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE voice_memo_ingest
+                       SET retryable = 1, attempt_count = 1, next_attempt_at = ?
+                       WHERE recording_pk = ?""",
+                    (next_attempt_at, pk),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now=now.isoformat().replace("+00:00", "Z"), limit=10
+        )
+        health = transcript_log.get_voice_memo_health()
+
+        self.assertEqual([row["recording_pk"] for row in due], [297])
+        self.assertEqual(health["retry_due_count"], 1)
 
     def test_source_watermark_is_monotonic(self) -> None:
         self.assertEqual(transcript_log.get_source_watermark("voice_memos"), 0)
