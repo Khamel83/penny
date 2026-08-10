@@ -1196,6 +1196,100 @@ class WatcherTests(unittest.TestCase):
 
         process_mock.assert_called_once_with(limit=1)
 
+    def test_maya_worker_uses_bounded_config_and_continues_after_row_failure(self) -> None:
+        first = {"id": 101, "maya_delivery_attempt_count": 19}
+        second = {"id": 102, "maya_delivery_attempt_count": 0}
+        envelope = {
+            "schema_version": "penny-maya.v2",
+            "transcript_id": "102",
+            "transcript_sha256": "a" * 64,
+            "transcript": "second row",
+            "source": "icloud",
+            "captured_at": "2026-08-10T12:00:00Z",
+            "duration_seconds": None,
+            "audio_provenance": {"content_hash": "b" * 32, "audio_path": None, "recording_pk": None},
+            "source_spans": [],
+            "client_ref": "penny:102",
+        }
+        response = SimpleNamespace(status_code=200, json=lambda: {})
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya.test/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(maya_delivery.cfg.maya, "max_attempts", 3),
+            patch.object(maya_delivery.cfg.maya, "max_age_days", 2),
+            patch.object(
+                maya_delivery,
+                "get_pending_maya_deliveries",
+                return_value=[first, second],
+            ) as pending,
+            patch.object(
+                maya_delivery,
+                "build_maya_v2_envelope",
+                side_effect=[RuntimeError("bad first row"), envelope],
+            ),
+            patch.object(
+                maya_delivery,
+                "mark_maya_delivery_failed",
+                side_effect=RuntimeError("database unavailable"),
+            ),
+            patch.object(maya_delivery.requests, "post", return_value=response) as post,
+            patch.object(maya_delivery, "_validated_drop_id", return_value="drop-102"),
+            patch.object(maya_delivery, "mark_maya_delivery_sent"),
+        ):
+            delivered = maya_delivery.process_pending_maya_deliveries(limit=2)
+
+        self.assertEqual(delivered, 1)
+        pending.assert_called_once_with(
+            limit=2,
+            max_attempts=3,
+            max_age_days=2,
+        )
+        post.assert_called_once()
+
+    def test_maya_worker_terminalizes_capped_row_before_http(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-worker-terminal-before-http",
+            source="iCloud",
+            transcript="This capped row must not reach Maya.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 20, "
+                "maya_first_attempt_at = ? WHERE id = ?",
+                ("2026-08-01T12:00:00Z", row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with (
+            patch.object(
+                maya_delivery.cfg.maya,
+                "transcript_url",
+                "http://maya.test/ingest/transcript",
+            ),
+            patch.object(maya_delivery.cfg.maya, "ingest_token", "test-token"),
+            patch.object(maya_delivery.requests, "post") as post,
+        ):
+            delivered = maya_delivery.process_pending_maya_deliveries(limit=5)
+
+        self.assertEqual(delivered, 0)
+        post.assert_not_called()
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "dead_letter")
+        self.assertEqual(stored["maya_dead_letter_reason"], "attempt_cap")
+
     def test_each_ingest_pass_reaches_slack_before_a_maya_outage(self) -> None:
         events: list[str] = []
 

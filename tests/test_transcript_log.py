@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import hashlib
+import inspect
 import json
 import logging
 import multiprocessing
@@ -876,6 +877,10 @@ class TranscriptLogTests(unittest.TestCase):
                 "maya_drop_id",
                 "maya_delivery_attempt_count",
                 "maya_next_attempt_at",
+                "maya_first_attempt_at",
+                "maya_last_attempt_at",
+                "maya_dead_letter_at",
+                "maya_dead_letter_reason",
                 "maya_delivery_eligible",
                 "recorded_at",
                 "superseded_by_transcript_row_id",
@@ -1081,12 +1086,355 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(failed["maya_delivery_error"], "delivery_error")
         self.assertIsNone(failed["maya_drop_id"])
 
+        self.assertTrue(
+            transcript_log.replay_maya_delivery(
+                int(row_id), now="2026-08-10T12:00:00Z"
+            )
+        )
         transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
         transcript_log.mark_maya_delivery_sent(int(row_id), "drop-penny-v2-123")
         sent = transcript_log.get_transcript(int(row_id))
         self.assertEqual(sent["maya_delivery_status"], "sent")
         self.assertEqual(sent["maya_drop_id"], "drop-penny-v2-123")
         self.assertIsNone(sent["maya_delivery_error"])
+
+    def test_maya_retry_reaches_attempt_cap_dead_letter_atomically(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-attempt-cap",
+            source="iCloud",
+            transcript="Attempt cap is terminal.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 19 "
+                "WHERE id = ?",
+                (row_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.mark_maya_delivery_retryable(
+            int(row_id), "timeout", retry_after_seconds=1, now=now
+        )
+
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "dead_letter")
+        self.assertEqual(stored["maya_delivery_attempt_count"], 20)
+        self.assertEqual(stored["maya_dead_letter_reason"], "attempt_cap")
+        self.assertEqual(stored["maya_first_attempt_at"], now)
+        self.assertEqual(stored["maya_last_attempt_at"], now)
+        self.assertEqual(stored["maya_dead_letter_at"], now)
+        self.assertIsNone(stored["maya_next_attempt_at"])
+
+    def test_maya_retry_reaches_age_cap_dead_letter_atomically(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        first_attempt = "2026-08-03T11:59:59Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-age-cap",
+            source="iCloud",
+            transcript="Age cap is terminal.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 1, "
+                "maya_first_attempt_at = ?, maya_last_attempt_at = ? WHERE id = ?",
+                (first_attempt, first_attempt, row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.mark_maya_delivery_retryable(
+            int(row_id), "timeout", retry_after_seconds=1, now=now
+        )
+
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "dead_letter")
+        self.assertEqual(stored["maya_delivery_attempt_count"], 2)
+        self.assertEqual(stored["maya_dead_letter_reason"], "age_cap")
+        self.assertEqual(stored["maya_first_attempt_at"], first_attempt)
+        self.assertEqual(stored["maya_last_attempt_at"], now)
+        self.assertEqual(stored["maya_dead_letter_at"], now)
+
+    def test_maya_retry_age_edges_are_deterministic(self) -> None:
+        now = datetime(2026, 8, 10, 12, tzinfo=timezone.utc)
+        for suffix, first_attempt, expected_status in (
+            (
+                "under",
+                now - timedelta(days=7, seconds=-1),
+                "pending",
+            ),
+            ("exact", now - timedelta(days=7), "dead_letter"),
+            ("over", now - timedelta(days=7, seconds=1), "dead_letter"),
+        ):
+            with self.subTest(suffix=suffix):
+                row_id = transcript_log.insert_transcript(
+                    content_hash=f"maya-age-edge-{suffix}",
+                    source="iCloud",
+                    transcript=f"Age edge {suffix}.",
+                    ingest_state="transcribed",
+                    recorded_at=now.isoformat().replace("+00:00", "Z"),
+                    quality_status="passed",
+                    maya_delivery_eligible=True,
+                    enqueue_slack=False,
+                )
+                first_value = first_attempt.isoformat().replace("+00:00", "Z")
+                conn = transcript_log._get_conn()
+                try:
+                    conn.execute(
+                        "UPDATE transcripts SET maya_delivery_attempt_count = 1, "
+                        "maya_first_attempt_at = ? WHERE id = ?",
+                        (first_value, row_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                transcript_log.mark_maya_delivery_retryable(
+                    int(row_id), "timeout", now=now
+                )
+                stored = transcript_log.get_transcript(int(row_id))
+                self.assertEqual(stored["maya_delivery_status"], expected_status)
+
+    def test_maya_malformed_first_attempt_is_quarantined_and_future_is_not_aged(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        malformed = transcript_log.insert_transcript(
+            content_hash="maya-malformed-first-attempt",
+            source="iCloud",
+            transcript="Malformed timestamp must fail closed.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        future = transcript_log.insert_transcript(
+            content_hash="maya-future-first-attempt",
+            source="iCloud",
+            transcript="Future timestamp is not already old.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.executemany(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 1, "
+                "maya_first_attempt_at = ? WHERE id = ?",
+                [("not-a-timestamp", malformed), ("2026-08-20T12:00:00Z", future)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        transcript_log.mark_maya_delivery_retryable(int(malformed), "timeout", now=now)
+        transcript_log.mark_maya_delivery_retryable(int(future), "timeout", now=now)
+
+        malformed_row = transcript_log.get_transcript(int(malformed))
+        future_row = transcript_log.get_transcript(int(future))
+        self.assertEqual(malformed_row["maya_delivery_status"], "dead_letter")
+        self.assertEqual(malformed_row["maya_dead_letter_reason"], "age_cap")
+        self.assertEqual(future_row["maya_delivery_status"], "pending")
+        self.assertEqual(future_row["maya_first_attempt_at"], "2026-08-20T12:00:00Z")
+
+    def test_maya_dead_letter_is_idempotent_and_sent_receipt_is_immutable(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-dead-letter-idempotence",
+            source="iCloud",
+            transcript="Dead-letter reason cannot be rewritten.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        self.assertTrue(
+            transcript_log.mark_maya_delivery_dead_letter(
+                int(row_id), "attempt_cap", now=now
+            )
+        )
+        self.assertFalse(
+            transcript_log.mark_maya_delivery_dead_letter(
+                int(row_id), "age_cap", now="2026-08-10T13:00:00Z"
+            )
+        )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_dead_letter_reason"], "attempt_cap")
+        self.assertEqual(stored["maya_dead_letter_at"], now)
+
+        self.assertTrue(transcript_log.replay_maya_delivery(int(row_id), now=now))
+        transcript_log.mark_maya_delivery_sent(int(row_id), "drop-immutable")
+        self.assertFalse(
+            transcript_log.mark_maya_delivery_dead_letter(
+                int(row_id), "age_cap", now="2026-08-10T13:00:00Z"
+            )
+        )
+        self.assertFalse(transcript_log.replay_maya_delivery(int(row_id), now=now))
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "sent")
+        self.assertEqual(stored["maya_drop_id"], "drop-immutable")
+
+    def test_maya_pending_query_terminalizes_stale_rows_and_excludes_them(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        stale = transcript_log.insert_transcript(
+            content_hash="maya-stale-pending",
+            source="iCloud",
+            transcript="Stale pending row.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        fresh = transcript_log.insert_transcript(
+            content_hash="maya-fresh-pending",
+            source="iCloud",
+            transcript="Fresh pending row.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 20, "
+                "maya_first_attempt_at = ?, maya_next_attempt_at = NULL WHERE id = ?",
+                ("2026-08-01T12:00:00Z", stale),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        pending = transcript_log.get_pending_maya_deliveries(limit=20, now=now)
+
+        self.assertEqual([int(row["id"]) for row in pending], [int(fresh)])
+        stale_row = transcript_log.get_transcript(int(stale))
+        self.assertEqual(stale_row["maya_delivery_status"], "dead_letter")
+        self.assertEqual(stale_row["maya_dead_letter_reason"], "attempt_cap")
+
+    def test_maya_pending_query_terminalizes_malformed_first_attempt_before_http(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-malformed-pending-first-attempt",
+            source="iCloud",
+            transcript="Malformed pending timestamp.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        conn = transcript_log._get_conn()
+        try:
+            conn.execute(
+                "UPDATE transcripts SET maya_delivery_attempt_count = 1, "
+                "maya_first_attempt_at = ? WHERE id = ?",
+                ("not-a-timestamp", row_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            transcript_log.get_pending_maya_deliveries(limit=10, now=now), []
+        )
+        stored = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(stored["maya_delivery_status"], "dead_letter")
+        self.assertEqual(stored["maya_dead_letter_reason"], "age_cap")
+
+    def test_maya_replay_preserves_envelope_and_only_resets_delivery_schedule(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-replay-identity",
+            source="iCloud",
+            transcript="Replay preserves this exact envelope.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=True,
+        )
+        before_envelope = transcript_log.build_maya_v2_envelope(int(row_id))
+        before = transcript_log.get_transcript(int(row_id))
+        transcript_log.mark_maya_delivery_dead_letter(int(row_id), "attempt_cap", now=now)
+
+        self.assertTrue(transcript_log.replay_maya_delivery(int(row_id), now=now))
+
+        after = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(
+            transcript_log.build_maya_v2_envelope(int(row_id)), before_envelope
+        )
+        self.assertEqual(after["content_hash"], before["content_hash"])
+        self.assertEqual(after["transcript_sha256"], before["transcript_sha256"])
+        self.assertEqual(after["maya_delivery_status"], "pending")
+        self.assertEqual(after["maya_delivery_attempt_count"], 0)
+        self.assertIsNone(after["maya_first_attempt_at"])
+        self.assertIsNone(after["maya_last_attempt_at"])
+        self.assertIsNone(after["maya_dead_letter_at"])
+        self.assertIsNone(after["maya_dead_letter_reason"])
+        self.assertIsNone(after["maya_delivery_error"])
+        self.assertEqual(
+            transcript_log.get_pending_slack_deliveries(transcript_id=int(row_id))[0]["status"],
+            "pending",
+        )
+
+    def test_maya_sent_receipt_cannot_be_reopened_from_terminal_state(self) -> None:
+        now = "2026-08-10T12:00:00Z"
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-terminal-monotonic",
+            source="iCloud",
+            transcript="Terminal states stay terminal until explicit replay.",
+            ingest_state="transcribed",
+            recorded_at=now,
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        transcript_log.mark_maya_delivery_dead_letter(int(row_id), "age_cap", now=now)
+
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_sent(int(row_id), "drop-must-not-send")
+        self.assertEqual(
+            transcript_log.get_transcript(int(row_id))["maya_delivery_status"],
+            "dead_letter",
+        )
+
+    def test_maya_failed_row_requires_explicit_replay_before_sent_receipt(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="maya-failed-replay-gate",
+            source="iCloud",
+            transcript="A failed row cannot skip replay.",
+            ingest_state="transcribed",
+            recorded_at="2026-08-10T12:00:00Z",
+            quality_status="passed",
+            maya_delivery_eligible=True,
+            enqueue_slack=False,
+        )
+        transcript_log.mark_maya_delivery_failed(int(row_id), "provider_error")
+        with self.assertRaises(ValueError):
+            transcript_log.mark_maya_delivery_sent(int(row_id), "drop-no-replay")
+        self.assertEqual(
+            transcript_log.get_transcript(int(row_id))["maya_delivery_status"],
+            "failed",
+        )
 
     def test_pending_slack_delivery_excludes_row_that_later_fails_quality(self) -> None:
         row_id = transcript_log.insert_transcript(
@@ -2425,12 +2773,20 @@ class TranscriptLogTests(unittest.TestCase):
                 "pending_count": 0,
                 "due_count": 0,
                 "failed_count": 0,
+                "dead_letter_count": 0,
                 "oldest_due_age_seconds": 0,
+                "oldest_pending_age_seconds": 0,
+                "max_attempt_count": 0,
                 "quality_needs_review_count": 0,
                 "query_ok": 0,
                 "health_error": 1,
             },
         )
+
+    def test_maya_health_probe_does_not_read_transcript_body(self) -> None:
+        source = inspect.getsource(transcript_log.get_maya_delivery_health)
+        self.assertNotIn("TRIM(transcript)", source)
+        self.assertNotIn("LOWER(TRIM(transcript))", source)
 
     def test_mark_slack_delivery_sent_raises_write_failure(self) -> None:
         conn = Mock()

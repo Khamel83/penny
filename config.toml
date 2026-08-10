@@ -41,6 +41,12 @@ ingest_token = ""
 # Overridden by MAYA_DELIVERY_TIMEOUT_SECONDS and clamped to 1..30 seconds.
 delivery_timeout_seconds = 10
 
+# A transient Maya delivery is retried at most 20 times and for at most 7 days.
+# Environment overrides are MAYA_DELIVERY_MAX_ATTEMPTS and
+# MAYA_DELIVERY_MAX_AGE_DAYS; both are clamped to the documented maxima.
+max_attempts = 20
+max_age_days = 7
+
 [archive]
 # Penny-owned durable objects must remain outside iCloud/File Provider storage.
 object_root = "~/.penny/archive/objects"

@@ -45,6 +45,10 @@ class ConfigTests(unittest.TestCase):
     def tearDown(self):
         config._config = None
         os.environ.pop("MAYA_DELIVERY_TIMEOUT_SECONDS", None)
+        os.environ.pop("MAYA_DELIVERY_MAX_ATTEMPTS", None)
+        os.environ.pop("MAYA_DELIVERY_MAX_AGE_DAYS", None)
+        os.environ.pop("MAYA_MAX_ATTEMPTS", None)
+        os.environ.pop("MAYA_MAX_AGE_DAYS", None)
         os.environ.pop("PENNY_INGEST_TOKEN", None)
         os.environ.pop("PENNY_WEBHOOK_HOST", None)
 
@@ -130,6 +134,21 @@ class ConfigTests(unittest.TestCase):
                     config.get_config().maya.delivery_timeout_seconds,
                     expected,
                 )
+
+    def test_maya_retry_bounds_are_configurable_but_never_exceed_contract(self):
+        for raw_attempts, raw_age_days, expected_attempts, expected_age_days in (
+            ("12", "3", 12, 3),
+            ("0", "0", 1, 1),
+            ("200", "200", 20, 7),
+            ("not-a-number", "not-a-number", 20, 7),
+        ):
+            with self.subTest(raw_attempts=raw_attempts, raw_age_days=raw_age_days):
+                os.environ["MAYA_DELIVERY_MAX_ATTEMPTS"] = raw_attempts
+                os.environ["MAYA_DELIVERY_MAX_AGE_DAYS"] = raw_age_days
+                config._config = None
+                cfg = config.get_config()
+                self.assertEqual(cfg.maya.max_attempts, expected_attempts)
+                self.assertEqual(cfg.maya.max_age_days, expected_age_days)
 
 
 if __name__ == "__main__":

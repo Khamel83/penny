@@ -74,6 +74,8 @@ class MayaConfig:
     transcript_url: str = ""
     ingest_token: str = ""
     delivery_timeout_seconds: float = 10.0
+    max_attempts: int = 20
+    max_age_days: int = 7
 
 
 @dataclass
@@ -133,6 +135,42 @@ def get_config() -> Config:
         maya_timeout = 10.0
     maya_timeout = max(1.0, min(maya_timeout, 30.0))
 
+    def bounded_int_env(
+        env_name: str,
+        toml_key: str,
+        default: int,
+        upper_bound: int,
+        *aliases: str,
+    ) -> int:
+        raw_value = os.environ.get(env_name)
+        if raw_value is None:
+            for alias in aliases:
+                raw_value = os.environ.get(alias)
+                if raw_value is not None:
+                    break
+        if raw_value is None:
+            raw_value = str(maya_section.get(toml_key, default))
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            value = default
+        return max(1, min(value, upper_bound))
+
+    maya_max_attempts = bounded_int_env(
+        "MAYA_DELIVERY_MAX_ATTEMPTS",
+        "max_attempts",
+        20,
+        20,
+        "MAYA_MAX_ATTEMPTS",
+    )
+    maya_max_age_days = bounded_int_env(
+        "MAYA_DELIVERY_MAX_AGE_DAYS",
+        "max_age_days",
+        7,
+        7,
+        "MAYA_MAX_AGE_DAYS",
+    )
+
     maya = MayaConfig(
         transcript_url=os.environ.get(
             "MAYA_TRANSCRIPT_URL", maya_section.get("transcript_url", "")
@@ -141,6 +179,8 @@ def get_config() -> Config:
             "MAYA_INGEST_TOKEN", maya_section.get("ingest_token", "")
         ),
         delivery_timeout_seconds=maya_timeout,
+        max_attempts=maya_max_attempts,
+        max_age_days=maya_max_age_days,
     )
     archive_section = raw.get("archive", {})
     archive_object_root = Path(

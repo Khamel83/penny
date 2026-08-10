@@ -65,6 +65,8 @@ def _schedule_retry(
             row_id,
             error_message,
             retry_after_seconds=_retry_delay_seconds(delivery),
+            max_attempts=getattr(cfg.maya, "max_attempts", 20),
+            max_age_days=getattr(cfg.maya, "max_age_days", 7),
         )
     except Exception as exc:
         log.error(
@@ -127,112 +129,156 @@ def _validated_drop_id(
     return drop_id
 
 
+def _mark_permanent_failure(row_id: int, error_code: str) -> None:
+    try:
+        mark_maya_delivery_failed(row_id, error_code)
+    except Exception as exc:
+        log.error(
+            "Maya failure state could not be persisted for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+
+
+def _process_one_maya_delivery(
+    delivery: dict[str, Any],
+    *,
+    maya_url: str,
+    maya_token: str,
+) -> bool:
+    row_id = int(delivery["id"])
+    try:
+        envelope = build_maya_v2_envelope(row_id)
+        request_body = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except Exception as exc:
+        log.error(
+            "Maya envelope validation failed for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+        _mark_permanent_failure(row_id, "delivery_error")
+        return False
+
+    try:
+        response = requests.post(
+            maya_url,
+            data=request_body,
+            headers={
+                "Authorization": f"Bearer {maya_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=cfg.maya.delivery_timeout_seconds,
+        )
+    except requests.RequestException as exc:
+        log.warning(
+            "Maya delivery remains pending for transcript=%s after %s",
+            row_id,
+            type(exc).__name__,
+        )
+        _schedule_retry(
+            row_id,
+            delivery,
+            "delivery_error",
+        )
+        return False
+
+    if _is_transient_status(response.status_code):
+        log.warning(
+            "Maya delivery remains pending for transcript=%s after HTTP %s",
+            row_id,
+            response.status_code,
+        )
+        _schedule_retry(row_id, delivery, "provider_error:TransientHTTP")
+        return False
+    if response.status_code != 200:
+        _mark_permanent_failure(row_id, "provider_error:HTTPError")
+        return False
+
+    try:
+        receipt = response.json()
+    except Exception as exc:
+        log.error(
+            "Maya receipt JSON rejected for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+        _record_invalid_receipt(
+            row_id,
+            "acknowledgement_error:InvalidReceipt",
+        )
+        return False
+
+    try:
+        drop_id = _validated_drop_id(receipt, envelope)
+    except ReceiptConflictError as exc:
+        log.error(
+            "Maya receipt conflicts for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+        _record_invalid_receipt(
+            row_id,
+            "acknowledgement_error:ReceiptConflict",
+        )
+        return False
+    except InvalidReceiptError as exc:
+        log.error(
+            "Maya receipt rejected for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+        _record_invalid_receipt(
+            row_id,
+            "acknowledgement_error:InvalidReceipt",
+        )
+        return False
+
+    try:
+        mark_maya_delivery_sent(row_id, drop_id)
+    except Exception as exc:
+        log.error(
+            "Maya receipt persistence failed for transcript=%s: %s",
+            row_id,
+            type(exc).__name__,
+        )
+        return False
+
+    return True
+
+
 def process_pending_maya_deliveries(limit: int = 20) -> int:
-    """Send eligible persisted envelopes and record validated durable receipts."""
+    """Send bounded persisted envelopes and record validated durable receipts."""
     maya_url = cfg.maya.transcript_url.strip()
     maya_token = cfg.maya.ingest_token.strip()
     if not maya_url or not maya_token:
         return 0
 
     delivered = 0
-    for delivery in get_pending_maya_deliveries(limit=limit):
-        row_id = int(delivery["id"])
+    max_attempts = getattr(cfg.maya, "max_attempts", 20)
+    max_age_days = getattr(cfg.maya, "max_age_days", 7)
+    for delivery in get_pending_maya_deliveries(
+        limit=limit,
+        max_attempts=max_attempts,
+        max_age_days=max_age_days,
+    ):
         try:
-            envelope = build_maya_v2_envelope(row_id)
-            request_body = json.dumps(
-                envelope,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
+            if _process_one_maya_delivery(
+                delivery,
+                maya_url=maya_url,
+                maya_token=maya_token,
+            ):
+                delivered += 1
         except Exception as exc:
+            # One malformed/corrupt row must not starve later captures.
+            row_id = delivery.get("id", "unknown")
             log.error(
-                "Maya envelope validation failed for transcript=%s: %s",
+                "Maya delivery row failed for transcript=%s: %s",
                 row_id,
                 type(exc).__name__,
             )
-            mark_maya_delivery_failed(row_id, "delivery_error")
-            continue
-
-        try:
-            response = requests.post(
-                maya_url,
-                data=request_body,
-                headers={
-                    "Authorization": f"Bearer {maya_token}",
-                    "Content-Type": "application/json",
-                },
-                timeout=cfg.maya.delivery_timeout_seconds,
-            )
-        except requests.RequestException as exc:
-            log.warning(
-                "Maya delivery remains pending for transcript=%s after %s",
-                row_id,
-                type(exc).__name__,
-            )
-            _schedule_retry(row_id, delivery, "delivery_error")
-            continue
-
-        if _is_transient_status(response.status_code):
-            log.warning(
-                "Maya delivery remains pending for transcript=%s after HTTP %s",
-                row_id,
-                response.status_code,
-            )
-            _schedule_retry(row_id, delivery, "provider_error:TransientHTTP")
-            continue
-        if response.status_code != 200:
-            mark_maya_delivery_failed(row_id, "provider_error:HTTPError")
-            continue
-
-        try:
-            receipt = response.json()
-        except Exception as exc:
-            log.error(
-                "Maya receipt JSON rejected for transcript=%s: %s",
-                row_id,
-                type(exc).__name__,
-            )
-            _record_invalid_receipt(
-                row_id,
-                "acknowledgement_error:InvalidReceipt",
-            )
-            continue
-
-        try:
-            drop_id = _validated_drop_id(receipt, envelope)
-        except ReceiptConflictError as exc:
-            log.error(
-                "Maya receipt conflicts for transcript=%s: %s",
-                row_id,
-                type(exc).__name__,
-            )
-            _record_invalid_receipt(
-                row_id,
-                "acknowledgement_error:ReceiptConflict",
-            )
-            continue
-        except InvalidReceiptError as exc:
-            log.error(
-                "Maya receipt rejected for transcript=%s: %s",
-                row_id,
-                type(exc).__name__,
-            )
-            _record_invalid_receipt(
-                row_id,
-                "acknowledgement_error:InvalidReceipt",
-            )
-            continue
-
-        try:
-            mark_maya_delivery_sent(row_id, drop_id)
-        except Exception as exc:
-            log.error(
-                "Maya receipt persistence failed for transcript=%s: %s",
-                row_id,
-                type(exc).__name__,
-            )
-            continue
-
-        delivered += 1
     return delivered

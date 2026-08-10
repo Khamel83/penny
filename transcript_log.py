@@ -34,6 +34,14 @@ QUALITY_FAILURE_DESTINATION = "maya-ledger"
 MAX_QUALITY_DETAIL_CHARACTERS = 255
 VOICE_MEMO_MAX_ATTEMPTS = 8
 ARCHIVE_MAX_ATTEMPTS = 5
+MAYA_MAX_ATTEMPTS = 20
+MAYA_MAX_AGE_DAYS = 7
+# Descriptive aliases retained for callers that prefer the delivery namespace.
+MAYA_DELIVERY_MAX_ATTEMPTS = MAYA_MAX_ATTEMPTS
+MAYA_DELIVERY_MAX_AGE_DAYS = MAYA_MAX_AGE_DAYS
+MAYA_DEAD_LETTER_REASONS = frozenset(
+    {"attempt_cap", "age_cap", "operator_replay", "delivery_error"}
+)
 VOICE_MEMO_RETRY_ERROR_CODES = frozenset(
     {
         "file_not_downloaded",
@@ -161,6 +169,10 @@ def init_db() -> None:
                 maya_delivery_error TEXT,
                 maya_delivery_attempt_count INTEGER NOT NULL DEFAULT 0,
                 maya_next_attempt_at TEXT,
+                maya_first_attempt_at TEXT,
+                maya_last_attempt_at TEXT,
+                maya_dead_letter_at TEXT,
+                maya_dead_letter_reason TEXT,
                 superseded_by_transcript_row_id INTEGER
             )
         """)
@@ -1046,6 +1058,18 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "maya_next_attempt_at": (
             "ALTER TABLE transcripts ADD COLUMN maya_next_attempt_at TEXT"
         ),
+        "maya_first_attempt_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_first_attempt_at TEXT"
+        ),
+        "maya_last_attempt_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_last_attempt_at TEXT"
+        ),
+        "maya_dead_letter_at": (
+            "ALTER TABLE transcripts ADD COLUMN maya_dead_letter_at TEXT"
+        ),
+        "maya_dead_letter_reason": (
+            "ALTER TABLE transcripts ADD COLUMN maya_dead_letter_reason TEXT"
+        ),
         "superseded_by_transcript_row_id": (
             "ALTER TABLE transcripts "
             "ADD COLUMN superseded_by_transcript_row_id INTEGER"
@@ -1192,6 +1216,72 @@ def _safe_delivery_error(error_message: str) -> str:
     ):
         return error_message
     return "delivery_error"
+
+
+def _maya_now(value: datetime | str | None = None) -> str:
+    """Normalize Maya delivery timestamps to an unambiguous UTC ISO value."""
+    if value is None:
+        parsed = datetime.now(timezone.utc)
+    elif isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Maya delivery timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _maya_age_seconds(first_attempt_at: str | None, now: str) -> float | None:
+    if not first_attempt_at:
+        return 0.0
+    try:
+        first = datetime.fromisoformat(
+            str(first_attempt_at).replace("Z", "+00:00")
+        )
+        current = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return max(
+        0.0,
+        (
+            current.astimezone(timezone.utc)
+            - first.astimezone(timezone.utc)
+        ).total_seconds(),
+    )
+
+
+def _maya_limits(max_attempts: int | None, max_age_days: int | None) -> tuple[int, int]:
+    try:
+        attempts = int(max_attempts if max_attempts is not None else MAYA_MAX_ATTEMPTS)
+    except (TypeError, ValueError):
+        attempts = MAYA_MAX_ATTEMPTS
+    try:
+        age_days = int(max_age_days if max_age_days is not None else MAYA_MAX_AGE_DAYS)
+    except (TypeError, ValueError):
+        age_days = MAYA_MAX_AGE_DAYS
+    return (
+        max(1, min(attempts, MAYA_MAX_ATTEMPTS)),
+        max(1, min(age_days, MAYA_MAX_AGE_DAYS)),
+    )
+
+
+def _safe_maya_dead_letter_reason(reason: str) -> str:
+    normalized = str(reason or "").strip().casefold()
+    aliases = {
+        "max_attempts": "attempt_cap",
+        "attempts": "attempt_cap",
+        "max_age": "age_cap",
+        "age": "age_cap",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in MAYA_DEAD_LETTER_REASONS else "delivery_error"
 
 
 def _as_iso8601_utc(value: object) -> str:
@@ -2199,36 +2289,119 @@ def build_maya_v2_envelope(transcript_row_id: int) -> dict[str, object]:
             conn.close()
 
 
-def get_pending_maya_deliveries(limit: int = 20) -> list[dict[str, Any]]:
-    """Return eligible transcript rows that have not reached Maya durably."""
+def _maya_eligible_predicate() -> str:
+    return """
+        maya_delivery_eligible = 1
+        AND quality_status = 'passed'
+        AND source NOT LIKE 'maya:%'
+        AND ingest_state IN ('transcribed', 'routed')
+        AND recorded_at IS NOT NULL
+        AND superseded_by_transcript_row_id IS NULL
+        AND TRIM(transcript) != ''
+        AND LOWER(TRIM(transcript)) NOT LIKE '(migrated %'
+        AND LOWER(TRIM(transcript)) NOT LIKE '(skipped:%'
+    """
+
+
+def _maya_health_predicate() -> str:
+    """Metadata-only Maya eligibility predicate for operator health probes."""
+    return """
+        maya_delivery_eligible = 1
+        AND quality_status = 'passed'
+        AND source NOT LIKE 'maya:%'
+        AND ingest_state IN ('transcribed', 'routed')
+        AND recorded_at IS NOT NULL
+        AND superseded_by_transcript_row_id IS NULL
+    """
+
+
+def _terminalize_maya_delivery_limits(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    max_attempts: int,
+    max_age_days: int,
+) -> int:
+    """Move capped/stale pending rows to dead-letter in one transaction."""
+    cursor = conn.execute(
+        f"""
+        UPDATE transcripts
+        SET maya_delivery_status = 'dead_letter',
+            maya_delivery_error = COALESCE(maya_delivery_error, 'delivery_error'),
+            maya_next_attempt_at = NULL,
+            maya_dead_letter_at = ?,
+            maya_dead_letter_reason = CASE
+                WHEN COALESCE(maya_delivery_attempt_count, 0) >= ?
+                    THEN 'attempt_cap'
+                ELSE 'age_cap'
+            END,
+            updated_at = ?
+        WHERE maya_delivery_status = 'pending'
+          AND maya_drop_id IS NULL
+          AND ({_maya_eligible_predicate()})
+          AND (
+                COALESCE(maya_delivery_attempt_count, 0) >= ?
+                OR (
+                    maya_first_attempt_at IS NOT NULL
+                    AND (
+                        julianday(maya_first_attempt_at) IS NULL
+                        OR julianday(?) - julianday(maya_first_attempt_at) >= ?
+                    )
+                )
+              )
+        """,
+        (
+            now,
+            max_attempts,
+            now,
+            max_attempts,
+            now,
+            max_age_days,
+        ),
+    )
+    return int(cursor.rowcount)
+
+
+def get_pending_maya_deliveries(
+    limit: int = 20,
+    *,
+    now: datetime | str | None = None,
+    max_attempts: int | None = None,
+    max_age_days: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return due eligible rows after terminalizing capped/stale pending work."""
     conn = None
     try:
+        normalized_now = _maya_now(now)
+        attempts, age_days = _maya_limits(max_attempts, max_age_days)
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        _terminalize_maya_delivery_limits(
+            conn,
+            now=normalized_now,
+            max_attempts=attempts,
+            max_age_days=age_days,
+        )
+        conn.commit()
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM transcripts
             WHERE maya_delivery_status = 'pending'
-              AND maya_delivery_eligible = 1
-              AND quality_status = 'passed'
-              AND source NOT LIKE 'maya:%'
-              AND ingest_state IN ('transcribed', 'routed')
-              AND recorded_at IS NOT NULL
-              AND superseded_by_transcript_row_id IS NULL
-              AND TRIM(transcript) != ''
-              AND LOWER(TRIM(transcript)) NOT LIKE '(migrated %'
-              AND LOWER(TRIM(transcript)) NOT LIKE '(skipped:%'
+              AND ({_maya_eligible_predicate()})
               AND (
                     maya_next_attempt_at IS NULL
-                    OR maya_next_attempt_at <= datetime('now')
+                    OR julianday(maya_next_attempt_at) <= julianday(?)
                   )
             ORDER BY created_at ASC, id ASC
             LIMIT ?
             """,
-            (limit,),
+            (normalized_now, max(0, int(limit))),
         ).fetchall()
         return [dict(row) for row in rows]
     except Exception as e:
+        if conn:
+            conn.rollback()
         log.error("Failed to fetch pending Maya deliveries: %s", _safe_exception_class(e))
         return []
     finally:
@@ -2242,6 +2415,7 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
         raise ValueError("Maya Drop ID is required")
     conn = None
     try:
+        normalized_now = _maya_now()
         conn = _get_conn()
         cursor = conn.execute(
             """
@@ -2250,15 +2424,15 @@ def mark_maya_delivery_sent(transcript_row_id: int, drop_id: str) -> None:
                 maya_drop_id = ?,
                 maya_delivery_error = NULL,
                 maya_next_attempt_at = NULL,
-                updated_at = datetime('now')
+                updated_at = ?
             WHERE id = ?
               AND (
-                    (maya_delivery_status IN ('pending', 'failed')
+                    (maya_delivery_status = 'pending'
                      AND maya_drop_id IS NULL)
                     OR (maya_delivery_status = 'sent' AND maya_drop_id = ?)
                   )
             """,
-            (drop_id, transcript_row_id, drop_id),
+            (drop_id, normalized_now, transcript_row_id, drop_id),
         )
         if cursor.rowcount == 0:
             current = conn.execute(
@@ -2287,6 +2461,7 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
     """Persist a bounded Maya delivery failure without changing Slack state."""
     conn = None
     try:
+        normalized_now = _maya_now()
         conn = _get_conn()
         cursor = conn.execute(
             """
@@ -2294,12 +2469,12 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
             SET maya_delivery_status = 'failed',
                 maya_delivery_error = ?,
                 maya_next_attempt_at = NULL,
-                updated_at = datetime('now')
+                updated_at = ?
             WHERE id = ?
-              AND maya_delivery_status != 'sent'
+              AND maya_delivery_status = 'pending'
               AND maya_drop_id IS NULL
             """,
-            (_safe_delivery_error(error_message), transcript_row_id),
+            (_safe_delivery_error(error_message), normalized_now, transcript_row_id),
         )
         if cursor.rowcount == 0:
             current = conn.execute(
@@ -2309,6 +2484,8 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
             if current is None:
                 raise LookupError("Transcript row does not exist")
             if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
+                return
+            if current["maya_delivery_status"] in {"failed", "dead_letter"}:
                 return
             raise ValueError("Maya failure cannot transition the current delivery state")
         conn.commit()
@@ -2324,46 +2501,107 @@ def mark_maya_delivery_failed(transcript_row_id: int, error_message: str) -> Non
             conn.close()
 
 
-def mark_maya_delivery_retryable(
+def mark_maya_delivery_retryable_at(
     transcript_row_id: int,
     error_message: str,
     retry_after_seconds: int = 60,
+    *,
+    now: datetime | str | None = None,
+    max_attempts: int | None = None,
+    max_age_days: int | None = None,
 ) -> None:
-    """Persist a transient Maya failure while keeping the row replayable."""
+    """Persist a transient Maya failure with an injectable UTC clock."""
     conn = None
     try:
+        normalized_now = _maya_now(now)
+        attempts_limit, age_limit = _maya_limits(max_attempts, max_age_days)
         conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
         delay = max(1, min(int(retry_after_seconds), 3600))
-        cursor = conn.execute(
+        current = conn.execute(
             """
-            UPDATE transcripts
-            SET maya_delivery_status = 'pending',
-                maya_delivery_attempt_count =
-                    COALESCE(maya_delivery_attempt_count, 0) + 1,
-                maya_delivery_error = ?,
-                maya_next_attempt_at =
-                    datetime('now', '+' || ? || ' seconds'),
-                updated_at = datetime('now')
-            WHERE id = ?
-              AND maya_delivery_status = 'pending'
-              AND maya_drop_id IS NULL
+            SELECT maya_delivery_status, maya_drop_id,
+                   maya_delivery_attempt_count, maya_first_attempt_at
+            FROM transcripts WHERE id = ?
             """,
-            (
-                _safe_delivery_error(error_message),
-                delay,
-                transcript_row_id,
-            ),
-        )
-        if cursor.rowcount == 0:
-            current = conn.execute(
-                "SELECT maya_delivery_status, maya_drop_id FROM transcripts WHERE id = ?",
-                (transcript_row_id,),
-            ).fetchone()
-            if current is None:
-                raise LookupError("Transcript row does not exist")
-            if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
-                return
-            raise ValueError("Maya retry cannot transition the current delivery state")
+            (transcript_row_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Transcript row does not exist")
+        if current["maya_delivery_status"] == "sent" or current["maya_drop_id"]:
+            conn.rollback()
+            return
+        if current["maya_delivery_status"] != "pending":
+            raise ValueError("Maya retry requires an explicitly replayed pending row")
+
+        post_attempt_count = max(0, int(current["maya_delivery_attempt_count"] or 0)) + 1
+        first_attempt_at = current["maya_first_attempt_at"] or normalized_now
+        age_seconds = _maya_age_seconds(first_attempt_at, normalized_now)
+        dead_letter_reason: str | None = None
+        if post_attempt_count >= attempts_limit:
+            dead_letter_reason = "attempt_cap"
+        elif age_seconds is None or age_seconds >= age_limit * 86400:
+            dead_letter_reason = "age_cap"
+
+        if dead_letter_reason is not None:
+            conn.execute(
+                """
+                UPDATE transcripts
+                SET maya_delivery_status = 'dead_letter',
+                    maya_delivery_attempt_count = ?,
+                    maya_first_attempt_at = ?,
+                    maya_last_attempt_at = ?,
+                    maya_delivery_error = ?,
+                    maya_next_attempt_at = NULL,
+                    maya_dead_letter_at = ?,
+                    maya_dead_letter_reason = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND maya_delivery_status = 'pending'
+                  AND maya_drop_id IS NULL
+                """,
+                (
+                    post_attempt_count,
+                    first_attempt_at,
+                    normalized_now,
+                    _safe_delivery_error(error_message),
+                    normalized_now,
+                    dead_letter_reason,
+                    normalized_now,
+                    transcript_row_id,
+                ),
+            )
+        else:
+            next_attempt_at = _maya_now(
+                datetime.fromisoformat(normalized_now.replace("Z", "+00:00"))
+                + timedelta(seconds=delay)
+            )
+            conn.execute(
+                """
+                UPDATE transcripts
+                SET maya_delivery_status = 'pending',
+                    maya_delivery_attempt_count = ?,
+                    maya_first_attempt_at = ?,
+                    maya_last_attempt_at = ?,
+                    maya_delivery_error = ?,
+                    maya_next_attempt_at = ?,
+                    maya_dead_letter_at = NULL,
+                    maya_dead_letter_reason = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                  AND maya_delivery_status = 'pending'
+                  AND maya_drop_id IS NULL
+                """,
+                (
+                    post_attempt_count,
+                    first_attempt_at,
+                    normalized_now,
+                    _safe_delivery_error(error_message),
+                    next_attempt_at,
+                    normalized_now,
+                    transcript_row_id,
+                ),
+            )
         conn.commit()
     except Exception as e:
         log.error(
@@ -2372,6 +2610,116 @@ def mark_maya_delivery_retryable(
             _safe_exception_class(e),
         )
         raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_maya_delivery_retryable(
+    transcript_row_id: int,
+    error_message: str,
+    retry_after_seconds: int = 60,
+    *,
+    now: datetime | str | None = None,
+    max_attempts: int | None = None,
+    max_age_days: int | None = None,
+) -> None:
+    """Compatibility entry point for bounded Maya retry state."""
+    mark_maya_delivery_retryable_at(
+        transcript_row_id,
+        error_message,
+        retry_after_seconds=retry_after_seconds,
+        now=now,
+        max_attempts=max_attempts,
+        max_age_days=max_age_days,
+    )
+
+
+def mark_maya_delivery_dead_letter(
+    transcript_id: int,
+    error_code: str,
+    now: datetime | str | None = None,
+) -> bool:
+    """Explicitly terminalize one pending Maya row without replaying it."""
+    conn = None
+    try:
+        normalized_now = _maya_now(now)
+        conn = _get_conn()
+        cursor = conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_delivery_status = 'dead_letter',
+                maya_delivery_error = COALESCE(maya_delivery_error, 'delivery_error'),
+                maya_next_attempt_at = NULL,
+                maya_dead_letter_at = ?,
+                maya_dead_letter_reason = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND maya_delivery_status = 'pending'
+              AND maya_drop_id IS NULL
+            """,
+            (
+                normalized_now,
+                _safe_maya_dead_letter_reason(error_code),
+                normalized_now,
+                transcript_id,
+            ),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to mark Maya delivery dead-letter id=%s: %s",
+            transcript_id,
+            _safe_exception_class(e),
+        )
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def replay_maya_delivery(
+    transcript_id: int,
+    now: datetime | str | None = None,
+) -> bool:
+    """Explicitly reopen one failed/dead-letter row for a fresh bounded run."""
+    conn = None
+    try:
+        normalized_now = _maya_now(now)
+        conn = _get_conn()
+        cursor = conn.execute(
+            f"""
+            UPDATE transcripts
+            SET maya_delivery_status = 'pending',
+                maya_delivery_attempt_count = 0,
+                maya_first_attempt_at = NULL,
+                maya_last_attempt_at = NULL,
+                maya_dead_letter_at = NULL,
+                maya_dead_letter_reason = NULL,
+                maya_delivery_error = NULL,
+                maya_next_attempt_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+              AND maya_delivery_status IN ('failed', 'dead_letter')
+              AND maya_drop_id IS NULL
+              AND ({_maya_eligible_predicate()})
+            """,
+            (normalized_now, transcript_id),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Failed to replay Maya delivery id=%s: %s",
+            transcript_id,
+            _safe_exception_class(e),
+        )
+        return False
     finally:
         if conn:
             conn.close()
@@ -2438,22 +2786,15 @@ def get_maya_delivery_health() -> dict[str, int]:
         "pending_count": 0,
         "due_count": 0,
         "failed_count": 0,
+        "dead_letter_count": 0,
         "oldest_due_age_seconds": 0,
+        "oldest_pending_age_seconds": 0,
+        "max_attempt_count": 0,
         "quality_needs_review_count": 0,
         "query_ok": 1,
         "health_error": 0,
     }
-    eligible_predicate = """
-        maya_delivery_eligible = 1
-        AND quality_status = 'passed'
-        AND source NOT LIKE 'maya:%'
-        AND ingest_state IN ('transcribed', 'routed')
-        AND recorded_at IS NOT NULL
-        AND superseded_by_transcript_row_id IS NULL
-        AND TRIM(transcript) != ''
-        AND LOWER(TRIM(transcript)) NOT LIKE '(migrated %'
-        AND LOWER(TRIM(transcript)) NOT LIKE '(skipped:%'
-    """
+    eligible_predicate = _maya_health_predicate()
     try:
         conn = _get_conn()
         row = conn.execute(
@@ -2478,15 +2819,29 @@ def get_maya_delivery_health() -> dict[str, int]:
                          AND {eligible_predicate}
                     THEN 1 ELSE 0 END
                 ) AS failed_count,
+                SUM(CASE
+                    WHEN maya_delivery_status = 'dead_letter'
+                         AND {eligible_predicate}
+                    THEN 1 ELSE 0 END
+                ) AS dead_letter_count,
                 MIN(CASE
                     WHEN maya_delivery_status = 'pending'
                          AND {eligible_predicate}
                          AND (
                               maya_next_attempt_at IS NULL
-                              OR maya_next_attempt_at <= datetime('now')
+                              OR julianday(maya_next_attempt_at) <= julianday('now')
                          )
                     THEN created_at ELSE NULL END
                 ) AS oldest_due_at,
+                MIN(CASE
+                    WHEN maya_delivery_status = 'pending'
+                         AND {eligible_predicate}
+                    THEN COALESCE(maya_first_attempt_at, created_at) ELSE NULL END
+                ) AS oldest_pending_at,
+                MAX(CASE
+                    WHEN {eligible_predicate}
+                    THEN COALESCE(maya_delivery_attempt_count, 0) ELSE 0 END
+                ) AS max_attempt_count,
                 SUM(CASE WHEN quality_status = 'needs_review' THEN 1 ELSE 0 END)
                     AS quality_needs_review_count
             FROM transcripts
@@ -2497,11 +2852,18 @@ def get_maya_delivery_health() -> dict[str, int]:
         health["pending_count"] = int(row["pending_count"] or 0)
         health["due_count"] = int(row["due_count"] or 0)
         health["failed_count"] = int(row["failed_count"] or 0)
+        health["dead_letter_count"] = int(row["dead_letter_count"] or 0)
+        health["max_attempt_count"] = int(row["max_attempt_count"] or 0)
         health["quality_needs_review_count"] = int(
             row["quality_needs_review_count"] or 0
         )
-        oldest_due_at = row["oldest_due_at"]
-        if oldest_due_at:
+        for field, output_key in (
+            ("oldest_due_at", "oldest_due_age_seconds"),
+            ("oldest_pending_at", "oldest_pending_age_seconds"),
+        ):
+            timestamp = row[field]
+            if not timestamp:
+                continue
             age_row = conn.execute(
                 """
                 SELECT CAST(
@@ -2509,12 +2871,9 @@ def get_maya_delivery_health() -> dict[str, int]:
                     AS INTEGER
                 )
                 """,
-                (oldest_due_at,),
+                (timestamp,),
             ).fetchone()
-            health["oldest_due_age_seconds"] = min(
-                int(age_row[0] or 0),
-                2_147_483_647,
-            )
+            health[output_key] = min(int(age_row[0] or 0), 2_147_483_647)
         return health
     except Exception as e:
         log.error(
@@ -3301,6 +3660,11 @@ def get_transcript(row_id: int) -> dict[str, Any] | None:
     finally:
         if conn:
             conn.close()
+
+
+def get_maya_delivery(transcript_id: int) -> dict[str, Any] | None:
+    """Return the canonical row carrying one Maya delivery state."""
+    return get_transcript(transcript_id)
 
 
 def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> bool:
