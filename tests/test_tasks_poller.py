@@ -122,6 +122,24 @@ class TasksPollerTests(unittest.TestCase):
         self.assertEqual(len(service.tasks().updated), 1)
         self.assertEqual(service.tasks().updated[0]["task"], "t2")
 
+    def test_new_google_task_declares_archive_not_applicable(self) -> None:
+        service = _Service([{"id": "t-archive", "title": "call dentist"}])
+        with (
+            patch.object(
+                tasks_poller, "insert_transcript_result", return_value=_inserted(1)
+            ) as insert,
+            patch.object(
+                tasks_poller,
+                "get_transcript_by_hash",
+                return_value={"id": 1, "status": "routed"},
+            ),
+            patch.object(tasks_poller, "classify_and_route", return_value={"items": []}),
+        ):
+            self.assertEqual(tasks_poller.poll_once(service, "list-1"), 1)
+        self.assertEqual(
+            insert.call_args.kwargs["archive_unavailable_reason"], "no_raw_audio"
+        )
+
     def test_poll_once_disables_slack_enqueue_for_google_tasks(self) -> None:
         service = _Service([{"id": "t4", "title": "schedule oil change"}])
 
@@ -161,6 +179,7 @@ class TasksPollerTests(unittest.TestCase):
                 "get_transcript_by_hash",
                 return_value={"id": 3, "status": "routed", "transcript": "already done", "source": "Google Tasks"},
             ),
+            patch.object(tasks_poller, "record_archive_unavailable"),
         ):
             count = tasks_poller.poll_once(service, "list-1")
 
@@ -189,11 +208,106 @@ class TasksPollerTests(unittest.TestCase):
                 tasks_poller, "get_transcript_by_hash", side_effect=[canonical, routed]
             ),
             patch.object(tasks_poller, "classify_and_route") as route,
+            patch.object(tasks_poller, "record_archive_unavailable") as archive_marker,
         ):
             count = tasks_poller.poll_once(service, "list-1")
 
         self.assertEqual(count, 1)
-        route.assert_called_once_with("retry me", source="Google Tasks", row_id=5)
+        route.assert_called_once_with(
+            "retry me", source="Google Tasks", row_id=5, allow_maya=False
+        )
+        archive_marker.assert_called_once_with(
+            5,
+            availability_status="not_applicable",
+            reason_code="no_raw_audio",
+        )
+
+    def test_task_body_and_provider_error_never_appear_in_logs(self) -> None:
+        task_body = "TASK_BODY_PRIVACY_SENTINEL"
+        provider_error = "GOOGLE_PROVIDER_BODY_SENTINEL"
+        service = _Service([{"id": "task-privacy", "title": task_body}])
+        with (
+            patch.object(
+                tasks_poller, "insert_transcript_result", return_value=_inserted(1)
+            ),
+            patch.object(
+                tasks_poller,
+                "classify_and_route",
+                side_effect=RuntimeError(provider_error),
+            ),
+            patch.object(tasks_poller.log, "error") as error_log,
+            patch.object(tasks_poller.log, "info") as info_log,
+            patch.object(tasks_poller.log, "warning") as warning_log,
+        ):
+            self.assertEqual(tasks_poller.poll_once(service, "list-1"), 0)
+
+        calls = repr(error_log.mock_calls + info_log.mock_calls + warning_log.mock_calls)
+        self.assertNotIn(task_body, calls)
+        self.assertNotIn(provider_error, calls)
+
+    def test_task_routing_is_explicitly_local_first(self) -> None:
+        service = _Service([{"id": "task-local", "title": "call dentist"}])
+        with (
+            patch.object(
+                tasks_poller, "insert_transcript_result", return_value=_inserted(1)
+            ),
+            patch.object(
+                tasks_poller,
+                "get_transcript_by_hash",
+                return_value={"id": 1, "status": "routed"},
+            ),
+            patch.object(
+                tasks_poller,
+                "classify_and_route",
+                return_value={"items": [{"item": "call dentist"}]},
+            ) as route,
+        ):
+            self.assertEqual(tasks_poller.poll_once(service, "list-1"), 1)
+        self.assertEqual(route.call_args.kwargs["allow_maya"], False)
+
+    def test_duplicate_archive_marker_failure_stops_routing_and_completion(self) -> None:
+        service = _Service([{"id": "task-archive-fail", "title": "call dentist"}])
+        canonical = {
+            "id": 1,
+            "status": "pending",
+            "transcript": "call dentist",
+            "source": "Google Tasks",
+        }
+        with (
+            patch.object(
+                tasks_poller,
+                "insert_transcript_result",
+                return_value=TranscriptInsertResult(
+                    InsertOutcome.DUPLICATE, row_id=1, existing_status="pending"
+                ),
+            ),
+            patch.object(tasks_poller, "get_transcript_by_hash", return_value=canonical),
+            patch.object(
+                tasks_poller,
+                "record_archive_unavailable",
+                side_effect=RuntimeError("ARCHIVE_MARKER_SENTINEL"),
+            ),
+            patch.object(tasks_poller, "classify_and_route") as route,
+            patch.object(tasks_poller, "_mark_task_complete") as complete,
+        ):
+            self.assertEqual(tasks_poller.poll_once(service, "list-1"), 0)
+        route.assert_not_called()
+        complete.assert_not_called()
+
+    def test_task_completion_logs_only_id(self) -> None:
+        service = _Service([])
+        task_body = "TASK_COMPLETION_BODY_SENTINEL"
+        with patch.object(tasks_poller.log, "info") as info_log:
+            self.assertTrue(
+                tasks_poller._mark_task_complete(
+                    service,
+                    "list-1",
+                    {"id": "task-id", "title": task_body},
+                    task_body,
+                )
+            )
+        self.assertNotIn(task_body, repr(info_log.mock_calls))
+        self.assertIn("task-id", repr(info_log.mock_calls))
         self.assertEqual(len(service.tasks().updated), 1)
 
 

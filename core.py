@@ -54,10 +54,90 @@ CATEGORY_EMOJI = {
 }
 
 WHISPER_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_MAYA_CLIENT_REF_RE = re.compile(r"^penny:[0-9]{1,12}$")
+_MAYA_ROUTE_STATES = frozenset({"attempting", "accepted", "rejected", "failed"})
+_MAYA_ERROR_CODES = frozenset(
+    {
+        "transport_error",
+        "http_error",
+        "invalid_response",
+        "invalid_acceptance",
+        "acceptance_unrecorded",
+        "routed_mark_unrecorded",
+    }
+)
+_SAFE_CONTENT_TYPES = frozenset({"action_items", "long_note", "unclear"})
+_SAFE_NOTE_FOLDERS = frozenset(
+    {"Penny", "Inbox", "Groceries", "Errands", "Home", "Health", "Work", "Kids"}
+)
 
 
 class RoutingError(RuntimeError):
     """Raised when Penny successfully transcribes/classifies but cannot persist the result."""
+
+
+def _safe_exception_class(exc: BaseException) -> str:
+    """Return a bounded exception class name without exposing its message."""
+    name = type(exc).__name__
+    if name and len(name) <= 48 and name[0].isalpha() and all(
+        character.isalnum() or character == "_" for character in name
+    ):
+        return name
+    return "Exception"
+
+
+def _safe_identifier(value: object, *, limit: int = 128) -> str | None:
+    """Keep only bounded opaque identifiers in progress metadata."""
+    candidate = str(value or "").strip()
+    if len(candidate) > limit or not _SAFE_IDENTIFIER_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def _safe_maya_timestamp(value: object) -> str | None:
+    candidate = str(value or "").strip()
+    if len(candidate) > 40:
+        return None
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _bounded_maya_route_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Whitelist compact Maya acceptance metadata for legacy progress storage."""
+    bounded: dict[str, Any] = {}
+    state = details.get("state")
+    if state in _MAYA_ROUTE_STATES:
+        bounded["state"] = state
+
+    for key in ("attempted_at", "accepted_at"):
+        if key in details:
+            timestamp = _safe_maya_timestamp(details[key])
+            if timestamp is not None:
+                bounded[key] = timestamp
+
+    client_ref = details.get("client_ref")
+    if isinstance(client_ref, str) and _MAYA_CLIENT_REF_RE.fullmatch(client_ref.strip()):
+        bounded["client_ref"] = client_ref.strip()
+
+    status_code = details.get("status_code")
+    if type(status_code) is int and 100 <= status_code <= 599:
+        bounded["status_code"] = status_code
+
+    routed_to = details.get("routed_to")
+    if isinstance(routed_to, str) and _SAFE_ROUTE_RE.fullmatch(routed_to.strip().lower()):
+        bounded["routed_to"] = routed_to.strip().lower()
+
+    error_code = details.get("error_code")
+    if isinstance(error_code, str) and error_code in _MAYA_ERROR_CODES:
+        bounded["error_code"] = error_code
+    return bounded
 
 
 def setup_logging(service_name: str) -> logging.Logger:
@@ -128,7 +208,9 @@ def send_telegram(message: str, *, force: bool = False) -> bool:
         resp.raise_for_status()
         return True
     except Exception as e:
-        logging.getLogger("penny.core").error("Telegram send failed: %s", e)
+        logging.getLogger("penny.core").error(
+            "Telegram send failed class=%s", _safe_exception_class(e)
+        )
         return False
 
 
@@ -141,7 +223,7 @@ def _notify_hermes(
     hermes_url = os.getenv(
         "HERMES_WEBHOOK_URL", "http://100.126.13.70:7778/webhooks/penny"
     )
-    secret = os.getenv("PENNY_WEBHOOK_SECRET", "")
+    secret = os.getenv("PENNY_HERMES_WEBHOOK_SECRET", "")
     if not hermes_url or not secret:
         return False
 
@@ -173,7 +255,9 @@ def _notify_hermes(
         resp.raise_for_status()
         return True
     except Exception as e:
-        logging.getLogger("penny.core").warning("Hermes notify failed: %s", e)
+        logging.getLogger("penny.core").warning(
+            "Hermes notify failed class=%s", _safe_exception_class(e)
+        )
         return False
 
 
@@ -190,7 +274,9 @@ def _finish_route(transcript: str, result: Dict[str, Any], source: str) -> Dict[
     try:
         _notify_hermes(transcript, _hermes_items(result), source=source)
     except Exception as e:
-        logging.getLogger("penny.core").warning("Hermes notify failed: %s", e)
+        logging.getLogger("penny.core").warning(
+            "Hermes notify failed class=%s", _safe_exception_class(e)
+        )
     return result
 
 
@@ -320,20 +406,34 @@ def _record_effect_progress(
     receipt: AppleEffectReceipt,
     **summary: Any,
 ) -> bool:
-    payload = {
-        f"{effect_name}_created": True,
-        f"{effect_name}_effect_key": receipt.effect_key,
-        f"{effect_name}_provider_id": receipt.provider_id,
-        f"{effect_name}_actual_target": receipt.actual_target,
-        **summary,
-    }
+    payload: dict[str, Any] = {f"{effect_name}_created": True}
+    effect_key = _safe_identifier(receipt.effect_key)
+    provider_id = _safe_identifier(receipt.provider_id)
+    if effect_key is not None:
+        payload[f"{effect_name}_effect_key"] = effect_key
+    if provider_id is not None:
+        payload[f"{effect_name}_provider_id"] = provider_id
+
+    # Legacy routing_progress is metadata only.  Never persist Apple/provider
+    # response bodies, reminder text, item text, paths, or user-controlled data.
+    content_type = summary.get("content_type")
+    if content_type in _SAFE_CONTENT_TYPES:
+        payload["content_type"] = content_type
+    note_folder = summary.get("note_folder")
+    if note_folder in _SAFE_NOTE_FOLDERS:
+        payload["note_folder"] = note_folder
     return bool(update_transcript_progress(row_id, payload))
 
 
 def _record_maya_route_state(row_id: int | None, **details: Any) -> bool:
     if row_id is None:
         return True
-    return bool(update_transcript_progress(row_id, {"maya_route": details}))
+    return bool(
+        update_transcript_progress(
+            row_id,
+            {"maya_route": _bounded_maya_route_details(details)},
+        )
+    )
 
 
 def _is_valid_maya_acceptance(data: Any) -> bool:
@@ -341,7 +441,7 @@ def _is_valid_maya_acceptance(data: Any) -> bool:
         isinstance(data, dict)
         and bool(data.get("ok"))
         and isinstance(data.get("routed_to"), str)
-        and bool(str(data.get("routed_to")).strip())
+        and bool(_SAFE_ROUTE_RE.fullmatch(str(data.get("routed_to")).strip().lower()))
     )
 
 
@@ -362,10 +462,8 @@ def _confirm_maya_acceptance(
         attempted_at=attempted_at,
         accepted_at=accepted_at,
         client_ref=client_ref,
-        source=source,
         status_code=status_code,
         routed_to=data.get("routed_to"),
-        routing_detail=data.get("routing_detail"),
     )
     if not accepted_recorded:
         _record_maya_route_state(
@@ -373,11 +471,9 @@ def _confirm_maya_acceptance(
             state="failed",
             attempted_at=attempted_at,
             client_ref=client_ref,
-            source=source,
             status_code=status_code,
             routed_to=data.get("routed_to"),
-            routing_detail=data.get("routing_detail"),
-            error_message="Maya accepted transcript but Penny could not record the acceptance locally",
+            error_code="acceptance_unrecorded",
         )
         log.error("Maya acceptance could not be recorded locally for row_id=%s", row_id)
         return False
@@ -392,11 +488,9 @@ def _confirm_maya_acceptance(
             attempted_at=attempted_at,
             accepted_at=accepted_at,
             client_ref=client_ref,
-            source=source,
             status_code=status_code,
             routed_to=data.get("routed_to"),
-            routing_detail=data.get("routing_detail"),
-            error_message="Maya accepted transcript but Penny could not mark it routed locally",
+            error_code="routed_mark_unrecorded",
         )
         log.error("Maya routed status could not be recorded locally for row_id=%s", row_id)
         return False
@@ -445,7 +539,6 @@ def _route_to_maya(
         state="attempting",
         attempted_at=attempted_at,
         client_ref=client_ref,
-        source=payload["source"],
     )
 
     try:
@@ -464,11 +557,13 @@ def _route_to_maya(
             state="failed",
             attempted_at=attempted_at,
             client_ref=client_ref,
-            source=payload["source"],
-            error_type=type(exc).__name__,
-            error_message=str(exc),
+            error_code="transport_error",
         )
-        log.warning("Maya routing failed: %s — falling back to local routing", exc)
+        log.warning(
+            "Maya routing failed row_id=%s class=%s; falling back to local routing",
+            row_id,
+            _safe_exception_class(exc),
+        )
         return False
 
     if resp.status_code != 200:
@@ -477,12 +572,10 @@ def _route_to_maya(
             state="rejected",
             attempted_at=attempted_at,
             client_ref=client_ref,
-            source=payload["source"],
             status_code=resp.status_code,
-            error_message=f"HTTP {resp.status_code}",
-            response_excerpt=resp.text[:200],
+            error_code="http_error",
         )
-        log.warning("Maya returned %s: %s", resp.status_code, resp.text[:200])
+        log.warning("Maya rejected row_id=%s status=%s", row_id, resp.status_code)
         return False
 
     try:
@@ -493,12 +586,14 @@ def _route_to_maya(
             state="rejected",
             attempted_at=attempted_at,
             client_ref=client_ref,
-            source=payload["source"],
             status_code=resp.status_code,
-            error_type=type(exc).__name__,
-            error_message="Malformed Maya 200 response",
+            error_code="invalid_response",
         )
-        log.warning("Maya returned malformed 200 response: %s", exc)
+        log.warning(
+            "Maya response rejected row_id=%s class=%s",
+            row_id,
+            _safe_exception_class(exc),
+        )
         return False
 
     if not _is_valid_maya_acceptance(data):
@@ -507,12 +602,10 @@ def _route_to_maya(
             state="rejected",
             attempted_at=attempted_at,
             client_ref=client_ref,
-            source=payload["source"],
             status_code=resp.status_code,
-            error_message="Maya 200 response did not confirm acceptance",
-            response_excerpt=json.dumps(data, default=str)[:200],
+            error_code="invalid_acceptance",
         )
-        log.warning("Maya 200 response did not confirm acceptance")
+        log.warning("Maya response rejected row_id=%s code=invalid_acceptance", row_id)
         return False
 
     if not _confirm_maya_acceptance(
@@ -524,11 +617,7 @@ def _route_to_maya(
         data=data,
     ):
         return False
-    log.info(
-        "Routed to Maya: routed_to=%s detail=%s",
-        data.get("routed_to"),
-        data.get("routing_detail"),
-    )
+    log.info("Maya accepted row_id=%s", row_id)
     return True
 
 
@@ -538,10 +627,10 @@ def classify_and_route(
     source: str,
     row_id: int | None = None,
     duration_seconds: float | None = None,
-    allow_maya: bool = True,
+    allow_maya: bool = False,
 ) -> Dict[str, Any]:
     """
-    Core pipeline: Content type detection -> Classifier -> Reminders/Notes -> Telegram.
+    Core pipeline: Content type detection -> Classifier -> Reminders/Notes.
 
     Three-way routing:
     - action_items: extract todos via classifier -> add to Reminders
@@ -744,20 +833,21 @@ def classify_and_route(
             except AppleEffectError as exc:
                 raise RoutingError(exc.code) from None
             created_reminders.add(reminder_key)
+            safe_effect_key = _safe_identifier(reminder_receipt.effect_key)
+            safe_provider_id = _safe_identifier(reminder_receipt.provider_id)
+            progress_patch: dict[str, Any] = {
+                "created_reminder_count": len(created_reminders),
+            }
+            if safe_effect_key is not None:
+                progress_patch["last_reminder_effect_key"] = safe_effect_key
+            if safe_provider_id is not None:
+                progress_patch["last_reminder_provider_id"] = safe_provider_id
             if not update_transcript_progress(
                 effect_row_id,
-                {
-                    "created_reminders": sorted(created_reminders),
-                    "last_reminder_effect_key": reminder_receipt.effect_key,
-                    "last_reminder_provider_id": reminder_receipt.provider_id,
-                },
+                progress_patch,
             ):
                 raise RoutingError("receipt_persistence_failed")
             routed_count += 1
-
-        if cfg.notifications.telegram_enabled:
-            msg = build_result_message(transcript, result, source)
-            send_telegram(msg)
 
         effect_row_id = _require_effect_row(row_id)
         if not mark_routed(effect_row_id, result, f"{routed_count} reminder(s)"):

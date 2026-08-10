@@ -180,7 +180,8 @@ class CorePipelineTests(unittest.TestCase):
                 os.environ,
                 {
                     "HERMES_WEBHOOK_URL": "http://hermes.local/webhooks/penny",
-                    "PENNY_WEBHOOK_SECRET": "test-secret",
+                    "PENNY_WEBHOOK_SECRET": "legacy-secret-must-not-be-used",
+                    "PENNY_HERMES_WEBHOOK_SECRET": "hermes-secret",
                 },
                 clear=False,
             ),
@@ -199,7 +200,7 @@ class CorePipelineTests(unittest.TestCase):
         self.assertEqual(args[0], "http://hermes.local/webhooks/penny")
         body = kwargs["data"]
         expected_signature = hmac.new(
-            b"test-secret", body.encode("utf-8"), hashlib.sha256
+            b"hermes-secret", body.encode("utf-8"), hashlib.sha256
         ).hexdigest()
         self.assertEqual(
             kwargs["headers"]["X-Webhook-Signature"], expected_signature
@@ -214,7 +215,8 @@ class CorePipelineTests(unittest.TestCase):
                 os.environ,
                 {
                     "HERMES_WEBHOOK_URL": "http://hermes.local/webhooks/penny",
-                    "PENNY_WEBHOOK_SECRET": "",
+                    "PENNY_WEBHOOK_SECRET": "legacy-secret-must-not-be-used",
+                    "PENNY_HERMES_WEBHOOK_SECRET": "",
                 },
                 clear=False,
             ),
@@ -222,6 +224,80 @@ class CorePipelineTests(unittest.TestCase):
         ):
             self.assertFalse(core._notify_hermes("buy milk", [], source="iCloud"))
             post_mock.assert_not_called()
+
+    def test_classify_and_route_is_local_first_by_default(self) -> None:
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+        with (
+            patch.object(core, "_route_to_maya") as maya,
+            patch.object(core, "detect_content_type", return_value="long_note"),
+        ):
+            result = core.classify_and_route("local note", source="iCloud", row_id=42)
+        self.assertEqual(result["reason"], "long_note")
+        maya.assert_not_called()
+
+    def test_maya_progress_stores_only_bounded_fields(self) -> None:
+        core.cfg.maya.transcript_url = "http://maya:8200/ingest/transcript"
+        core.cfg.maya.ingest_token = "test-token"
+        sentinel = "MAYA_PROVIDER_BODY_SENTINEL"
+        response = unittest.mock.Mock(status_code=503, text=sentinel)
+        states: list[dict[str, object]] = []
+
+        def record(_row_id, **details):
+            states.append(details)
+            return True
+
+        with (
+            patch.object(core.requests, "post", return_value=response),
+            patch.object(core, "get_transcript", return_value={"transcript": "safe body"}),
+            patch.object(core, "_record_maya_route_state", side_effect=record),
+        ):
+            self.assertFalse(core._route_to_maya("safe body", "iCloud", row_id=42))
+
+        encoded = json.dumps(states, sort_keys=True)
+        self.assertNotIn(sentinel, encoded)
+        self.assertNotIn("response_excerpt", encoded)
+        self.assertNotIn("error_message", encoded)
+        self.assertNotIn("source", encoded)
+        self.assertEqual(states[0]["state"], "attempting")
+        self.assertEqual(states[1]["state"], "rejected")
+
+    def test_effect_progress_does_not_persist_user_text(self) -> None:
+        sentinel = "PRIVATE_REMINDER_BODY_SENTINEL"
+        receipt = AppleEffectReceipt(
+            "f" * 64,
+            "reminder",
+            "provider-id",
+            "succeeded",
+            actual_target="Inbox",
+            transcript_id=42,
+        )
+        with patch.object(core, "update_transcript_progress") as update:
+            self.assertTrue(
+                core._record_effect_progress(
+                    42,
+                    effect_name="reference_reminder",
+                    receipt=receipt,
+                    reference_reminder_text=sentinel,
+                    created_reminders=[f"Inbox|{sentinel}"],
+                    content_type="unclear",
+                )
+            )
+        encoded = json.dumps(update.call_args.args[1], sort_keys=True)
+        self.assertNotIn(sentinel, encoded)
+        self.assertNotIn("reference_reminder_text", encoded)
+        self.assertNotIn("created_reminders", encoded)
+
+    def test_automatic_telegram_mirror_is_disabled(self) -> None:
+        classify_result = {"items": [{"item": "buy milk", "category": "groceries"}]}
+        with (
+            patch.object(core.cfg.notifications, "telegram_enabled", True),
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value=classify_result),
+            patch.object(core, "send_telegram") as telegram,
+        ):
+            core.classify_and_route("buy milk", source="iCloud", row_id=42)
+        telegram.assert_not_called()
 
     def test_action_items_routes_to_reminders(self) -> None:
         """action_items content type uses the existing classifier and adds reminders."""
@@ -414,7 +490,8 @@ class CorePipelineTests(unittest.TestCase):
         core.cfg.maya.ingest_token = "test-token"
 
         result = core.classify_and_route(
-            "write a python script to parse CSV", source="test", row_id=42
+            "write a python script to parse CSV", source="test", row_id=42,
+            allow_maya=True,
         )
 
         self.assertEqual(result.get("reason"), "routed_to_maya")
@@ -449,6 +526,7 @@ class CorePipelineTests(unittest.TestCase):
                 transcript,
                 source="iCloud",
                 row_id=468,
+                allow_maya=True,
                 duration_seconds=12.5,
             )
 
@@ -485,6 +563,7 @@ class CorePipelineTests(unittest.TestCase):
                 persisted_transcript,
                 source="iCloud",
                 row_id=468,
+                allow_maya=True,
             )
 
         payload = mock_post.call_args_list[0].kwargs["json"]
@@ -518,7 +597,9 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", side_effect=record_mark_routed),
         ):
-            result = core.classify_and_route("buy milk", source="test", row_id=468)
+            result = core.classify_and_route(
+                "buy milk", source="test", row_id=468, allow_maya=True
+            )
 
         self.assertEqual(result.get("reason"), "routed_to_maya")
         self.assertEqual(events, ["json", "mark_routed"])
@@ -552,7 +633,9 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "ensure_note", return_value=self.note_receipt) as note_mock,
             patch.object(core, "ensure_reminder", return_value=self.reminder_receipt) as reminder_mock,
         ):
-            result = core.classify_and_route("buy milk", source="test", row_id=468)
+            result = core.classify_and_route(
+                "buy milk", source="test", row_id=468, allow_maya=True
+            )
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
         self.assertEqual(
@@ -585,7 +668,9 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "mark_routed", return_value=True),
         ):
-            result = core.classify_and_route("buy milk", source="test", row_id=42)
+            result = core.classify_and_route(
+                "buy milk", source="test", row_id=42, allow_maya=True
+            )
 
         mock_post.assert_called_once()
         # Local routing should still happen
@@ -605,7 +690,9 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "mark_routed", return_value=True),
         ):
-            result = core.classify_and_route("buy milk", source="test", row_id=468)
+            result = core.classify_and_route(
+                "buy milk", source="test", row_id=468, allow_maya=True
+            )
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
 
@@ -623,7 +710,9 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "detect_content_type", return_value="unclear"),
             patch.object(core, "mark_routed", return_value=True),
         ):
-            result = core.classify_and_route("buy milk", source="test", row_id=468)
+            result = core.classify_and_route(
+                "buy milk", source="test", row_id=468, allow_maya=True
+            )
 
         self.assertNotEqual(result.get("reason"), "routed_to_maya")
 
@@ -697,8 +786,12 @@ class CorePipelineTests(unittest.TestCase):
             patch.object(core, "_record_maya_route_state", return_value=True),
             patch.object(core, "mark_routed", return_value=True),
         ):
-            core.classify_and_route("same transcript", source="iCloud", row_id=470)
-            core.classify_and_route("same transcript", source="iCloud", row_id=470)
+            core.classify_and_route(
+                "same transcript", source="iCloud", row_id=470, allow_maya=True
+            )
+            core.classify_and_route(
+                "same transcript", source="iCloud", row_id=470, allow_maya=True
+            )
 
         client_refs = [call.kwargs["json"]["client_ref"] for call in mock_post.call_args_list]
         self.assertEqual(client_refs, ["penny:470", "penny:470"])
@@ -786,6 +879,31 @@ class ClassifierFallbackTests(unittest.TestCase):
             call_args = post_mock.call_args[1]["json"]["messages"][1]["content"]
             self.assertIn("[...truncated]", call_args)
 
+    def test_classifier_provider_errors_log_only_bounded_codes(self) -> None:
+        sentinel = "CLASSIFIER_PROVIDER_BODY_SENTINEL"
+        response = unittest.mock.Mock()
+        response.raise_for_status = lambda: None
+        response.json.return_value = {"unexpected": sentinel}
+        with (
+            patch.object(classifier.requests, "post", return_value=response),
+            patch.object(classifier, "log") as log_mock,
+        ):
+            result = classifier.classify("buy milk", api_key="key", model="model")
+        self.assertTrue(result.get("fallback"))
+        self.assertNotIn(sentinel, repr(log_mock.mock_calls))
+
+        with (
+            patch.object(
+                classifier.requests,
+                "post",
+                side_effect=RuntimeError(sentinel),
+            ),
+            patch.object(classifier, "log") as log_mock,
+        ):
+            result = classifier.classify("buy milk", api_key="key", model="model")
+        self.assertTrue(result.get("fallback"))
+        self.assertNotIn(sentinel, repr(log_mock.mock_calls))
+
 
 class DetectContentTypeTests(unittest.TestCase):
     def test_returns_unclear_on_no_api_key(self) -> None:
@@ -836,6 +954,21 @@ class DetectContentTypeTests(unittest.TestCase):
                 "text", api_key="key", model="model"
             )
             self.assertEqual(result, "unclear")
+
+    def test_content_type_provider_body_is_not_logged(self) -> None:
+        sentinel = "CONTENT_TYPE_PROVIDER_BODY_SENTINEL"
+        with (
+            patch.object(classifier.requests, "post") as post_mock,
+            patch.object(classifier, "log") as log_mock,
+        ):
+            post_mock.return_value.status_code = 200
+            post_mock.return_value.raise_for_status = lambda: None
+            post_mock.return_value.json.return_value = {
+                "choices": [{"message": {"content": sentinel}}]
+            }
+            result = classifier.detect_content_type("text", api_key="key", model="model")
+        self.assertEqual(result, "unclear")
+        self.assertNotIn(sentinel, repr(log_mock.mock_calls))
 
 
 if __name__ == "__main__":

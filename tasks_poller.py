@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import get_config
 from core import (
     classify_and_route,
-    send_telegram,
     setup_logging,
 )
 from transcript_log import (
@@ -21,10 +20,20 @@ from transcript_log import (
     get_transcript_by_hash,
     init_db,
     insert_transcript_result,
+    record_archive_unavailable,
 )
 
 log = setup_logging("tasks_poller")
 HEALTH_FILE = Path("~/.penny/health_tasks.txt").expanduser()
+
+
+def _safe_exception_class(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if name and len(name) <= 48 and name[0].isalpha() and all(
+        character.isalnum() or character == "_" for character in name
+    ):
+        return name
+    return "Exception"
 
 
 # ===== Google Tasks helpers =====
@@ -38,9 +47,7 @@ def get_google_service(credentials_file: Path, token_file: Path):
     scopes = ["https://www.googleapis.com/auth/tasks"]
 
     if not token_file.exists():
-        msg = f"No Google token found at {token_file}. Run scripts/google_auth.py first."
-        send_telegram(f"❌ Penny Auth Error: {msg}")
-        raise RuntimeError(msg)
+        raise RuntimeError("google_token_missing")
 
     creds = Credentials.from_authorized_user_file(str(token_file), scopes)
 
@@ -52,13 +59,9 @@ def get_google_service(credentials_file: Path, token_file: Path):
                 token_file.write_text(creds.to_json(), encoding="utf-8")
                 log.info("Token refreshed.")
             except Exception as e:
-                msg = f"Google token refresh failed: {e}. Run scripts/google_auth.py again."
-                send_telegram(f"❌ Penny Auth Error: {msg}")
-                raise RuntimeError(msg) from e
+                raise RuntimeError("google_token_refresh_failed") from None
         else:
-            msg = "Google credentials invalid and cannot be refreshed. Run scripts/google_auth.py again."
-            send_telegram(f"❌ Penny Auth Error: {msg}")
-            raise RuntimeError(msg)
+            raise RuntimeError("google_credentials_invalid")
 
     return build("tasks", "v1", credentials=creds, cache_discovery=False)
 
@@ -69,7 +72,7 @@ def get_tasklist_id(service, list_name: str) -> str:
     for tasklist in result.get("items", []):
         if tasklist.get("title") == list_name:
             return tasklist["id"]
-    log.warning("Task list '%s' not found, using @default", list_name)
+    log.warning("Google task list fallback code=default")
     return "@default"
 
 
@@ -78,13 +81,13 @@ def _mark_task_complete(service, tasklist_id: str, task: dict, task_title: str) 
     try:
         task["status"] = "completed"
         service.tasks().update(tasklist=tasklist_id, task=task_id, body=task).execute()
-        log.info("Marked complete in Google Tasks: '%s'", task_title)
+        log.info("Marked Google Task complete id=%s", task_id)
         return True
     except Exception as e:
         log.warning(
-            "Could not mark '%s' complete in Tasks: %s. Will retry next poll.",
-            task_title,
-            e,
+            "Could not mark Google Task complete id=%s class=%s",
+            task_id,
+            _safe_exception_class(e),
         )
         return False
 
@@ -105,8 +108,10 @@ def poll_once(service, tasklist_id: str) -> int:
 
     tasks = tasks_result.get("items", [])
     if not tasks:
-        log.debug("No pending tasks.")
+        log.debug("No pending Google Tasks count=0")
         return 0
+
+    log.info("Fetched pending Google Tasks count=%s", len(tasks))
 
     processed = 0
     for task in tasks:
@@ -116,27 +121,39 @@ def poll_once(service, tasklist_id: str) -> int:
         if not task_id or not task_title:
             continue
 
-        log.info("New task: '%s'", task_title)
-
         result = insert_transcript_result(
             content_hash=task_id,
             source="Google Tasks",
             transcript=task_title,
             enqueue_slack=False,
+            archive_unavailable_reason="no_raw_audio",
         )
 
         if result.outcome is InsertOutcome.FAILED:
-            log.error("Persistence unavailable for Google Task '%s'", task_title)
+            log.error("Google Task persistence failed id=%s", task_id)
             continue
 
         if result.outcome is InsertOutcome.DUPLICATE:
             canonical = get_transcript_by_hash(task_id)
             if canonical is None:
-                log.error("Google Task duplicate has no canonical row: %s", task_id)
+                log.error("Google Task duplicate missing canonical row id=%s", task_id)
                 continue
             row_id = int(canonical["id"])
+            try:
+                record_archive_unavailable(
+                    row_id,
+                    availability_status="not_applicable",
+                    reason_code="no_raw_audio",
+                )
+            except Exception as exc:
+                log.error(
+                    "Google Task archive marker failed id=%s class=%s",
+                    task_id,
+                    _safe_exception_class(exc),
+                )
+                continue
             if canonical.get("status") in {"routed", "processed"}:
-                _mark_task_complete(service, tasklist_id, task, task_title)
+                _mark_task_complete(service, tasklist_id, task, task_id)
                 processed += 1
                 continue
             transcript_to_route = str(canonical["transcript"])
@@ -151,18 +168,23 @@ def poll_once(service, tasklist_id: str) -> int:
                 transcript_to_route,
                 source=source_to_route,
                 row_id=row_id,
+                allow_maya=False,
             )
         except Exception as e:
             # Leave it pending in Google Tasks so the next poll can retry.
-            log.error("Routing failed for Google Task '%s': %s", task_title, e, exc_info=True)
+            log.error(
+                "Google Task routing failed id=%s class=%s",
+                task_id,
+                _safe_exception_class(e),
+            )
             continue
 
         canonical = get_transcript_by_hash(task_id)
         if canonical is None or canonical.get("status") not in {"routed", "processed"}:
-            log.warning("Google Task route is not durably confirmed: '%s'", task_title)
+            log.warning("Google Task route not durably confirmed id=%s", task_id)
             continue
 
-        _mark_task_complete(service, tasklist_id, task, task_title)
+        _mark_task_complete(service, tasklist_id, task, task_id)
         processed += 1
 
     return processed
@@ -184,16 +206,17 @@ def main() -> None:
     log.info("=" * 60)
     log.info("Penny Google Tasks Poller starting...")
     log.info("=" * 60)
-    log.info("  Task list: %s", cfg.google_tasks.list_name)
     log.info("  Poll interval: %ss", cfg.google_tasks.poll_interval_seconds)
-    log.info("  LLM model: %s", cfg.llm.model)
 
     try:
         service = get_google_service(cfg.google_credentials_file, cfg.google_token_file)
         tasklist_id = get_tasklist_id(service, cfg.google_tasks.list_name)
-        log.info("  Google Tasks connected. List ID: %s", tasklist_id)
+        log.info("Google Tasks connected")
     except Exception as e:
-        log.error("Failed to connect to Google Tasks: %s", e)
+        log.error(
+            "Google Tasks connection failed class=%s",
+            _safe_exception_class(e),
+        )
         sys.exit(1)
 
     while True:
@@ -205,7 +228,10 @@ def main() -> None:
                 log.info("Processed %s new task(s)", count)
             update_health()
         except Exception as e:
-            log.error("Poll cycle failed: %s", e, exc_info=True)
+            log.error(
+                "Google Tasks poll cycle failed class=%s",
+                _safe_exception_class(e),
+            )
 
         time.sleep(cfg.google_tasks.poll_interval_seconds)
 

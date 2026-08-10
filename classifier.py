@@ -18,6 +18,15 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox"]
 
+
+def _safe_exception_class(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if name and len(name) <= 48 and name[0].isalpha() and all(
+        character.isalnum() or character == "_" for character in name
+    ):
+        return name
+    return "Exception"
+
 CONTENT_TYPE_PROMPT = """You are analyzing a voice memo or text note. Classify it into exactly one type:
 
 - "action_items": Short, focused notes with clear actionable items (to-dos, reminders, shopping lists). The speaker is clearly asking themselves to do specific things.
@@ -146,17 +155,26 @@ def classify(
             if valid:
                 return {"items": valid}
 
-        log.warning(f"Unexpected classifier response structure: {result}")
+        log.warning("Classifier response rejected code=unexpected_shape")
         return _fallback(transcript)
 
     except json.JSONDecodeError as e:
-        log.error(f"Classifier returned invalid JSON: {e}")
+        log.error(
+            "Classifier provider response rejected code=invalid_json class=%s",
+            _safe_exception_class(e),
+        )
         return _fallback(transcript)
     except requests.RequestException as e:
-        log.error(f"Classifier API call failed: {e}")
+        log.error(
+            "Classifier provider request failed class=%s",
+            _safe_exception_class(e),
+        )
         return _fallback(transcript)
     except Exception as e:
-        log.error(f"Classifier unexpected error: {e}", exc_info=True)
+        log.error(
+            "Classifier provider failure class=%s",
+            _safe_exception_class(e),
+        )
         return _fallback(transcript)
 
 
@@ -214,9 +232,12 @@ def detect_content_type(
         if content in valid_types:
             return content
 
-        log.warning("Unexpected content type response: %s", content)
+        log.warning("Content type response rejected code=unexpected_value")
         return "unclear"
 
     except Exception as e:
-        log.error("Content type detection failed: %s", e)
+        log.error(
+            "Content type provider failure class=%s",
+            _safe_exception_class(e),
+        )
         return "unclear"

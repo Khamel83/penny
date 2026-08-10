@@ -928,6 +928,7 @@ class TranscriptContractTests(unittest.TestCase):
                         transcript,
                         source="iCloud",
                         row_id=row_id,
+                        allow_maya=True,
                     )
 
                 maya_post.assert_not_called()
@@ -984,6 +985,7 @@ class TranscriptContractTests(unittest.TestCase):
                 transcript,
                 source="iCloud",
                 row_id=row_id,
+                allow_maya=True,
             )
 
         self.assertEqual(route_result, {"skip": True, "reason": "routed_to_maya"})

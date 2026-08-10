@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +48,44 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = cfg.webhook.max_request_bytes
 
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
+_SAFE_MEDIA_TYPES = frozenset(
+    {
+        "audio/aac",
+        "audio/amr",
+        "audio/caf",
+        "audio/m4a",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/wav",
+        "audio/x-m4a",
+        "application/octet-stream",
+    }
+)
+_SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _safe_media_type(value: object) -> str:
+    candidate = str(value or "").split(";", 1)[0].strip().lower()
+    if candidate in _SAFE_MEDIA_TYPES:
+        return candidate
+    return "unknown"
+
+
+def _safe_quality_code(value: object) -> str:
+    candidate = str(value or "").strip().lower()
+    if _SAFE_CODE_RE.fullmatch(candidate):
+        return candidate
+    return "quality_failure"
+
+
+def _safe_exception_class(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if name and len(name) <= 48 and name[0].isalpha() and all(
+        character.isalnum() or character == "_" for character in name
+    ):
+        return name
+    return "Exception"
 
 # ===== Transcription =====
 
@@ -63,10 +102,13 @@ def transcribe(path: Path) -> TranscriptionResult:
         )
         transcribe_path = wav_path
     except _sp.CalledProcessError as e:
-        log.warning("ffmpeg conversion failed, passing original to Whisper: %s", e.stderr.decode()[-200:])
+        log.warning(
+            "ffmpeg conversion failed class=%s; fallback=original",
+            _safe_exception_class(e),
+        )
         transcribe_path = path
 
-    log.info("Transcribing: %s", transcribe_path)
+    log.info("Transcribing audio")
     try:
         return transcribe_with_quality(
             transcribe_path,
@@ -107,7 +149,6 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "penny-webhook",
-        "telegram_configured": bool(cfg.telegram_bot_token and cfg.telegram_chat_id),
         "llm_model": cfg.llm.model,
     })
 
@@ -133,7 +174,11 @@ def upload():
     raw_body = request.data if not audio_file else None
 
     if not audio_file and not raw_body:
-        log.warning("Upload rejected — no audio. Files: %s, Content-Type: %s", list(request.files.keys()), request.content_type)
+        log.warning(
+            "Upload rejected no_audio file_count=%d content_type=%s",
+            len(request.files),
+            _safe_media_type(request.content_type),
+        )
         return jsonify({"error": "No audio file — expected multipart field or raw audio body"}), 400
     if raw_body and len(raw_body) > MAX_FILE_SIZE:
         log.warning("Raw upload exceeds configured size limit")
@@ -144,9 +189,17 @@ def upload():
         fname = _safe_upload_name(audio_file.filename)
         if "." in fname:
             suffix = "." + fname.rsplit(".", 1)[-1].lower()
-        log.info("Upload received: %s (field=%s, content-type=%s)", fname, next((k for k, v in request.files.items() if v == audio_file), "?"), request.content_type)
+        log.info(
+            "Upload received multipart file_count=%d content_type=%s",
+            len(request.files),
+            _safe_media_type(audio_file.mimetype or request.content_type),
+        )
     else:
-        log.info("Upload received: raw body %d bytes, content-type=%s", len(raw_body), request.content_type)
+        log.info(
+            "Upload received raw bytes=%d content_type=%s",
+            len(raw_body),
+            _safe_media_type(request.content_type),
+        )
 
     temp_path = None
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
@@ -162,7 +215,7 @@ def upload():
         if file_size > MAX_FILE_SIZE:
             size_mb = file_size / (1024 * 1024)
             max_mb = cfg.voice_memos.max_file_size_mb
-            log.warning("Rejected upload %s (%.1fMB > %sMB)", fname, size_mb, max_mb)
+            log.warning("Rejected upload bytes=%.0f max_mb=%s", file_size, max_mb)
             return jsonify({"error": f"Audio file too large ({size_mb:.1f}MB > {max_mb}MB)"}), 413
 
         file_hash = get_file_hash(temp_path)
@@ -191,7 +244,7 @@ def upload():
             )
             log.warning(
                 "Upload transcript needs review (reason=%s)",
-                transcription.quality.reason,
+                _safe_quality_code(transcription.quality.reason),
             )
             result = insert_transcript_result(
                 content_hash=file_hash,
@@ -224,7 +277,10 @@ def upload():
                         {**archive_metadata, "quality_status": "needs_review"},
                     )
                 except Exception as exc:
-                    log.error("Upload archive queue unavailable (%s)", type(exc).__name__)
+                    log.error(
+                        "Upload archive queue unavailable class=%s",
+                        _safe_exception_class(exc),
+                    )
                     return jsonify({"error": "upload unavailable"}), 503
             return jsonify({"error": "Transcript needs review"}), 422
 
@@ -256,7 +312,10 @@ def upload():
                     {**archive_metadata, "quality_status": existing.get("quality_status") or "passed"},
                 )
             except Exception as exc:
-                log.error("Upload archive queue unavailable (%s)", type(exc).__name__)
+                log.error(
+                    "Upload archive queue unavailable class=%s",
+                    _safe_exception_class(exc),
+                )
                 return jsonify({"error": "upload unavailable"}), 503
             if existing.get("status") in {"routed", "processed"}:
                 route_result = {"skip": True, "reason": "duplicate"}
@@ -284,7 +343,10 @@ def upload():
         })
 
     except Exception as error:
-        log.error("Upload processing failed (%s)", type(error).__name__)
+        log.error(
+            "Upload processing failed class=%s",
+            _safe_exception_class(error),
+        )
         return jsonify({"error": "upload processing failed"}), 500
     finally:
         if temp_path is not None:
@@ -342,7 +404,10 @@ def ingest():
                     reason_code="no_raw_audio",
                 )
             except Exception as exc:
-                log.error("Ingest archive applicability unavailable (%s)", type(exc).__name__)
+                log.error(
+                    "Ingest archive applicability unavailable class=%s",
+                    _safe_exception_class(exc),
+                )
                 return jsonify({"error": "ingest unavailable"}), 503
             if existing.get("status") in {"routed", "processed"}:
                 route_result = {"skip": True, "reason": "duplicate"}
@@ -362,7 +427,10 @@ def ingest():
                 allow_maya=False,
             )
     except Exception as error:
-        log.error("Ingest processing failed (%s)", type(error).__name__)
+        log.error(
+            "Ingest processing failed class=%s",
+            _safe_exception_class(error),
+        )
         return jsonify({"error": "ingest processing failed"}), 500
 
     return jsonify({
@@ -403,7 +471,10 @@ def deliver():
             archive_unavailable_reason="no_raw_audio",
         )
     except Exception as error:
-        log.error("/deliver persistence failed (%s)", type(error).__name__)
+        log.error(
+            "/deliver persistence failed class=%s",
+            _safe_exception_class(error),
+        )
         return jsonify({"error": "delivery unavailable"}), 503
     if result.outcome is InsertOutcome.FAILED:
         log.error("/deliver persistence unavailable")
@@ -422,7 +493,8 @@ def deliver():
             )
         except Exception as error:
             log.error(
-                "/deliver archive applicability failed (%s)", type(error).__name__
+                "/deliver archive applicability failed class=%s",
+                _safe_exception_class(error),
             )
             return jsonify({"error": "delivery unavailable"}), 503
         if existing.get("status") in {"routed", "processed"}:
@@ -437,7 +509,10 @@ def deliver():
                 allow_maya=False,
             )
         except Exception as error:
-            log.error("/deliver retry routing failed (%s)", type(error).__name__)
+            log.error(
+                "/deliver retry routing failed class=%s",
+                _safe_exception_class(error),
+            )
             return jsonify({"error": "delivery processing failed"}), 500
         confirmed = get_transcript_by_hash(content_hash)
         if confirmed is None or confirmed.get("status") not in {"routed", "processed"}:
@@ -446,8 +521,7 @@ def deliver():
         return jsonify({"status": "delivered", "id": row_id})
 
     row_id = int(result.row_id)
-    log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",
-             len(text), source, row_id)
+    log.info("/deliver: received chars=%d row_id=%s", len(text), row_id)
 
     try:
         classify_and_route(
@@ -457,7 +531,10 @@ def deliver():
             allow_maya=False,
         )
     except Exception as error:
-        log.error("/deliver routing failed (%s)", type(error).__name__)
+        log.error(
+            "/deliver routing failed class=%s",
+            _safe_exception_class(error),
+        )
         return jsonify({"error": "delivery processing failed"}), 500
 
     confirmed = get_transcript_by_hash(content_hash)

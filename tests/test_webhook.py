@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -18,8 +19,7 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("HOME", "/tmp/penny_test_home")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-bot")
-os.environ.setdefault("TELEGRAM_CHAT_ID", "12345")
+os.environ.setdefault("PENNY_INGEST_TOKEN", "ingest-test-token")
 os.environ.setdefault(
     "GOOGLE_CREDENTIALS_FILE",
     "/tmp/penny_test_home/.penny/google_credentials.json",
@@ -39,6 +39,9 @@ from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 app = server_module.app
 app.config["TESTING"] = True
+# Other focused modules may have initialized the shared config singleton before
+# this module is collected; keep webhook tests hermetic and explicit.
+server_module.cfg.webhook.ingest_token = "ingest-test-token"
 
 
 def _ingest_auth(token: str = "ingest-test-token") -> dict[str, str]:
@@ -71,6 +74,7 @@ class HealthTests(unittest.TestCase):
             data = resp.get_json()
             self.assertEqual(data["status"], "ok")
             self.assertEqual(data["service"], "penny-webhook")
+            self.assertNotIn("telegram_configured", data)
 
     def test_ready_returns_doctor_projection_and_503_when_unready(self):
         from doctor import ComponentStatus, DoctorReport
@@ -495,6 +499,80 @@ def test_upload_does_not_log_raw_transcript(client, monkeypatch, caplog):
 
     assert response.status_code == 200
     assert transcript not in caplog.text
+
+
+def test_webhook_redacts_ffmpeg_stderr_and_source_path(caplog, monkeypatch, tmp_path):
+    sentinel = "FFMPEG_PROVIDER_BODY_SENTINEL"
+    source_path = tmp_path / "PRIVATE_SOURCE_FILENAME_SENTINEL.m4a"
+    source_path.write_bytes(b"audio")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(
+                1,
+                ["ffmpeg"],
+                stderr=sentinel.encode("utf-8"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "transcribe_with_quality",
+        lambda path, model: TranscriptionResult("safe transcript", QualityResult(True), 1),
+    )
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    result = server_module.transcribe(source_path)
+
+    assert result.text == "safe transcript"
+    assert sentinel not in caplog.text
+    assert str(source_path) not in caplog.text
+
+
+def test_upload_redacts_user_filename_from_logs(client, monkeypatch, caplog):
+    sentinel = "PRIVATE_UPLOAD_FILENAME_SENTINEL.m4a"
+    monkeypatch.setattr(server_module, "get_file_hash", lambda _: "upload-name-hash")
+    monkeypatch.setattr(
+        server_module,
+        "transcribe",
+        lambda _: TranscriptionResult("safe transcript", QualityResult(True), 1),
+    )
+    monkeypatch.setattr(server_module, "insert_transcript_result", lambda **_: _inserted(1))
+    monkeypatch.setattr(server_module, "classify_and_route", lambda *_, **__: {"items": []})
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post(
+        "/upload",
+        data={"audio": (io.BytesIO(b"audio"), sentinel)},
+        content_type="multipart/form-data",
+        headers=_ingest_auth(),
+    )
+
+    assert response.status_code == 200
+    assert sentinel not in caplog.text
+
+
+def test_deliver_redacts_user_source_from_logs(client, monkeypatch, caplog):
+    sentinel = "PRIVATE_DELIVER_SOURCE_SENTINEL"
+    monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setattr(server_module, "insert_transcript_result", lambda **_: _inserted(1))
+    monkeypatch.setattr(server_module, "classify_and_route", lambda *_, **__: {"items": []})
+    monkeypatch.setattr(
+        server_module,
+        "get_transcript_by_hash",
+        lambda _: {"id": 1, "status": "routed"},
+    )
+    caplog.set_level(logging.INFO, logger=server_module.log.name)
+
+    response = client.post(
+        "/deliver",
+        json={**DELIVER_PAYLOAD, "source": sentinel},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert sentinel not in caplog.text
 
 
 def test_ingest_does_not_log_raw_text(client, monkeypatch, caplog):
