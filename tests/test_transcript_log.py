@@ -95,21 +95,51 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertIsNone(result.row_id)
         self.assertEqual(result.error_code, "database_unavailable")
 
-    def test_insert_result_redacts_generic_failure_logs(self) -> None:
+    def test_insert_result_reports_second_connection_database_failure(self) -> None:
+        real_get_conn = transcript_log._get_conn
+        connections_opened = 0
+
+        def fail_only_canonical_duplicate_lookup():
+            nonlocal connections_opened
+            connections_opened += 1
+            if connections_opened == 3:
+                raise sqlite3.OperationalError("locked: /sensitive/path")
+            return real_get_conn()
+
         with patch.object(
             transcript_log,
             "_get_conn",
-            side_effect=RuntimeError("sensitive transcript /private/path"),
+            side_effect=fail_only_canonical_duplicate_lookup,
         ), patch.object(transcript_log, "log") as log_mock:
-            result = transcript_log.insert_transcript_result(
-                content_hash="generic-failure", source="test", transcript="never stored"
+            inserted = transcript_log.insert_transcript_result(
+                content_hash="second-lookup-failure", source="test", transcript="first"
+            )
+            failed = transcript_log.insert_transcript_result(
+                content_hash="second-lookup-failure", source="test", transcript="first"
             )
 
-        self.assertEqual(result.outcome, transcript_log.InsertOutcome.FAILED)
-        self.assertEqual(result.error_code, "database_unavailable")
+        self.assertEqual(inserted.outcome, transcript_log.InsertOutcome.INSERTED)
+        self.assertEqual(failed.outcome, transcript_log.InsertOutcome.FAILED)
+        self.assertIsNone(failed.row_id)
+        self.assertEqual(failed.error_code, "database_unavailable")
         log_mock.error.assert_called_once_with(
-            "Failed to insert transcript due to %s", "RuntimeError"
+            "Failed to insert transcript due to a database error"
         )
+
+    def test_insert_result_and_legacy_wrapper_propagate_invalid_recorded_at(self) -> None:
+        for inserter in (
+            transcript_log.insert_transcript_result,
+            transcript_log.insert_transcript,
+        ):
+            with self.subTest(inserter=inserter.__name__), self.assertRaisesRegex(
+                ValueError, "Persisted capture timestamp is invalid"
+            ):
+                inserter(
+                    content_hash=f"invalid-recorded-at-{inserter.__name__}",
+                    source="test",
+                    transcript="never stored",
+                    recorded_at="not-a-timestamp",
+                )
 
     def test_voice_memo_insert_queues_verbatim_slack_delivery(self) -> None:
         row_id = transcript_log.insert_transcript(

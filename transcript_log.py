@@ -893,7 +893,7 @@ def insert_transcript_result(**kwargs: Any) -> TranscriptInsertResult:
         if row_id is not None:
             return TranscriptInsertResult(InsertOutcome.INSERTED, row_id=int(row_id))
 
-        existing = get_transcript_by_hash(content_hash)
+        existing = _get_transcript_by_hash_strict(content_hash)
         if existing is None:
             return TranscriptInsertResult(
                 InsertOutcome.FAILED,
@@ -906,13 +906,6 @@ def insert_transcript_result(**kwargs: Any) -> TranscriptInsertResult:
         )
     except sqlite3.Error:
         log.error("Failed to insert transcript due to a database error")
-        return TranscriptInsertResult(
-            InsertOutcome.FAILED,
-            error_code="database_unavailable",
-        )
-    except Exception as error:
-        # Preserve the legacy no-raise persistence boundary without exposing details.
-        log.error("Failed to insert transcript due to %s", type(error).__name__)
         return TranscriptInsertResult(
             InsertOutcome.FAILED,
             error_code="database_unavailable",
@@ -1770,8 +1763,8 @@ def is_already_logged(content_hash: str) -> bool:
             conn.close()
 
 
-def get_transcript_by_hash(content_hash: str) -> dict[str, Any] | None:
-    """Fetch a transcript row by content hash."""
+def _get_transcript_by_hash_strict(content_hash: str) -> dict[str, Any] | None:
+    """Fetch a transcript row by hash while preserving SQLite failures."""
     conn = None
     try:
         conn = _get_conn()
@@ -1780,12 +1773,18 @@ def get_transcript_by_hash(content_hash: str) -> dict[str, Any] | None:
             (content_hash,),
         ).fetchone()
         return dict(row) if row else None
-    except Exception as e:
-        log.error("Failed to fetch transcript by hash: %s", e)
-        return None
     finally:
         if conn:
             conn.close()
+
+
+def get_transcript_by_hash(content_hash: str) -> dict[str, Any] | None:
+    """Fetch a transcript row by content hash."""
+    try:
+        return _get_transcript_by_hash_strict(content_hash)
+    except Exception as e:
+        log.error("Failed to fetch transcript by hash: %s", e)
+        return None
 
 
 def get_pending(limit: int = 20) -> list[dict]:
