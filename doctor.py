@@ -14,6 +14,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "secret_configured",
         "slack_failed_count",
         "source_watermark",
+        "source_health_age_seconds",
         "stale_in_flight_count",
         "terminal_failure_count",
         "uncertain_count",
@@ -201,7 +203,13 @@ _STARTUP_SOURCE_REVISION = _capture_startup_source_revision()
 
 _REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
     "voice_memos": frozenset(
-        {"query_ok", "voicememos_responsive", "voice_db_ok"}
+        {
+            "query_ok",
+            "voicememos_responsive",
+            "voice_db_ok",
+            "source_health_age_seconds",
+            "timestamp_valid",
+        }
     ),
     "backup": frozenset({"verified", "age_seconds", "timestamp_valid"}),
     "services": frozenset(
@@ -405,6 +413,7 @@ def _default_probe_sqlite(_config: Any = None, *, now: datetime | None = None, *
 
 
 def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
+    current = _now(now)
     health = transcript_log.get_voice_memo_health()
     watcher_path = Path(os.environ.get("PENNY_HEALTH_FILE", "~/.penny/health.txt")).expanduser()
     data = {
@@ -424,12 +433,17 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
         watcher_path, "voicememos_responsive"
     )
     data["voice_db_ok"] = _health_flag(watcher_path, "voice_db_ok")
+    file_age, file_valid = _health_file_age(watcher_path, now=current)
+    text_age, text_valid = _health_text_age(watcher_path, now=current)
+    source_age = text_age if text_valid else file_age
+    data["source_health_age_seconds"] = source_age or 0
+    data["timestamp_valid"] = bool(file_valid and text_valid)
     waiting = health.get("oldest_waiting_discovered_at")
     if waiting:
         age, valid = _age_seconds(waiting, now=now)
         data["age_seconds"] = age if age is not None else 0
-        data["timestamp_valid"] = valid
         if not valid:
+            data["timestamp_valid"] = False
             data["reason"] = "timestamp_invalid"
     return data
 
@@ -523,9 +537,10 @@ def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **
 
 def _health_file_age(path: Path, *, now: datetime) -> tuple[int | None, bool]:
     try:
-        if path.is_symlink() or not path.is_file():
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
             return None, False
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        mtime = datetime.fromtimestamp(info.st_mtime, UTC)
     except (OSError, ValueError, OverflowError):
         return None, False
     if mtime > now:
@@ -533,18 +548,37 @@ def _health_file_age(path: Path, *, now: datetime) -> tuple[int | None, bool]:
     return max(0, int((now - mtime).total_seconds())), True
 
 
-def _health_flag(path: Path, key: str) -> bool:
+def _read_health_text(path: Path, limit: int) -> str | None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")[:1024]
-    except (OSError, UnicodeError):
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            return handle.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _health_flag(path: Path, key: str) -> bool:
+    text = _read_health_text(path, 1024)
+    if text is None:
         return False
-    return f"{key}:1" in text
+    expected = f"{key}:1"
+    return any(
+        token.strip() == expected
+        for token in text.replace("\r", "\n").replace("\n", "|").split("|")
+    )
 
 
 def _health_text_age(path: Path, *, now: datetime) -> tuple[int | None, bool]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")[:128]
-    except (OSError, UnicodeError):
+    text = _read_health_text(path, 128)
+    if text is None:
         return None, False
     timestamp = text.split("|", 1)[0].strip()
     parsed = _parse_observed_timestamp(timestamp, now=now)
@@ -867,12 +901,14 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if name == "voice_memos":
         if not values.get("query_ok", 1) or values.get("health_error", 0):
             return "unready", "database_unavailable"
+        if values.get("timestamp_valid") is not True or int(
+            values.get("source_health_age_seconds", 0) or 0
+        ) > _DEFAULT_HEALTH_MAX_AGE_SECONDS:
+            return "unready", "source_stale"
         if not values.get("voicememos_responsive", False) or not values.get(
             "voice_db_ok", False
         ):
             return "unready", "source_unavailable"
-        if values.get("timestamp_valid") is False:
-            return "unready", "timestamp_invalid"
         if int(values.get("terminal_failure_count", 0) or 0) > 0:
             return "unready", "terminal_failure"
         if int(values.get("failed_count", 0) or 0) > 0:

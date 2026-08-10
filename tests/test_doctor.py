@@ -39,6 +39,8 @@ def _ready_probes(tmp_path: Path):
             "source_watermark": 4,
             "voicememos_responsive": True,
             "voice_db_ok": True,
+            "source_health_age_seconds": 2,
+            "timestamp_valid": True,
         },
         "archive": {"health_error": 0, "failed_count": 0, "invalid_count": 0, "rebuild_needed_count": 0, "pending_count": 0},
         "transcription": {"verified": True, "offline": True},
@@ -114,6 +116,58 @@ def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypat
     assert services["voicememos_responsive"] is False
     assert services["voice_db_ok"] is False
     assert doctor._infer_status("services", services) == ("unready", "source_unavailable")
+
+
+def test_doctor_source_evidence_must_be_fresh_exact_and_not_a_symlink(
+    tmp_path: Path, monkeypatch
+):
+    import doctor
+
+    observed = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    health_file = tmp_path / "health.txt"
+    health_file.write_text(
+        "2026-08-10T10:00:00Z|watcher_ok:1|"
+        "not_voicememos_responsive:1|not_voice_db_ok:1|",
+        encoding="utf-8",
+    )
+    stale_time = observed - timedelta(hours=2)
+    os.utime(health_file, (stale_time.timestamp(), stale_time.timestamp()))
+    monkeypatch.setenv("PENNY_HEALTH_FILE", str(health_file))
+    monkeypatch.setattr(
+        doctor.transcript_log,
+        "get_voice_memo_health",
+        lambda: {
+            "query_ok": 1,
+            "health_error": 0,
+            "terminal_failure_count": 0,
+            "failed_count": 0,
+            "retry_due_count": 0,
+            "awaiting_file_count": 0,
+            "source_watermark": 4,
+        },
+    )
+
+    stale = doctor._default_probe_voice_memos(now=observed)
+    assert stale["voicememos_responsive"] is False
+    assert stale["voice_db_ok"] is False
+    assert stale["source_health_age_seconds"] == 7200
+    assert doctor._infer_status("voice_memos", stale) == (
+        "unready",
+        "source_stale",
+    )
+
+    target = tmp_path / "healthy.txt"
+    target.write_text(
+        "2026-08-10T12:00:00Z|voicememos_responsive:1|voice_db_ok:1|",
+        encoding="utf-8",
+    )
+    link = tmp_path / "health-link.txt"
+    link.symlink_to(target)
+    monkeypatch.setenv("PENNY_HEALTH_FILE", str(link))
+    linked = doctor._default_probe_voice_memos(now=observed)
+    assert linked["timestamp_valid"] is False
+    assert linked["voicememos_responsive"] is False
+    assert linked["voice_db_ok"] is False
 
 
 def test_doctor_separates_liveness_from_readiness(tmp_path: Path):
