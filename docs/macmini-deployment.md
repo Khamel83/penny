@@ -60,7 +60,7 @@ path/revision, offline mode, dedicated ingress/callback credentials, Slack, and
 Maya v2.
 
 Restart only the Penny labels that changed, using the normal launchd operator
-procedure. Do not restart Apple providers, reset state, or replay outboxes as a
+procedure. Do not restart Apple providers, alter durable state, or replay outboxes as a
 deployment step. Verify the installed labels and wrapper revision, then run the
 Doctor and both HTTP endpoints locally.
 
@@ -77,7 +77,7 @@ Deployment evidence must include:
 - latest backup verification receipt bound to its catalog and database metadata;
 - a safe authenticated ingress canary that creates no external side effect.
 
-Do not call a deployment healthy based on PIDs, `watcher.system.log`, a template,
+Do not call a deployment healthy based on process presence, `watcher.system.log`, a template,
 or a provider request. Physical Watch, Apple effect, Slack, and Maya canaries
 require their own explicit approval and downstream receipts.
 
@@ -89,7 +89,7 @@ new staged objects, SQLite rows, outboxes, receipts, dead letters, and backup
 sets for investigation. Restore the whole database only from a verified set and
 only in a staging/scratch procedure before any external effect resumes.
 
-Never delete or reset Apple Voice Memos data, the canonical SQLite database,
+Never delete or replace Apple Voice Memos data, the canonical SQLite database,
 archive objects, or backup sets to force a green check. Credential rotation,
 permanent deletion, external sends/shares, and production deployment remain
 explicit human gates.

@@ -97,7 +97,7 @@ not restorable backups.
 
 For recovery, stop writers, verify a set in scratch, restore the whole database,
 reconcile archive hashes, and rerun Doctor before resuming. Preserve prior sets;
-never reset the live database or delete evidence to make readiness green.
+never replace the live database or delete evidence to make readiness green.
 
 ## Ingress returns 401/413/503
 
@@ -113,7 +113,7 @@ protected deployment policy and still requires authentication and content limits
 
 ## What not to do
 
-Do not delete/reset SQLite or Apple databases, remove archive objects, erase
-backup sets, relaunch providers from automation, replay all pending work, or
+Do not delete or replace SQLite or Apple databases, remove archive objects, erase
+backup sets, restart providers from automation, replay all pending work, or
 change credentials from a health check. Keep all raw and derived evidence until
 a verified restore and retention window are complete.

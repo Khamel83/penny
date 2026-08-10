@@ -40,7 +40,7 @@ metadata, offline model verification, Apple-effect receipts, Slack/Maya
 outboxes, backup verification receipt, launchd/health freshness, and ingress
 configuration. It never reads transcript or audio bodies, contacts a provider,
 reads TCC databases, repairs state, or prints raw paths, URLs, secrets, errors,
-or PIDs.
+or process identifiers.
 
 - exit `0`: all required components ready
 - exit `1`: degraded (including an explicitly disabled optional Maya route)
@@ -49,7 +49,7 @@ or PIDs.
 - `/ready`: `200` for ready/degraded, `503` for unready
 
 The source revision is meaningful only when it is bound to the checked-out or
-deployed runtime revision. A template, generated status line, or process PID is
+deployed runtime revision. A template, generated status line, or process presence is
 not deployment proof.
 
 ## Durable state and retry rules
@@ -94,7 +94,7 @@ Recovery is additive and evidence-preserving:
 - disable a failed new adapter and return to the known-good Voice Memos + MLX
   path while preserving all evidence.
 
-Never delete or reset Apple's Voice Memos database, Penny's SQLite database,
+Never delete or replace Apple's Voice Memos database, Penny's SQLite database,
 archive objects, outboxes, or backup sets as a troubleshooting shortcut. Never
 replay, send, share, purchase, deploy, or change credentials from a health check.
 

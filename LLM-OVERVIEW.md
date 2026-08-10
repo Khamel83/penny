@@ -48,7 +48,7 @@ OpenRouter is not part of the transcription path.
 `venv/bin/python scripts/penny_doctor.py` emits only bounded metadata. Exit `0`
 means ready, `1` degraded, and `2` unready. `/health` is liveness; `/ready` is
 readiness. Doctor does not read transcript/audio bodies, call providers, inspect
-TCC databases, repair state, or report secrets, URLs, raw paths, errors, or PIDs.
+TCC databases, repair state, or report secrets, URLs, raw paths, errors, or process identifiers.
 
 ## Agent rules
 

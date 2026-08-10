@@ -93,7 +93,7 @@ The Doctor is read-only and metadata-only. It probes SQLite, Voice Memos source
 watermarks/retries, archive counters, local model/offline state, Apple receipts,
 Slack/Maya health, backup receipt, service freshness, and ingress policy. It
 never reads transcript/audio bodies, calls Apple providers, contacts Slack/Maya,
-reads TCC databases, or prints paths, URLs, secrets, raw errors, or PIDs.
+reads TCC databases, or prints paths, URLs, secrets, raw errors, or process identifiers.
 
 - exit `0`: ready;
 - exit `1`: degraded; bounded backlog or disabled optional Maya may qualify;
@@ -118,7 +118,7 @@ audio bytes, credentials, provider URLs, or raw exception text.
 
 Preserve evidence. Fix configuration, permissions, or a bounded retry state;
 use a scratch restore for backup validation; disable a failed new adapter and
-resume the known-good Voice Memos + MLX route. Never delete or reset Apple's
+resume the known-good Voice Memos + MLX route. Never delete or replace Apple's
 Voice Memos database, Penny's SQLite database, archive objects, outboxes, or
 backup sets as a shortcut. Do not replay or send an external action from a
 health check.
