@@ -28,7 +28,12 @@ from core import (
     classify_and_route,
 )
 from transcript_quality import TranscriptionResult, transcribe_with_quality
-from transcript_log import init_db, insert_transcript, is_already_logged
+from transcript_log import (
+    InsertOutcome,
+    get_transcript_by_hash,
+    init_db,
+    insert_transcript_result,
+)
 
 cfg = get_config()
 log = setup_logging("webhook")
@@ -143,10 +148,6 @@ def upload():
             return jsonify({"error": f"Audio file too large ({size_mb:.1f}MB > {max_mb}MB)"}), 413
 
         file_hash = get_file_hash(temp_path)
-        if is_already_logged(file_hash):
-            log.info("Already logged this file")
-            return jsonify({"status": "ok", "message": "already processed"})
-
         transcription = transcribe(temp_path)
         if not transcription.quality.passed:
             quality_detail = transcription.quality_detail or (
@@ -157,7 +158,7 @@ def upload():
                 "Upload transcript needs review (reason=%s)",
                 transcription.quality.reason,
             )
-            insert_transcript(
+            result = insert_transcript_result(
                 content_hash=file_hash,
                 source="Shortcut",
                 transcript=transcription.text,
@@ -167,32 +168,55 @@ def upload():
                 quality_detail=quality_detail,
                 enqueue_slack=False,
             )
+            if result.outcome is InsertOutcome.FAILED:
+                log.error("Upload persistence unavailable")
+                return jsonify({"error": "upload unavailable"}), 503
+            if result.outcome is InsertOutcome.DUPLICATE and get_transcript_by_hash(file_hash) is None:
+                log.error("Upload duplicate has no canonical row")
+                return jsonify({"error": "upload unavailable"}), 503
             return jsonify({"error": "Transcript needs review"}), 422
 
         transcript = transcription.text
         log.info("Upload transcript accepted (%d characters)", len(transcript))
 
-        row_id = insert_transcript(
+        result = insert_transcript_result(
             content_hash=file_hash,
             source="Shortcut",
             transcript=transcript,
             enqueue_slack=False,
         )
-        if row_id is not None:
-            result = classify_and_route(
+        if result.outcome is InsertOutcome.FAILED:
+            log.error("Upload persistence unavailable")
+            return jsonify({"error": "upload unavailable"}), 503
+        if result.outcome is InsertOutcome.DUPLICATE:
+            existing = get_transcript_by_hash(file_hash)
+            if existing is None:
+                log.error("Upload duplicate has no canonical row")
+                return jsonify({"error": "upload unavailable"}), 503
+            row_id = int(existing["id"])
+            if existing.get("status") in {"routed", "processed"}:
+                route_result = {"skip": True, "reason": "duplicate"}
+            else:
+                route_result = classify_and_route(
+                    str(existing["transcript"]),
+                    source=str(existing["source"]),
+                    row_id=row_id,
+                    allow_maya=False,
+                )
+        else:
+            row_id = int(result.row_id)
+            route_result = classify_and_route(
                 transcript,
                 source="Shortcut",
                 row_id=row_id,
                 allow_maya=False,
             )
-        else:
-            result = {"skip": True, "reason": "duplicate"}
 
         return jsonify({
             "status": "ok",
             "transcript": transcript[:200],
-            "items_added": len(result.get("items", [])),
-            "skipped": result.get("skip", False),
+            "items_added": len(route_result.get("items", [])),
+            "skipped": route_result.get("skip", False),
         })
 
     except Exception as error:
@@ -230,33 +254,47 @@ def ingest():
 
     content_hash = _hashlib.md5(text.encode("utf-8")).hexdigest()
 
-    if is_already_logged(content_hash):
-        return jsonify({"status": "ok", "message": "already processed"})
-
     try:
-        row_id = insert_transcript(
+        result = insert_transcript_result(
             content_hash=content_hash,
             source=source,
             transcript=text,
             enqueue_slack=False,
         )
-        if row_id is not None:
-            result = classify_and_route(
+        if result.outcome is InsertOutcome.FAILED:
+            log.error("Ingest persistence unavailable")
+            return jsonify({"error": "ingest unavailable"}), 503
+        if result.outcome is InsertOutcome.DUPLICATE:
+            existing = get_transcript_by_hash(content_hash)
+            if existing is None:
+                log.error("Ingest duplicate has no canonical row")
+                return jsonify({"error": "ingest unavailable"}), 503
+            row_id = int(existing["id"])
+            if existing.get("status") in {"routed", "processed"}:
+                route_result = {"skip": True, "reason": "duplicate"}
+            else:
+                route_result = classify_and_route(
+                    str(existing["transcript"]),
+                    source=str(existing["source"]),
+                    row_id=row_id,
+                    allow_maya=False,
+                )
+        else:
+            row_id = int(result.row_id)
+            route_result = classify_and_route(
                 text,
                 source=source,
                 row_id=row_id,
                 allow_maya=False,
             )
-        else:
-            result = {"skip": True, "reason": "duplicate"}
     except Exception as error:
         log.error("Ingest processing failed (%s)", type(error).__name__)
         return jsonify({"error": "ingest processing failed"}), 500
 
     return jsonify({
         "status": "ok",
-        "items_added": len(result.get("items", [])),
-        "skipped": result.get("skip", False),
+        "items_added": len(route_result.get("items", [])),
+        "skipped": route_result.get("skip", False),
     })
 
 
@@ -281,23 +319,31 @@ def deliver():
     duration = body.get("duration_seconds")
 
     content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
-    if is_already_logged(content_hash):
+    try:
+        result = insert_transcript_result(
+            content_hash=content_hash,
+            source=f"maya:{source}",
+            transcript=text,
+            duration_seconds=duration,
+            enqueue_slack=False,
+        )
+    except Exception as error:
+        log.error("/deliver persistence failed (%s)", type(error).__name__)
+        return jsonify({"error": "delivery unavailable"}), 503
+    if result.outcome is InsertOutcome.FAILED:
+        log.error("/deliver persistence unavailable")
+        return jsonify({"error": "delivery unavailable"}), 503
+    if result.outcome is InsertOutcome.DUPLICATE:
+        existing = get_transcript_by_hash(content_hash)
+        if existing is None:
+            log.error("/deliver duplicate has no canonical row")
+            return jsonify({"error": "delivery unavailable"}), 503
         log.info("/deliver: duplicate transcript (hash=%s)", content_hash[:12])
         return jsonify({"status": "duplicate"})
 
-    row_id = insert_transcript(
-        content_hash=content_hash,
-        source=f"maya:{source}",
-        transcript=text,
-        duration_seconds=duration,
-        enqueue_slack=False,
-    )
+    row_id = int(result.row_id)
     log.info("/deliver: received %d chars from Maya (source=%s, row=%s)",
              len(text), source, row_id)
-
-    if row_id is None:
-        log.info("/deliver: duplicate transcript lost insert race (hash=%s)", content_hash[:12])
-        return jsonify({"status": "duplicate"})
 
     try:
         classify_and_route(

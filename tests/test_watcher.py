@@ -33,7 +33,12 @@ import transcript_log  # noqa: E402
 import watcher  # noqa: E402
 import core  # noqa: E402
 import maya_delivery  # noqa: E402
+from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
+
+
+def _inserted(row_id: int) -> TranscriptInsertResult:
+    return TranscriptInsertResult(InsertOutcome.INSERTED, row_id=row_id)
 
 
 class WatcherTests(unittest.TestCase):
@@ -51,7 +56,9 @@ class WatcherTests(unittest.TestCase):
         with (
             patch.object(watcher, "MAX_FILE_SIZE", 0),
             patch.object(watcher, "get_file_hash", return_value="oversized-hash"),
-            patch.object(watcher, "insert_transcript", return_value=99) as insert_mock,
+            patch.object(
+                watcher, "insert_transcript_result", return_value=_inserted(99)
+            ) as insert_mock,
             patch.object(watcher, "mark_voice_memo_failed") as failed_mock,
         ):
             processed = watcher._process_audio_file(
@@ -69,6 +76,36 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         failed_mock.assert_called_once_with(123, "file too large")
 
+    def test_watcher_does_not_mark_source_routed_after_insert_failure(self) -> None:
+        audio_path = Path(self.db_dir) / "persistence-failure.m4a"
+        audio_path.write_bytes(b"audio")
+        failed = TranscriptInsertResult(
+            InsertOutcome.FAILED, error_code="database_unavailable"
+        )
+
+        with (
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult("retry me", QualityResult(True), 1),
+            ),
+            patch.object(
+                watcher,
+                "insert_transcript_result",
+                return_value=failed,
+            ),
+            patch.object(watcher, "mark_voice_memo_routed") as routed,
+        ):
+            self.assertFalse(
+                watcher._process_audio_file(
+                    audio_path,
+                    file_hash="persistence-failure-hash",
+                    recording_pk=44,
+                )
+            )
+
+        routed.assert_not_called()
+
     def test_new_recording_routes_without_draining_slack_outbox(self) -> None:
         audio_path = Path(self.db_dir) / "new-recording.m4a"
         audio_path.write_bytes(b"audio")
@@ -83,7 +120,9 @@ class WatcherTests(unittest.TestCase):
                     "route this transcript", QualityResult(True), 1
                 ),
             ),
-            patch.object(watcher, "insert_transcript", return_value=42),
+            patch.object(
+                watcher, "insert_transcript_result", return_value=_inserted(42)
+            ),
             patch.object(
                 watcher,
                 "classify_and_route",

@@ -21,13 +21,14 @@ from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
 from transcript_quality import transcribe_with_quality
 from transcript_log import (
+    InsertOutcome,
     get_maya_delivery_health,
     get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
     get_voice_memo_recordings_waiting_for_file,
     init_db,
-    insert_transcript,
+    insert_transcript_result,
     is_already_logged,
     get_pending,
     link_voice_memo_transcript,
@@ -453,7 +454,7 @@ def _process_audio_file(
             audio_path.name,
             file_size / (1024 * 1024),
         )
-        insert_transcript(
+        result = insert_transcript_result(
             content_hash=file_hash,
             source="iCloud",
             transcript="(skipped: file too large)",
@@ -464,6 +465,14 @@ def _process_audio_file(
             file_seen_at=datetime.now().isoformat(),
             enqueue_slack=False,
         )
+        if result.outcome is InsertOutcome.FAILED:
+            log.error("Could not durably record oversized file: %s", audio_path.name)
+            return False
+        if result.outcome is InsertOutcome.DUPLICATE:
+            existing = get_transcript_by_hash(file_hash)
+            if existing is None:
+                log.error("Oversized file duplicate has no canonical row: %s", audio_path.name)
+                return False
         if recording_pk is not None:
             mark_voice_memo_failed(recording_pk, "file too large")
         return True
@@ -501,7 +510,7 @@ def _process_audio_file(
             audio_path.name,
             transcription.quality.reason,
         )
-        row_id = insert_transcript(
+        result = insert_transcript_result(
             content_hash=file_hash,
             source="iCloud",
             transcript=transcript,
@@ -516,7 +525,18 @@ def _process_audio_file(
             quality_detail=quality_detail,
             enqueue_slack=False,
         )
-        if row_id is not None and recording_pk is not None:
+        if result.outcome is InsertOutcome.FAILED:
+            log.error("Could not durably retain quality-review transcript: %s", audio_path.name)
+            return False
+        if result.outcome is InsertOutcome.DUPLICATE:
+            existing = get_transcript_by_hash(file_hash)
+            if existing is None:
+                log.error("Quality-review duplicate has no canonical row: %s", audio_path.name)
+                return False
+            row_id = int(existing["id"])
+        else:
+            row_id = int(result.row_id)
+        if recording_pk is not None:
             link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
@@ -526,7 +546,7 @@ def _process_audio_file(
             mark_voice_memo_failed(recording_pk, "transcript needs review")
         return True
 
-    row_id = insert_transcript(
+    result = insert_transcript_result(
         content_hash=file_hash,
         source="iCloud",
         transcript=transcript,
@@ -539,7 +559,31 @@ def _process_audio_file(
         transcription_completed_at=transcription_completed_at,
         maya_delivery_eligible=recorded_at is not None,
     )
-    if row_id is not None:
+    if result.outcome is InsertOutcome.FAILED:
+        log.error("Could not durably record transcript: %s", audio_path.name)
+        return False
+
+    if result.outcome is InsertOutcome.DUPLICATE:
+        existing = get_transcript_by_hash(file_hash)
+        if existing is None:
+            log.error("Transcript duplicate has no canonical row: %s", audio_path.name)
+            return False
+        row_id = int(existing["id"])
+        if recording_pk is not None:
+            link_voice_memo_transcript(
+                recording_pk,
+                transcript_row_id=row_id,
+                content_hash=file_hash,
+                audio_path=str(audio_path),
+                routed=existing.get("status") == "routed",
+            )
+        if existing.get("status") == "routed":
+            return True
+        if existing.get("quality_status") != "passed":
+            return True
+        transcript = str(existing["transcript"])
+    else:
+        row_id = int(result.row_id)
         if recording_pk is not None:
             link_voice_memo_transcript(
                 recording_pk,
@@ -547,15 +591,16 @@ def _process_audio_file(
                 content_hash=file_hash,
                 audio_path=str(audio_path),
             )
-        classify_and_route(
-            transcript,
-            source="iCloud",
-            row_id=row_id,
-            duration_seconds=duration_seconds,
-            allow_maya=False,
-        )
-        if recording_pk is not None:
-            mark_voice_memo_routed(recording_pk)
+
+    classify_and_route(
+        transcript,
+        source="iCloud",
+        row_id=row_id,
+        duration_seconds=duration_seconds,
+        allow_maya=False,
+    )
+    if recording_pk is not None:
+        mark_voice_memo_routed(recording_pk)
     return True
 
 
@@ -590,13 +635,12 @@ def process_recording(recording: Dict[str, Any]) -> bool:
 
     try:
         mark_voice_memo_file_seen(pk, str(audio_path))
-        _process_audio_file(
+        return _process_audio_file(
             audio_path,
             duration_seconds=duration_seconds,
             recording_pk=pk,
             recorded_at=recorded_at,
         )
-        return True
     except Exception as e:
         mark_voice_memo_failed(pk, str(e))
         log.error("Error processing %s (PK=%s): %s", label, pk, e, exc_info=True)

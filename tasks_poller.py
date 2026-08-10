@@ -16,7 +16,12 @@ from core import (
     send_telegram,
     setup_logging,
 )
-from transcript_log import init_db, insert_transcript, is_already_logged
+from transcript_log import (
+    InsertOutcome,
+    get_transcript_by_hash,
+    init_db,
+    insert_transcript_result,
+)
 
 log = setup_logging("tasks_poller")
 HEALTH_FILE = Path("~/.penny/health_tasks.txt").expanduser()
@@ -111,31 +116,50 @@ def poll_once(service, tasklist_id: str) -> int:
         if not task_id or not task_title:
             continue
 
-        if is_already_logged(task_id):
-            # Already synced to Reminders/Notes — keep retrying completion in Tasks.
-            try:
-                task["status"] = "completed"
-                service.tasks().update(tasklist=tasklist_id, task=task_id, body=task).execute()
-                log.debug("Retried mark-complete for: '%s'", task_title)
-            except Exception as e:
-                log.warning("Retry mark-complete failed for '%s': %s", task_title, e)
-            continue
-
         log.info("New task: '%s'", task_title)
 
-        row_id = insert_transcript(
+        result = insert_transcript_result(
             content_hash=task_id,
             source="Google Tasks",
             transcript=task_title,
             enqueue_slack=False,
         )
 
+        if result.outcome is InsertOutcome.FAILED:
+            log.error("Persistence unavailable for Google Task '%s'", task_title)
+            continue
+
+        if result.outcome is InsertOutcome.DUPLICATE:
+            canonical = get_transcript_by_hash(task_id)
+            if canonical is None:
+                log.error("Google Task duplicate has no canonical row: %s", task_id)
+                continue
+            row_id = int(canonical["id"])
+            if canonical.get("status") in {"routed", "processed"}:
+                _mark_task_complete(service, tasklist_id, task, task_title)
+                processed += 1
+                continue
+            transcript_to_route = str(canonical["transcript"])
+            source_to_route = str(canonical["source"])
+        else:
+            row_id = int(result.row_id)
+            transcript_to_route = task_title
+            source_to_route = "Google Tasks"
+
         try:
-            if row_id is not None:
-                classify_and_route(task_title, source="Google Tasks", row_id=row_id)
+            classify_and_route(
+                transcript_to_route,
+                source=source_to_route,
+                row_id=row_id,
+            )
         except Exception as e:
             # Leave it pending in Google Tasks so the next poll can retry.
             log.error("Routing failed for Google Task '%s': %s", task_title, e, exc_info=True)
+            continue
+
+        canonical = get_transcript_by_hash(task_id)
+        if canonical is None or canonical.get("status") not in {"routed", "processed"}:
+            log.warning("Google Task route is not durably confirmed: '%s'", task_title)
             continue
 
         _mark_task_complete(service, tasklist_id, task, task_title)

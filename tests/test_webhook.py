@@ -31,6 +31,7 @@ os.environ.setdefault(
 # Import the Flask app — must import server module which imports config at module level
 import importlib
 import webhook.server as server_module  # noqa: E402
+from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
 app = server_module.app
@@ -39,6 +40,10 @@ app.config["TESTING"] = True
 
 def _ingest_auth(token: str = "ingest-test-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _inserted(row_id: int) -> TranscriptInsertResult:
+    return TranscriptInsertResult(InsertOutcome.INSERTED, row_id=row_id)
 
 
 @pytest.fixture
@@ -68,7 +73,6 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
 
     rejected_text = "A valid memo first. " + "Vous " * 20
     monkeypatch.setattr(server, "get_file_hash", lambda _: "review-upload-hash")
-    monkeypatch.setattr(server, "is_already_logged", lambda _: False)
     monkeypatch.setattr(
         server,
         "transcribe",
@@ -112,14 +116,13 @@ def test_upload_low_quality_transcript_is_durable_and_not_published(client, monk
 
 
 class UploadTests(unittest.TestCase):
-    @patch("webhook.server.is_already_logged", return_value=False)
     @patch(
         "webhook.server.transcribe",
         return_value=TranscriptionResult("test transcript", QualityResult(True), 1),
     )
-    @patch("webhook.server.insert_transcript", return_value=1)
+    @patch("webhook.server.insert_transcript_result", return_value=_inserted(1))
     @patch("webhook.server.classify_and_route", return_value={"items": [], "skip": True})
-    def test_upload_success(self, mock_route, mock_insert, mock_transcribe, mock_logged):
+    def test_upload_success(self, mock_route, mock_insert, mock_transcribe):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
             resp = client.post(
@@ -135,8 +138,21 @@ class UploadTests(unittest.TestCase):
             self.assertFalse(mock_insert.call_args.kwargs["enqueue_slack"])
             self.assertFalse(mock_route.call_args.kwargs["allow_maya"])
 
-    @patch("webhook.server.is_already_logged", return_value=True)
-    def test_upload_duplicate_returns_ok(self, mock_logged):
+    @patch(
+        "webhook.server.get_transcript_by_hash",
+        return_value={"id": 1, "status": "routed", "transcript": "test transcript", "source": "Shortcut"},
+    )
+    @patch(
+        "webhook.server.insert_transcript_result",
+        return_value=TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=1, existing_status="routed"
+        ),
+    )
+    @patch(
+        "webhook.server.transcribe",
+        return_value=TranscriptionResult("test transcript", QualityResult(True), 1),
+    )
+    def test_upload_duplicate_returns_ok(self, mock_transcribe, mock_insert, mock_get):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
             resp = client.post(
@@ -148,16 +164,15 @@ class UploadTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
             self.assertEqual(body["status"], "ok")
-            self.assertIn("already processed", body["message"])
+            self.assertTrue(body["skipped"])
 
     def test_upload_missing_audio_returns_400(self):
         with app.test_client() as client:
             resp = client.post("/upload", headers=_ingest_auth())
             self.assertEqual(resp.status_code, 400)
 
-    @patch("webhook.server.is_already_logged", return_value=False)
     @patch("webhook.server.transcribe", side_effect=RuntimeError("transcription failed"))
-    def test_upload_error_returns_500(self, mock_transcribe, mock_logged):
+    def test_upload_error_returns_500(self, mock_transcribe):
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
             resp = client.post(
@@ -168,10 +183,9 @@ class UploadTests(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 500)
 
-    @patch("webhook.server.is_already_logged", return_value=False)
     @patch("webhook.server.get_file_hash", return_value="abc123")
     @patch("webhook.server.transcribe", side_effect=RuntimeError("transcription failed"))
-    def test_upload_cleans_temp_file_on_error(self, mock_transcribe, mock_hash, mock_logged):
+    def test_upload_cleans_temp_file_on_error(self, mock_transcribe, mock_hash):
         """Temp file should be cleaned up even when transcription fails."""
         with app.test_client() as client:
             data = {"audio": (io.BytesIO(b"fake audio data"), "test.m4a")}
@@ -185,10 +199,30 @@ class UploadTests(unittest.TestCase):
 
 
 class IngestTests(unittest.TestCase):
-    @patch("webhook.server.is_already_logged", return_value=False)
-    @patch("webhook.server.insert_transcript", return_value=1)
+    def test_ingest_database_failure_returns_503(self):
+        failed = TranscriptInsertResult(
+            InsertOutcome.FAILED, error_code="database_unavailable"
+        )
+        with (
+            patch.object(
+                server_module,
+                "insert_transcript_result",
+                return_value=failed,
+            ),
+            patch.object(server_module, "classify_and_route") as route,
+            app.test_client() as client,
+        ):
+            response = client.post(
+                "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json(), {"error": "ingest unavailable"})
+        route.assert_not_called()
+
+    @patch("webhook.server.insert_transcript_result", return_value=_inserted(1))
     @patch("webhook.server.classify_and_route", return_value={"items": [{"item": "milk", "category": "groceries"}]})
-    def test_ingest_success(self, mock_route, mock_insert, mock_logged):
+    def test_ingest_success(self, mock_route, mock_insert):
         with app.test_client() as client:
             resp = client.post(
                 "/ingest",
@@ -223,20 +257,28 @@ class IngestTests(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 400)
 
-    @patch("webhook.server.is_already_logged", return_value=True)
-    def test_ingest_duplicate_returns_ok(self, mock_logged):
+    @patch(
+        "webhook.server.get_transcript_by_hash",
+        return_value={"id": 1, "status": "routed", "transcript": "buy milk", "source": "text"},
+    )
+    @patch(
+        "webhook.server.insert_transcript_result",
+        return_value=TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=1, existing_status="routed"
+        ),
+    )
+    def test_ingest_duplicate_returns_ok(self, mock_insert, mock_get):
         with app.test_client() as client:
             resp = client.post(
                 "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
             )
             self.assertEqual(resp.status_code, 200)
             body = resp.get_json()
-            self.assertIn("already processed", body["message"])
+            self.assertTrue(body["skipped"])
 
-    @patch("webhook.server.is_already_logged", return_value=False)
-    @patch("webhook.server.insert_transcript", return_value=1)
+    @patch("webhook.server.insert_transcript_result", return_value=_inserted(1))
     @patch("webhook.server.classify_and_route", side_effect=RuntimeError("routing failed"))
-    def test_ingest_error_returns_500(self, mock_route, mock_insert, mock_logged):
+    def test_ingest_error_returns_500(self, mock_route, mock_insert):
         with app.test_client() as client:
             resp = client.post(
                 "/ingest", json={"text": "buy milk"}, headers=_ingest_auth()
@@ -268,13 +310,12 @@ def test_upload_rejects_missing_token_before_transcription(client, monkeypatch):
 def test_upload_does_not_log_raw_transcript(client, monkeypatch, caplog):
     transcript = "private upload transcript must not appear in logs"
     monkeypatch.setattr(server_module, "get_file_hash", lambda _: "upload-log-hash")
-    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
     monkeypatch.setattr(
         server_module,
         "transcribe",
         lambda _: TranscriptionResult(transcript, QualityResult(True), 1),
     )
-    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(server_module, "insert_transcript_result", lambda **_: _inserted(1))
     monkeypatch.setattr(
         server_module, "classify_and_route", lambda *_, **__: {"items": []}
     )
@@ -293,8 +334,7 @@ def test_upload_does_not_log_raw_transcript(client, monkeypatch, caplog):
 
 def test_ingest_does_not_log_raw_text(client, monkeypatch, caplog):
     text = "private ingest text must not appear in logs"
-    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
-    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(server_module, "insert_transcript_result", lambda **_: _inserted(1))
     monkeypatch.setattr(
         server_module, "classify_and_route", lambda *_, **__: {"items": []}
     )
@@ -351,7 +391,6 @@ def test_raw_upload_over_audio_limit_is_rejected_before_processing(client, monke
 
 def test_upload_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
     sentinel = "upload-routing-secret-must-not-leak"
-    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
     monkeypatch.setattr(server_module, "transcribe", lambda _: (_ for _ in ()).throw(RuntimeError(sentinel)))
     caplog.set_level(logging.ERROR, logger=server_module.log.name)
 
@@ -370,10 +409,9 @@ def test_upload_failure_does_not_leak_exception_text(client, monkeypatch, caplog
 
 def test_ingest_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
     sentinel = "ingest-routing-secret-must-not-leak"
-    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
     monkeypatch.setattr(
         server_module,
-        "insert_transcript",
+        "insert_transcript_result",
         lambda **_: (_ for _ in ()).throw(RuntimeError(sentinel)),
     )
     caplog.set_level(logging.ERROR, logger=server_module.log.name)
@@ -429,12 +467,13 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
     seen = {}
     insert_calls = []
-    seen_hashes = set()
-
-    def fake_insert_transcript(**kwargs):
+    def fake_insert_transcript_result(**kwargs):
         insert_calls.append(kwargs)
-        seen_hashes.add(kwargs["content_hash"])
-        return 1
+        if len(insert_calls) == 1:
+            return _inserted(1)
+        return TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=1, existing_status="routed"
+        )
 
     def fake_classify_and_route(transcript, source, row_id=None,
                                 duration_seconds=None, allow_maya=True):
@@ -443,8 +482,12 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
 
     import webhook.server as server
     monkeypatch.setattr(server, "classify_and_route", fake_classify_and_route)
-    monkeypatch.setattr(server, "insert_transcript", fake_insert_transcript)
-    monkeypatch.setattr(server, "is_already_logged", lambda content_hash: content_hash in seen_hashes)
+    monkeypatch.setattr(server, "insert_transcript_result", fake_insert_transcript_result)
+    monkeypatch.setattr(
+        server,
+        "get_transcript_by_hash",
+        lambda _: {"id": 1, "status": "routed", "transcript": DELIVER_PAYLOAD["transcript"], "source": "maya:voice_memo"},
+    )
 
     resp = client.post("/deliver", json=DELIVER_PAYLOAD, headers=_auth())
     assert resp.status_code == 200
@@ -460,14 +503,22 @@ def test_deliver_routes_locally_without_maya(client, monkeypatch):
 
 
 def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
-    """Two concurrent /deliver requests can both pass is_already_logged before either
-    inserts. The loser's INSERT OR IGNORE returns None from insert_transcript — that
-    must surface as {"status": "duplicate"}, not route with row_id=None."""
+    """A duplicate insert acknowledges only after finding the canonical row."""
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
 
     import webhook.server as server
-    monkeypatch.setattr(server, "is_already_logged", lambda content_hash: False)
-    monkeypatch.setattr(server, "insert_transcript", lambda **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "insert_transcript_result",
+        lambda **kwargs: TranscriptInsertResult(
+            InsertOutcome.DUPLICATE, row_id=1, existing_status="routed"
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "get_transcript_by_hash",
+        lambda _: {"id": 1, "status": "routed"},
+    )
 
     route_called = MagicMock()
     monkeypatch.setattr(server, "classify_and_route", route_called)
@@ -481,8 +532,9 @@ def test_deliver_handles_insert_race_as_duplicate(client, monkeypatch):
 def test_deliver_failure_does_not_leak_exception_text(client, monkeypatch, caplog):
     sentinel = "deliver-routing-secret-must-not-leak"
     monkeypatch.setenv("PENNY_WEBHOOK_SECRET", "test-secret")
-    monkeypatch.setattr(server_module, "is_already_logged", lambda _: False)
-    monkeypatch.setattr(server_module, "insert_transcript", lambda **_: 1)
+    monkeypatch.setattr(
+        server_module, "insert_transcript_result", lambda **_: _inserted(1)
+    )
     monkeypatch.setattr(
         server_module,
         "classify_and_route",
