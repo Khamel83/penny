@@ -248,6 +248,7 @@ def update_health_check() -> None:
         and not maya_health_error
         and maya_configured
         and int(maya_health.get("failed_count", 0)) == 0
+        and int(vm_health.get("terminal_failure_count", 0)) == 0
     )
     HEALTH_FILE.write_text(
         (
@@ -260,6 +261,12 @@ def update_health_check() -> None:
             f"pending:{pending}|latest_recording_pk:{vm_health['latest_recording_pk']}|"
             f"awaiting_file:{vm_health['awaiting_file_count']}|"
             f"voice_memo_failed:{vm_health['failed_count']}|"
+            f"voice_memo_retry_due:{vm_health.get('retry_due_count', 0)}|"
+            f"voice_memo_terminal:{vm_health.get('terminal_count', 0)}|"
+            f"voice_memo_terminal_failures:"
+            f"{vm_health.get('terminal_failure_count', 0)}|"
+            f"voice_memo_max_attempts:{vm_health.get('max_attempt_count', 0)}|"
+            f"voice_memo_source_watermark:{vm_health.get('source_watermark', 0)}|"
             f"slack_pending:{slack_health['pending_count']}|"
             f"slack_failed:{slack_health['failed_count']}|"
             f"slack_health_error:{slack_health_error}|"
@@ -483,13 +490,14 @@ def _process_audio_file(
         else:
             row_id = int(result.row_id)
         if recording_pk is not None:
-            link_voice_memo_transcript(
+            if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-            )
-            mark_voice_memo_terminal(recording_pk, "file_too_large")
+            ):
+                return False
+            mark_voice_memo_terminal(recording_pk, "skipped_too_large")
         return True
 
     existing = get_transcript_by_hash(file_hash)
@@ -499,13 +507,14 @@ def _process_audio_file(
         already_routed = existing.get("status") in {"routed", "processed"}
         if recording_pk is not None:
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
-            link_voice_memo_transcript(
+            if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
                 routed=already_routed,
-            )
+            ):
+                return False
         if already_routed or existing.get("quality_status") != "passed":
             if recording_pk is not None:
                 mark_voice_memo_terminal(
@@ -571,12 +580,13 @@ def _process_audio_file(
         else:
             row_id = int(result.row_id)
         if recording_pk is not None:
-            link_voice_memo_transcript(
+            if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-            )
+            ):
+                return False
             mark_voice_memo_terminal(recording_pk, "needs_review")
         return True
 
@@ -604,13 +614,14 @@ def _process_audio_file(
             return False
         row_id = int(existing["id"])
         if recording_pk is not None:
-            link_voice_memo_transcript(
+            if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
                 routed=existing.get("status") in {"routed", "processed"},
-            )
+            ):
+                return False
         if existing.get("status") in {"routed", "processed"}:
             if recording_pk is not None:
                 mark_voice_memo_terminal(recording_pk, "routed")
@@ -623,12 +634,13 @@ def _process_audio_file(
     else:
         row_id = int(result.row_id)
         if recording_pk is not None:
-            link_voice_memo_transcript(
+            if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
                 audio_path=str(audio_path),
-            )
+            ):
+                return False
 
     classify_and_route(
         transcript,
@@ -642,7 +654,9 @@ def _process_audio_file(
     return True
 
 
-def process_recording(recording: Dict[str, Any]) -> bool:
+def process_recording(
+    recording: Dict[str, Any], *, already_upserted: bool = False
+) -> bool:
     pk = int(recording["Z_PK"])
     label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
     raw_path = str(recording.get("ZPATH") or "")
@@ -652,7 +666,7 @@ def process_recording(recording: Dict[str, Any]) -> bool:
         else None
     )
     recorded_at = _recording_timestamp_utc(recording)
-    if not upsert_voice_memo_recording(
+    if not already_upserted and not upsert_voice_memo_recording(
         pk,
         label=label,
         raw_path=raw_path,
@@ -770,7 +784,7 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
             log.error("Stopping discovery batch after durable upsert failure pk=%s", pk)
             break
         max_registered_pk = max(max_registered_pk, pk)
-        process_recording(recording)
+        process_recording(recording, already_upserted=True)
     if max_registered_pk > get_source_watermark("voice_memos"):
         if advance_source_watermark("voice_memos", max_registered_pk):
             set_last_seen_pk(max_registered_pk)
@@ -819,7 +833,7 @@ def _retry_waiting_for_files(limit: int) -> None:
         pk = int(row["recording_pk"])
         recording = refreshed.get(pk)
         if recording is not None:
-            upsert_voice_memo_recording(
+            if not upsert_voice_memo_recording(
                 pk,
                 label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
                 raw_path=str(recording.get("ZPATH") or ""),
@@ -829,7 +843,8 @@ def _retry_waiting_for_files(limit: int) -> None:
                     else None
                 ),
                 recorded_at=_recording_timestamp_utc(recording),
-            )
+            ):
+                continue
         else:
             recording = {
                 "Z_PK": pk,
@@ -838,9 +853,7 @@ def _retry_waiting_for_files(limit: int) -> None:
                 "ZDURATION": row.get("duration_seconds"),
                 "recorded_at": row.get("recorded_at"),
             }
-        process_recording(
-            recording
-        )
+        process_recording(recording, already_upserted=True)
 
 
 def _retry_voice_memo_recordings(limit: int) -> None:
@@ -874,7 +887,7 @@ def _retry_voice_memo_recordings(limit: int) -> None:
                 recorded_at=_recording_timestamp_utc(recording),
             ):
                 continue
-        process_recording(recording)
+        process_recording(recording, already_upserted=True)
 
 
 def _retry_pending_routes(limit: int) -> None:
@@ -896,7 +909,7 @@ def _retry_pending_routes(limit: int) -> None:
             if row["source"] == "iCloud":
                 mark_voice_memo_routed_for_transcript(row["id"])
         except Exception as e:
-            log.error("Retry failed for id=%s: %s", row["id"], e)
+            log.error("Retry failed for id=%s: %s", row["id"], type(e).__name__)
 
 
 def _process_ingest_pass() -> None:

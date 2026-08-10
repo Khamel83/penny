@@ -41,6 +41,7 @@ VOICE_MEMO_RETRY_ERROR_CODES = frozenset(
         "persistence_failed",
         "processing_error",
         "routed",
+        "skipped_too_large",
         "source_changed",
         "transcription_failed",
     }
@@ -2161,13 +2162,13 @@ def link_voice_memo_transcript(
     content_hash: str,
     audio_path: str,
     routed: bool = False,
-) -> None:
+) -> bool:
     conn = None
     try:
         conn = _get_conn()
         status = "routed" if routed else "transcribed"
         routed_sql = ", routed_at = datetime('now')" if routed else ""
-        conn.execute(
+        cursor = conn.execute(
             f"""UPDATE voice_memo_ingest
                 SET transcript_row_id = ?,
                     content_hash = ?,
@@ -2183,8 +2184,10 @@ def link_voice_memo_transcript(
             (transcript_row_id, content_hash, audio_path, status, recording_pk),
         )
         conn.commit()
+        return cursor.rowcount == 1
     except Exception as e:
         log.error("Failed to link voice memo transcript pk=%s: %s", recording_pk, e)
+        return False
     finally:
         if conn:
             conn.close()
@@ -2308,13 +2311,18 @@ def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> None:
     conn = None
     try:
         conn = _get_conn()
+        status = (
+            error_code
+            if error_code in {"routed", "needs_review", "skipped_too_large"}
+            else "failed_terminal"
+        )
         conn.execute(
             """UPDATE voice_memo_ingest
-               SET status = 'terminal', error_message = ?, retryable = 0,
+               SET status = ?, error_message = ?, retryable = 0,
                    next_attempt_at = NULL, terminal_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE recording_pk = ?""",
-            (_voice_memo_error_code(error_code), recording_pk),
+            (status, _voice_memo_error_code(error_code), recording_pk),
         )
         conn.commit()
     except Exception as e:
@@ -2341,9 +2349,8 @@ def get_voice_memo_recordings_for_retry(
                WHERE retryable = 1
                  AND transcript_row_id IS NULL
                  AND attempt_count < ?
-                 AND next_attempt_at IS NOT NULL
-                 AND next_attempt_at <= ?
-               ORDER BY next_attempt_at ASC, recording_pk ASC
+                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+               ORDER BY next_attempt_at IS NOT NULL, next_attempt_at ASC, recording_pk ASC
                LIMIT ?""",
             (VOICE_MEMO_MAX_ATTEMPTS, due_at, limit),
         ).fetchall()
@@ -2424,6 +2431,11 @@ def get_voice_memo_health() -> dict[str, Any]:
         "awaiting_file_count": 0,
         "failed_count": 0,
         "oldest_waiting_discovered_at": None,
+        "retry_due_count": 0,
+        "terminal_count": 0,
+        "terminal_failure_count": 0,
+        "max_attempt_count": 0,
+        "source_watermark": 0,
     }
     try:
         conn = _get_conn()
@@ -2439,9 +2451,37 @@ def get_voice_memo_health() -> dict[str, Any]:
         health["oldest_waiting_discovered_at"] = awaiting[1] if awaiting else None
 
         failed = conn.execute(
-            "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'failed'"
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE status IN ('failed', 'failed_terminal')"
         ).fetchone()
         health["failed_count"] = int(failed[0] or 0)
+
+        retry_due = conn.execute(
+            """SELECT COUNT(*) FROM voice_memo_ingest
+               WHERE retryable = 1
+                 AND transcript_row_id IS NULL
+                 AND attempt_count < ?
+                 AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))""",
+            (VOICE_MEMO_MAX_ATTEMPTS,),
+        ).fetchone()
+        health["retry_due_count"] = int(retry_due[0] or 0)
+
+        terminal = conn.execute(
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE terminal_at IS NOT NULL"
+        ).fetchone()
+        health["terminal_count"] = int(terminal[0] or 0)
+        terminal_failures = conn.execute(
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'failed_terminal'"
+        ).fetchone()
+        health["terminal_failure_count"] = int(terminal_failures[0] or 0)
+        max_attempts = conn.execute(
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE attempt_count >= ?",
+            (VOICE_MEMO_MAX_ATTEMPTS,),
+        ).fetchone()
+        health["max_attempt_count"] = int(max_attempts[0] or 0)
+        watermark = conn.execute(
+            "SELECT last_discovered_id FROM source_watermarks WHERE source = 'voice_memos'"
+        ).fetchone()
+        health["source_watermark"] = int(watermark[0] or 0) if watermark else 0
         return health
     except Exception as e:
         log.error("Failed to fetch voice memo health: %s", e)

@@ -185,7 +185,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             duration_seconds=12.5,
             recorded_at="2001-01-01T00:00:00Z",
         )
-        process_mock.assert_called_once_with(fresh)
+        process_mock.assert_called_once_with(fresh, already_upserted=True)
 
     def test_retry_waiting_for_files_uses_refreshed_cloudrecordings_row(self):
         """Retry should not keep using stale empty raw_path from local ingest state."""
@@ -223,7 +223,7 @@ class SQLiteConnectionLeakTests(unittest.TestCase):
             duration_seconds=12.5,
             recorded_at="2001-01-01T00:00:00Z",
         )
-        process_mock.assert_called_once_with(fresh)
+        process_mock.assert_called_once_with(fresh, already_upserted=True)
 
     def test_process_audio_file_links_already_logged_voice_memo(self):
         """A refreshed waiting row should leave ingest state linked when hash exists."""

@@ -1995,17 +1995,73 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(waiting_after_file_seen[0]["status"], "file_ready")
 
         row_id = transcript_log.insert_transcript("hash101", "iCloud", "memo text")
-        transcript_log.link_voice_memo_transcript(
+        self.assertTrue(transcript_log.link_voice_memo_transcript(
             101,
             transcript_row_id=row_id,
             content_hash="hash101",
             audio_path="/tmp/memo.m4a",
-        )
+        ))
         transcript_log.mark_voice_memo_routed_for_transcript(row_id)
 
         health = transcript_log.get_voice_memo_health()
         self.assertEqual(health["latest_recording_pk"], 101)
         self.assertEqual(health["awaiting_file_count"], 0)
+
+    def test_unlinked_discovered_and_awaiting_rows_without_deadlines_are_due(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            280, label="discovered", raw_path="280.m4a", duration_seconds=1.0
+        )
+        transcript_log.upsert_voice_memo_recording(
+            281, label="awaiting", raw_path="281.m4a", duration_seconds=1.0
+        )
+        transcript_log.mark_voice_memo_waiting_for_file(281)
+
+        due = transcript_log.get_voice_memo_recordings_for_retry(
+            now="2026-08-09T00:00:00Z", limit=10
+        )
+
+        self.assertEqual([row["recording_pk"] for row in due], [280, 281])
+
+    def test_link_voice_memo_transcript_reports_failed_update(self) -> None:
+        self.assertFalse(
+            transcript_log.link_voice_memo_transcript(
+                999,
+                transcript_row_id=1,
+                content_hash="missing",
+                audio_path="missing.m4a",
+            )
+        )
+
+    def test_terminal_voice_memo_states_preserve_semantics_and_health(self) -> None:
+        for pk, state in ((282, "needs_review"), (283, "skipped_too_large"), (284, "routed")):
+            transcript_log.upsert_voice_memo_recording(
+                pk, label=state, raw_path=f"{pk}.m4a", duration_seconds=1.0
+            )
+            transcript_log.mark_voice_memo_terminal(pk, state)
+
+        for _ in range(8):
+            transcript_log.upsert_voice_memo_recording(
+                285, label="exhausted", raw_path="285.m4a", duration_seconds=1.0
+            )
+            transcript_log.mark_voice_memo_retryable(
+                285, "transcription_failed", now="2026-08-09T00:00:00Z"
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            statuses = dict(
+                conn.execute(
+                    "SELECT recording_pk, status FROM voice_memo_ingest "
+                    "WHERE recording_pk BETWEEN 282 AND 284"
+                ).fetchall()
+            )
+        finally:
+            conn.close()
+        health = transcript_log.get_voice_memo_health()
+        self.assertEqual(statuses, {282: "needs_review", 283: "skipped_too_large", 284: "routed"})
+        self.assertEqual(health["terminal_failure_count"], 1)
+        self.assertEqual(health["max_attempt_count"], 1)
+        self.assertEqual(health["source_watermark"], 0)
 
     def test_failed_voice_row_remains_retryable_after_watermark_advance(self) -> None:
         transcript_log.upsert_voice_memo_recording(

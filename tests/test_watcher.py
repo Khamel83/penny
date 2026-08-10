@@ -59,6 +59,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(
                 watcher, "insert_transcript_result", return_value=_inserted(99)
             ) as insert_mock,
+            patch.object(watcher, "link_voice_memo_transcript", return_value=True),
             patch.object(watcher, "mark_voice_memo_terminal") as terminal_mock,
         ):
             processed = watcher._process_audio_file(
@@ -74,7 +75,7 @@ class WatcherTests(unittest.TestCase):
             "skipped_too_large",
         )
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
-        terminal_mock.assert_called_once_with(123, "file_too_large")
+        terminal_mock.assert_called_once_with(123, "skipped_too_large")
 
     def test_watcher_does_not_mark_source_routed_after_insert_failure(self) -> None:
         audio_path = Path(self.db_dir) / "persistence-failure.m4a"
@@ -160,6 +161,50 @@ class WatcherTests(unittest.TestCase):
         advance.assert_called_once_with("voice_memos", 503)
         self.assertEqual(state_file.read_text(encoding="utf-8"), "503")
 
+    def test_batch_does_not_repeat_a_durable_upsert_before_processing(self) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        recording = {"Z_PK": 504}
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "get_source_watermark", return_value=503),
+            patch.object(watcher, "upsert_voice_memo_recording", return_value=True) as upsert,
+            patch.object(watcher, "process_recording", return_value=False) as process,
+            patch.object(watcher, "advance_source_watermark", return_value=True),
+        ):
+            watcher._process_db_batch([recording])
+
+        upsert.assert_called_once()
+        process.assert_called_once_with(recording, already_upserted=True)
+
+    def test_link_failure_does_not_report_existing_canonical_row_as_processed(self) -> None:
+        audio_path = Path(self.db_dir) / "canonical.m4a"
+        audio_path.write_bytes(b"audio")
+        canonical = {
+            "id": 91,
+            "status": "routed",
+            "quality_status": "passed",
+            "transcript": "canonical",
+            "source": "iCloud",
+        }
+        with (
+            patch.object(watcher, "_find_audio_path_for_recording", return_value=audio_path),
+            patch.object(watcher, "get_file_hash", return_value="canonical-hash"),
+            patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "link_voice_memo_transcript", return_value=False),
+            patch.object(watcher, "mark_voice_memo_terminal") as terminal,
+        ):
+            self.assertFalse(watcher.process_recording({"Z_PK": 46}))
+
+        terminal.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT retryable FROM voice_memo_ingest WHERE recording_pk = 46"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["retryable"], 1)
+
     def test_existing_pending_row_resumes_routing_without_transcribing(self) -> None:
         audio_path = Path(self.db_dir) / "existing-pending.m4a"
         audio_path.write_bytes(b"audio")
@@ -173,6 +218,7 @@ class WatcherTests(unittest.TestCase):
 
         with (
             patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "link_voice_memo_transcript", return_value=True),
             patch.object(watcher, "transcribe_with_quality") as transcribe,
             patch.object(watcher, "classify_and_route") as route,
             patch.object(watcher, "mark_voice_memo_routed") as routed,
@@ -208,6 +254,7 @@ class WatcherTests(unittest.TestCase):
 
         with (
             patch.object(watcher, "get_transcript_by_hash", return_value=canonical),
+            patch.object(watcher, "link_voice_memo_transcript", return_value=True),
             patch.object(watcher, "transcribe_with_quality") as transcribe,
             patch.object(watcher, "classify_and_route") as route,
         ):
@@ -438,6 +485,28 @@ class WatcherTests(unittest.TestCase):
             watcher._retry_pending_routes(limit=1)
 
         stage_mock.assert_not_called()
+
+    def test_retry_pending_routes_redacts_exception_text(self) -> None:
+        sentinel = "pending-transcript-text-must-not-be-logged"
+        pending_row = {
+            "id": 47,
+            "source": "iCloud",
+            "transcript": "route this",
+            "duration_seconds": None,
+        }
+        with (
+            patch.object(watcher, "get_pending", return_value=[pending_row]),
+            patch.object(
+                watcher,
+                "classify_and_route",
+                side_effect=RuntimeError(sentinel),
+            ),
+            patch.object(watcher.log, "error") as error_log,
+        ):
+            watcher._retry_pending_routes(limit=1)
+
+        self.assertNotIn(sentinel, str(error_log.call_args))
+        self.assertIn("RuntimeError", str(error_log.call_args))
 
     def test_retry_pending_routes_does_not_let_review_rows_consume_limit(self) -> None:
         transcript_log.insert_transcript(
@@ -741,6 +810,11 @@ class WatcherTests(unittest.TestCase):
                     "latest_recording_pk": 123,
                     "awaiting_file_count": 0,
                     "failed_count": 0,
+                    "retry_due_count": 3,
+                    "terminal_count": 2,
+                    "terminal_failure_count": 0,
+                    "max_attempt_count": 0,
+                    "source_watermark": 123,
                 },
             ),
             patch.object(
@@ -781,7 +855,58 @@ class WatcherTests(unittest.TestCase):
         self.assertIn("|maya_health_error:0|quality_needs_review:4", health)
         self.assertIn("|quality_failure_slack_pending:1|", health)
         self.assertIn("|quality_failure_slack_failed:0|", health)
+        self.assertIn("|voice_memo_retry_due:3|voice_memo_terminal:2|", health)
+        self.assertIn("|voice_memo_terminal_failures:0|", health)
+        self.assertIn("|voice_memo_source_watermark:123|", health)
         self.assertNotIn(secret, health)
+
+    def test_health_check_fails_for_terminal_voice_memo_failure(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True, "record_count": 1, "latest_pk": 1,
+                    "latest_date": None, "wal_exists": False, "wal_age_seconds": -1,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 1, "awaiting_file_count": 0,
+                    "failed_count": 1, "retry_due_count": 0, "terminal_count": 3,
+                    "terminal_failure_count": 1, "max_attempt_count": 1,
+                    "source_watermark": 1,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={"pending_count": 0, "failed_count": 0, "health_error": 0},
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0, "due_count": 0, "failed_count": 0,
+                    "oldest_due_age_seconds": 0, "quality_needs_review_count": 0,
+                    "health_error": 0,
+                },
+            ),
+            patch.object(watcher.cfg.maya, "transcript_url", "http://maya/ingest"),
+            patch.object(watcher.cfg.maya, "ingest_token", "test-token"),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|voice_memo_terminal_failures:1|", health)
 
     def test_maya_query_failure_forces_watcher_unhealthy(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
