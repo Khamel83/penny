@@ -627,10 +627,11 @@ def test_deliver_inserted_requires_durable_route_confirmation(client, monkeypatc
     monkeypatch.setattr(
         server_module, "insert_transcript_result", lambda **_: _inserted(10)
     )
+    get_canonical = MagicMock(return_value={"id": 10, "status": "pending"})
     monkeypatch.setattr(
         server_module,
         "get_transcript_by_hash",
-        lambda _: {"id": 10, "status": "pending"},
+        get_canonical,
     )
     route = MagicMock(return_value={"items": []})
     monkeypatch.setattr(server_module, "classify_and_route", route)
@@ -639,6 +640,7 @@ def test_deliver_inserted_requires_durable_route_confirmation(client, monkeypatc
 
     assert response.status_code == 503
     assert response.get_json() == {"error": "delivery unavailable"}
+    get_canonical.assert_called_once()
     route.assert_called_once()
 
 
