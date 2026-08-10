@@ -23,18 +23,20 @@ additive and retry-safe.
 ## Capture and Voice Memos retry
 
 The Voice Memos reader is a read-only compatibility adapter, not a supported
-Apple storage API. It distinguishes no-new-memo, source query failure, denied
-container access, malformed metadata, and incomplete audio. The SQLite
-`source_watermarks.last_discovered_id` cursor advances only after a durable
-`voice_memo_ingest` upsert. Processing failures remain in `voice_memo_ingest`
-with retryable/backoff state or `failed_terminal`; there is no separate
-completion watermark.
+Apple storage API. The Doctor does not inspect Apple's live source, TCC state,
+container permission, or source schema. Those conditions remain watcher
+diagnostics/manual Apple recovery, and an unobserved condition stays unknown.
+The SQLite `source_watermarks.last_discovered_id` cursor advances only after a
+durable `voice_memo_ingest` upsert. Processing failures remain in
+`voice_memo_ingest` with retryable/backoff state or `failed_terminal`; there is
+no separate completion watermark.
 
 An audio file is copied into Penny-owned local staging, checked for a stable
 size/signature, and hashed. A source that changes during copying is retried;
-partial materialization is quarantined. Retryable failures use bounded backoff
-and a terminal attempt/age limit. Terminal rows remain visible as quarantine or
-dead-letter state and require an operator decision.
+partial materialization remains `awaiting_file`/retryable, and a terminal source
+row is `failed_terminal`. Temporary archive material is removed after a failed
+copy; quarantine is reserved for archive, Apple-effect, and Maya workflows.
+Retryable failures use bounded backoff and a terminal attempt/age limit.
 
 ## Archive and iCloud mirror
 
@@ -91,8 +93,8 @@ iCloud synchronization.
 
 ## Doctor and service objectives
 
-The Doctor is read-only and metadata-only. It probes SQLite, Voice Memos source
-watermarks/retries, archive counters, local model/offline state, Apple receipts,
+The Doctor is read-only and metadata-only. It probes SQLite, Penny's Voice Memos
+discovery cursor/retry/terminal metadata, archive counters, local model/offline state, Apple receipts,
 Slack/Maya health, backup receipt, service freshness, and ingress policy. It
 never reads transcript/audio bodies, calls Apple providers, contacts Slack/Maya,
 reads TCC databases, or prints paths, URLs, secrets, raw errors, or process identifiers.

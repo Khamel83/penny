@@ -47,7 +47,9 @@ does not prove that a plist is loaded, approved, or running. The launchd
    values in tracked config, templates, logs, or shell history.
 6. Confirm the tracked/runtime webhook templates converge to loopback or an
    explicitly protected non-loopback policy; Doctor fails an unprotected bind.
-   The callback credential is currently reused for Hermes notifications.
+   The callback credential is currently reused for Hermes notifications;
+   `PENNY_HERMES_WEBHOOK_SECRET` is the target future dedicated name, not a
+   live Phase A setting.
 7. Create a verified backup set before changing code/config.
 
 ## Controlled deployment

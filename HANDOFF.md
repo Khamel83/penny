@@ -61,8 +61,10 @@ An ingest is acknowledged only after a typed persistence result is `inserted` or
 `source_watermarks.last_discovered_id` cursor only after a durable
 `voice_memo_ingest` upsert. Processing failures remain in that table with
 retryable/backoff state or `failed_terminal`; there is no separate completion
-watermark. Incomplete audio is quarantined until the source is fully materialized.
-Retryable work uses bounded exponential backoff; terminal work remains visible.
+watermark. Incomplete or changing audio remains `awaiting_file`/retryable until
+the source is fully materialized; a terminal source row remains `failed_terminal`.
+Retryable work uses bounded exponential backoff. Quarantine is reserved for
+archive, Apple-effect, and Maya terminal workflows.
 
 Apple effects persist a deterministic key before attempting the side effect and
 record provider identifiers plus a read-back receipt. An ambiguous timeout is

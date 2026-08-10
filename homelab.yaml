@@ -59,6 +59,7 @@ secrets:
   references:
     - dedicated-ingest-credential
     - callback-credential
+    - hermes-notification-credential-target
     - slack-credential
     - maya-v2-credential
 operations:

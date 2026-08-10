@@ -26,11 +26,13 @@ confirm the device has network and iCloud capacity. The private Voice Memos
 reader may be denied by macOS privacy controls; grant the approved runtime the
 required permission through System Settings, then let the normal watcher retry.
 
-On the Mac, check Doctor's `voice_memos` component for source query, discovery
-cursor, awaiting-file, retryable, and terminal-failure metadata. Use the canonical
-SQLite row and source receipt to decide whether the memo is absent upstream,
-staged locally, retryable, or quarantined. `watcher.system.log` is diagnostic
-context only; do not tail it as a health check.
+On the Mac, check Doctor's `voice_memos` component for the Penny discovery
+cursor, awaiting-file, retryable, and terminal-failure metadata. Doctor does not
+probe Apple's source query, TCC/container permission, or source schema; those
+remain watcher diagnostics/manual Apple recovery, and an unobserved condition is
+unknown. Use the canonical SQLite row and source receipt to decide whether the
+memo is absent upstream, staged locally, retryable, or `failed_terminal`.
+`watcher.system.log` is diagnostic context only; do not tail it as a health check.
 
 If Voice Memos remains unavailable, use the supported Share/Finder export path.
 It must enter the same authenticated ingest and persistence pipeline; it must
