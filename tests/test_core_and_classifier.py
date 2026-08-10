@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -64,6 +65,17 @@ class CorePipelineTests(unittest.TestCase):
         super().tearDown()
         core.cfg.maya.transcript_url = ""
         core.cfg.maya.ingest_token = ""
+
+    def test_file_hash_never_follows_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "outside.m4a"
+            target.write_bytes(b"private-outside-bytes")
+            link = root / "memo.m4a"
+            link.symlink_to(target)
+
+            with self.assertRaises(OSError):
+                core.get_file_hash(link)
 
     def test_local_apple_route_without_row_id_fails_closed(self) -> None:
         with (

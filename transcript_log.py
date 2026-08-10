@@ -2386,6 +2386,28 @@ def mark_quality_failure_delivery_sent(
     conn = None
     try:
         conn = _get_conn()
+        current = conn.execute(
+            "SELECT status, provider_ts, sent_at, "
+            "slack_claim_token, slack_claim_owner "
+            "FROM quality_failure_slack_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("Quality-failure Slack delivery row does not exist")
+        if current["status"] == "sent" or current["sent_at"] is not None:
+            if (
+                current["status"] == "sent"
+                and current["sent_at"] is not None
+                and current["provider_ts"] == provider_ts
+            ):
+                return
+            raise ValueError("Slack receipt conflicts with terminal state")
+        if current["status"] not in {"pending", "delivering"}:
+            raise ValueError("Slack receipt conflicts with terminal state")
+        if current["status"] == "delivering" and not _slack_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("Slack claim owner mismatch")
         cursor = conn.execute(
             """
             UPDATE quality_failure_slack_deliveries
@@ -2400,7 +2422,7 @@ def mark_quality_failure_delivery_sent(
                 sent_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE id = ?
-              AND status != 'sent'
+              AND status IN ('pending', 'delivering')
               AND sent_at IS NULL
               AND (
                     status != 'delivering'
@@ -2410,7 +2432,20 @@ def mark_quality_failure_delivery_sent(
             (provider_ts, delivery_id, claim_token, claim_owner),
         )
         if cursor.rowcount != 1:
-            raise ValueError("Slack claim owner mismatch")
+            terminal = conn.execute(
+                "SELECT status, provider_ts, sent_at "
+                "FROM quality_failure_slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if (
+                terminal is not None
+                and terminal["status"] == "sent"
+                and terminal["sent_at"] is not None
+                and terminal["provider_ts"] == provider_ts
+            ):
+                conn.rollback()
+                return
+            raise ValueError("Slack receipt conflicts with terminal state")
         conn.commit()
     except Exception as e:
         log.error(
@@ -5361,7 +5396,7 @@ def mark_voice_memo_retryable(
             conn.close()
 
 
-def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> None:
+def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> bool:
     """Record a linked non-retryable source outcome without retaining unsafe detail."""
     conn = None
     try:
@@ -5371,7 +5406,7 @@ def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> None:
             if error_code in {"routed", "needs_review", "skipped_too_large"}
             else "failed_terminal"
         )
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE voice_memo_ingest
                SET status = ?, error_message = ?, retryable = 0,
                    next_attempt_at = NULL, terminal_at = datetime('now'),
@@ -5380,8 +5415,10 @@ def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> None:
             (status, _voice_memo_error_code(error_code), recording_pk),
         )
         conn.commit()
+        return cursor.rowcount == 1
     except Exception as e:
         log.error("Failed to mark voice memo terminal pk=%s: %s", recording_pk, e)
+        return False
     finally:
         if conn:
             conn.close()

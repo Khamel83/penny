@@ -350,6 +350,44 @@ class WatcherTests(unittest.TestCase):
                     watcher.scan_for_unprocessed_files(), [(safe, "safe-hash")]
                 )
 
+    def test_voice_memo_root_must_not_be_a_symlink(self) -> None:
+        actual_root = Path(self.db_dir) / "voice-memos-real"
+        actual_root.mkdir()
+        (actual_root / "memo.m4a").write_bytes(b"audio")
+        configured_root = Path(self.db_dir) / "voice-memos-link"
+        configured_root.symlink_to(actual_root, target_is_directory=True)
+
+        with patch.object(watcher, "VOICE_MEMOS_DIR", configured_root):
+            self.assertIsNone(watcher._voice_memo_roots())
+            self.assertIsNone(
+                watcher._find_audio_path_for_recording({"ZPATH": "memo.m4a"})
+            )
+            self.assertEqual(watcher.scan_for_unprocessed_files(), [])
+
+    def test_audio_is_staged_before_any_content_hash_read(self) -> None:
+        source = Path(self.db_dir) / "source.m4a"
+        source.write_bytes(b"source")
+        staged_path = Path(self.db_dir) / "objects" / "staged.m4a"
+        staged_path.parent.mkdir()
+        staged_path.write_bytes(b"stable")
+        staged = StagedAudio(staged_path, "a" * 64, 6, ".m4a")
+
+        def hash_only_staged(path: Path) -> str:
+            self.assertEqual(path, staged_path)
+            return "f" * 32
+
+        with (
+            patch.object(watcher, "stage_audio", return_value=staged) as stage,
+            patch.object(watcher, "get_file_hash", side_effect=hash_only_staged),
+            patch.object(watcher, "MAX_FILE_SIZE", 0),
+            patch.object(
+                watcher, "insert_transcript_result", return_value=_inserted(77)
+            ),
+        ):
+            self.assertTrue(watcher._process_audio_file(source))
+
+        stage.assert_called_once()
+
     def test_malformed_recording_timestamp_terminalizes_and_batch_continues(self) -> None:
         state_file = Path(self.db_dir) / "last_pk.txt"
         recordings = [
@@ -394,6 +432,84 @@ class WatcherTests(unittest.TestCase):
         self.assertIsNone(malformed["transcript_row_id"])
         self.assertIsNone(malformed["audio_path"])
         self.assertNotIn("not-a-timestamp", malformed["error_message"])
+
+    def test_malformed_recording_duration_terminalizes_and_batch_continues(self) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        recordings = [
+            {
+                "Z_PK": 701,
+                "ZCUSTOMLABEL": "bad duration",
+                "ZPATH": "bad-duration.m4a",
+                "ZDATE": 0,
+                "ZDURATION": "not-a-number",
+            },
+            {
+                "Z_PK": 702,
+                "ZCUSTOMLABEL": "later memo",
+                "ZPATH": "later.m4a",
+                "ZDATE": 1,
+                "ZDURATION": 1.0,
+            },
+        ]
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "process_recording", return_value=True) as process,
+        ):
+            watcher._process_db_batch(recordings)
+
+        process.assert_called_once_with(recordings[1], already_upserted=True)
+        self.assertEqual(state_file.read_text(encoding="utf-8"), "702")
+        conn = transcript_log._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT recording_pk, status, error_message, duration_seconds,
+                       transcript_row_id, audio_path
+                FROM voice_memo_ingest
+                ORDER BY recording_pk
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([row["recording_pk"] for row in rows], [701, 702])
+        malformed = rows[0]
+        self.assertEqual(malformed["status"], "failed_terminal")
+        self.assertEqual(malformed["error_message"], "processing_error")
+        self.assertIsNone(malformed["duration_seconds"])
+        self.assertIsNone(malformed["transcript_row_id"])
+        self.assertIsNone(malformed["audio_path"])
+
+    def test_invalid_metadata_does_not_advance_watermark_without_terminal_receipt(
+        self,
+    ) -> None:
+        state_file = Path(self.db_dir) / "last_pk.txt"
+        recordings = [
+            {
+                "Z_PK": 711,
+                "ZPATH": "invalid.m4a",
+                "ZDATE": 0,
+                "ZDURATION": "invalid",
+            },
+            {
+                "Z_PK": 712,
+                "ZPATH": "later.m4a",
+                "ZDATE": 1,
+                "ZDURATION": 1,
+            },
+        ]
+        previous_watermark = transcript_log.get_source_watermark("voice_memos")
+        with (
+            patch.object(watcher, "STATE_FILE", state_file),
+            patch.object(watcher, "mark_voice_memo_terminal", return_value=False),
+            patch.object(watcher, "process_recording") as process,
+        ):
+            watcher._process_db_batch(recordings)
+
+        process.assert_not_called()
+        self.assertFalse(state_file.exists())
+        self.assertEqual(
+            transcript_log.get_source_watermark("voice_memos"), previous_watermark
+        )
 
     def test_health_check_requires_voice_memos_responsiveness(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
@@ -1654,6 +1770,20 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(snapshot["record_count"], 1)
         self.assertEqual(snapshot["latest_pk"], 123)
         self.assertTrue(snapshot["wal_exists"])
+
+    def test_cloud_recording_snapshot_fails_closed_when_schema_is_missing(self) -> None:
+        db_path = Path(self.db_dir) / "CloudRecordings.db"
+        connection = sqlite3.connect(db_path)
+        connection.execute("CREATE TABLE unrelated (id INTEGER)")
+        connection.commit()
+        connection.close()
+
+        with patch.object(watcher, "CLOUDRECORDINGS_DB", db_path):
+            snapshot = watcher._cloud_recording_snapshot()
+
+        self.assertFalse(snapshot["db_ok"])
+        self.assertEqual(snapshot["record_count"], 0)
+        self.assertEqual(snapshot["latest_pk"], 0)
 
     def test_health_check_is_non_healthy_when_slack_health_query_fails(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"

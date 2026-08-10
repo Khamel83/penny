@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -71,27 +72,47 @@ def _safe_original_name(value: str | None, fallback: str) -> str:
     return name[:255]
 
 
-def _source_signature(path: Path) -> tuple[int, int, int, int]:
-    info = path.stat()
+def _source_signature_from_stat(info: os.stat_result) -> tuple[int, int, int, int]:
     return info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino
+
+
+def _open_source_nofollow(path: Path) -> int:
+    """Open one regular source without following its final path component."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SourceChangedError("source_unavailable") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise SourceChangedError("source_unavailable")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def stage_audio(source: Path, object_root: Path) -> StagedAudio:
     """Stream a stable source into a content-addressed Penny-owned object."""
     source = Path(source)
     object_root = Path(object_root)
-    before = _source_signature(source)
-    if before[0] <= 0:
-        raise SourceChangedError(source.name)
     extension = source.suffix.lower()
     if not re.fullmatch(r"\.[a-z0-9]{1,10}", extension):
         raise ValueError("unsafe_audio_extension")
-    _mkdir_private(object_root)
+    descriptor = _open_source_nofollow(source)
+    try:
+        before = _source_signature_from_stat(os.fstat(descriptor))
+        if before[0] <= 0:
+            raise SourceChangedError(source.name)
+        _mkdir_private(object_root)
+    except Exception:
+        os.close(descriptor)
+        raise
     temporary = object_root / f".{uuid.uuid4().hex}.partial"
     digest = hashlib.sha256()
     copied = 0
     try:
-        with source.open("rb") as reader, temporary.open("xb") as writer:
+        with os.fdopen(descriptor, "rb") as reader, temporary.open("xb") as writer:
             os.chmod(temporary, 0o600)
             for chunk in iter(lambda: reader.read(CHUNK_SIZE), b""):
                 digest.update(chunk)
@@ -99,7 +120,7 @@ def stage_audio(source: Path, object_root: Path) -> StagedAudio:
                 writer.write(chunk)
             writer.flush()
             os.fsync(writer.fileno())
-        after = _source_signature(source)
+            after = _source_signature_from_stat(os.fstat(reader.fileno()))
         if before != after or copied != before[0] or temporary.stat().st_size != before[0]:
             raise SourceChangedError(source.name)
 

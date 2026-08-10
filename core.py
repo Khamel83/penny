@@ -13,6 +13,7 @@ import logging
 import logging.handlers
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -182,9 +183,13 @@ def setup_logging(service_name: str) -> logging.Logger:
 
 
 def get_file_hash(path: Path) -> str:
-    """Get MD5 hash of a file in chunks to save memory."""
+    """Get an MD5 identity without following a replaced final symlink."""
     hasher = hashlib.md5()
-    with path.open("rb") as f:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError("source_not_regular")
         for chunk in iter(lambda: f.read(4096), b""):
             hasher.update(chunk)
     return hasher.hexdigest()

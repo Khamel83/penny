@@ -49,11 +49,22 @@ class ArchiveTests(unittest.TestCase):
         source.write_bytes(b"audio")
         signatures = [(5, 1), (6, 2)]
 
-        with patch("archive._source_signature", side_effect=signatures):
+        with patch("archive._source_signature_from_stat", side_effect=signatures):
             with self.assertRaises(SourceChangedError):
                 stage_audio(source, self.root / "objects")
 
         self.assertEqual(list((self.root / "objects").rglob("*.partial")), [])
+
+    def test_stage_audio_never_follows_source_symlink(self) -> None:
+        outside = self.root / "outside.m4a"
+        outside.write_bytes(b"private-outside-bytes")
+        source = self.root / "memo.m4a"
+        source.symlink_to(outside)
+
+        with self.assertRaises(SourceChangedError):
+            stage_audio(source, self.root / "objects")
+
+        self.assertFalse((self.root / "objects" / "sha256").exists())
 
     def test_stage_audio_same_hash_keeps_alias_extension_and_single_bytes(self) -> None:
         first_source = self.root / "first.m4a"

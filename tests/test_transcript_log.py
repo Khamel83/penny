@@ -2759,6 +2759,49 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["quality_failure_pending_count"], 1)
         self.assertEqual(health["quality_failure_failed_count"], 0)
 
+    def test_quality_failure_sent_receipt_is_exact_idempotent_and_immutable(
+        self,
+    ) -> None:
+        transcript_log.insert_transcript(
+            content_hash="quality-terminal-receipt",
+            source="iCloud",
+            transcript="private body",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            quality_detail="attempt_1=control_token",
+            enqueue_slack=False,
+        )
+        delivery = transcript_log.claim_next_quality_failure_delivery("worker-a")
+        self.assertIsNotNone(delivery)
+        delivery_id = int(delivery["id"])
+        transcript_log.mark_quality_failure_delivery_sent(
+            delivery_id,
+            "provider.001",
+            claim_token=delivery["slack_claim_token"],
+            claim_owner="worker-a",
+        )
+
+        transcript_log.mark_quality_failure_delivery_sent(
+            delivery_id, "provider.001"
+        )
+        with self.assertRaisesRegex(ValueError, "terminal state"):
+            transcript_log.mark_quality_failure_delivery_sent(
+                delivery_id, "provider.002"
+            )
+
+        conn = transcript_log._get_conn()
+        try:
+            receipt = conn.execute(
+                "SELECT status, provider_ts, sent_at "
+                "FROM quality_failure_slack_deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(receipt["status"], "sent")
+        self.assertEqual(receipt["provider_ts"], "provider.001")
+        self.assertIsNotNone(receipt["sent_at"])
+
     def test_mark_slack_delivery_sent_persists_provider_timestamp(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="provider-ts",

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import mimetypes
 import os
 import sqlite3
@@ -229,16 +230,24 @@ def _cloud_recording_snapshot() -> dict[str, Any]:
     try:
         connection = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
-        snapshot["db_ok"] = bool(integrity and integrity[0] == "ok")
+        if not integrity or integrity[0] != "ok":
+            raise sqlite3.DatabaseError("source_integrity_failed")
         row = connection.execute(
             "SELECT COUNT(*), COALESCE(MAX(Z_PK), 0), MAX(ZDATE) "
             "FROM ZCLOUDRECORDING"
         ).fetchone()
-        if row:
-            snapshot["record_count"] = int(row[0] or 0)
-            snapshot["latest_pk"] = int(row[1] or 0)
-            snapshot["latest_date"] = row[2]
+        if row is None:
+            raise sqlite3.DatabaseError("source_schema_unavailable")
+        record_count = int(row[0] or 0)
+        latest_pk = int(row[1] or 0)
+        snapshot.update(
+            db_ok=True,
+            record_count=record_count,
+            latest_pk=latest_pk,
+            latest_date=row[2],
+        )
     except Exception as e:
+        snapshot.update(db_ok=False, record_count=0, latest_pk=0, latest_date=None)
         log.warning("VoiceMemos sync database probe failed: %s", e)
     finally:
         if connection:
@@ -453,8 +462,27 @@ def _recording_timestamp_or_invalid(
         return None, True
 
 
+def _recording_duration_or_invalid(
+    recording: Dict[str, Any],
+) -> tuple[float | None, bool]:
+    """Normalize a finite nonnegative duration without trusting source types."""
+    raw_duration = recording.get("ZDURATION")
+    if raw_duration is None:
+        return None, False
+    try:
+        duration = float(raw_duration)
+    except (TypeError, ValueError, OverflowError):
+        return None, True
+    if not math.isfinite(duration) or duration < 0:
+        return None, True
+    return duration, False
+
+
 def _upsert_recording_metadata(
-    recording: Dict[str, Any], *, recorded_at: str | None
+    recording: Dict[str, Any],
+    *,
+    recorded_at: str | None,
+    duration_seconds: float | None,
 ) -> bool:
     """Persist source metadata without retaining an invalid timestamp value."""
     pk = int(recording["Z_PK"])
@@ -462,26 +490,30 @@ def _upsert_recording_metadata(
         pk,
         label=recording.get("ZCUSTOMLABEL") or f"Recording {pk}",
         raw_path=str(recording.get("ZPATH") or ""),
-        duration_seconds=(
-            float(recording.get("ZDURATION"))
-            if recording.get("ZDURATION") is not None
-            else None
-        ),
+        duration_seconds=duration_seconds,
         recorded_at=recorded_at,
     )
 
 
-def _terminalize_invalid_recording_timestamp(
-    recording: Dict[str, Any], *, already_upserted: bool
+def _terminalize_invalid_recording_metadata(
+    recording: Dict[str, Any],
+    *,
+    already_upserted: bool,
+    recorded_at: str | None,
+    duration_seconds: float | None,
 ) -> bool:
-    """Record bounded terminal state for malformed source timestamp metadata."""
+    """Record bounded terminal state for malformed source metadata."""
     pk = int(recording["Z_PK"])
     if not already_upserted and not _upsert_recording_metadata(
-        recording, recorded_at=None
+        recording,
+        recorded_at=recorded_at,
+        duration_seconds=duration_seconds,
     ):
         return False
-    mark_voice_memo_terminal(pk, "processing_error")
-    log.error("Invalid Voice Memo capture timestamp (PK=%s)", pk)
+    if not mark_voice_memo_terminal(pk, "processing_error"):
+        log.error("Could not persist invalid Voice Memo terminal state (PK=%s)", pk)
+        return False
+    log.error("Invalid Voice Memo capture metadata (PK=%s)", pk)
     return True
 
 
@@ -498,6 +530,8 @@ def _voice_memo_roots() -> tuple[Path, Path] | None:
     if not voice_base.is_absolute():
         voice_base = voice_base.absolute()
     try:
+        if voice_base.is_symlink():
+            return None
         voice_root = voice_base.resolve(strict=True)
     except (FileNotFoundError, OSError):
         return None
@@ -635,11 +669,14 @@ def _process_audio_file(
     recording_pk: int | None = None,
     recorded_at: str | None = None,
 ) -> bool:
-    if file_hash is None:
-        file_hash = get_file_hash(audio_path)
     staged = stage_audio(audio_path, cfg.archive.object_root)
-    if len(file_hash) == 32 and all(character in "0123456789abcdef" for character in file_hash.lower()):
-        if get_file_hash(staged.path) != file_hash.lower():
+    staged_md5 = get_file_hash(staged.path)
+    if file_hash is None:
+        file_hash = staged_md5
+    if len(file_hash) == 32 and all(
+        character in "0123456789abcdef" for character in file_hash.lower()
+    ):
+        if staged_md5 != file_hash.lower():
             raise SourceChangedError(audio_path.name)
     ingested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -916,19 +953,20 @@ def process_recording(
     pk = int(recording["Z_PK"])
     label = recording.get("ZCUSTOMLABEL") or f"Recording {pk}"
     raw_path = str(recording.get("ZPATH") or "")
-    duration_seconds = (
-        float(recording.get("ZDURATION"))
-        if recording.get("ZDURATION") is not None
-        else None
-    )
+    duration_seconds, duration_invalid = _recording_duration_or_invalid(recording)
     recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
-    if timestamp_invalid:
-        _terminalize_invalid_recording_timestamp(
-            recording, already_upserted=already_upserted
+    if timestamp_invalid or duration_invalid:
+        _terminalize_invalid_recording_metadata(
+            recording,
+            already_upserted=already_upserted,
+            recorded_at=None if timestamp_invalid else recorded_at,
+            duration_seconds=None if duration_invalid else duration_seconds,
         )
         return False
     if not already_upserted and not _upsert_recording_metadata(
-        recording, recorded_at=recorded_at
+        recording,
+        recorded_at=recorded_at,
+        duration_seconds=duration_seconds,
     ):
         return False
     log.info("Processing %s (PK=%s)", label, pk)
@@ -1031,16 +1069,36 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
     for recording in recordings[:FILE_SCAN_PROCESS_LIMIT]:
         pk = int(recording["Z_PK"])
         recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
-        if timestamp_invalid:
-            if not _upsert_recording_metadata(recording, recorded_at=None):
+        duration_seconds, duration_invalid = _recording_duration_or_invalid(recording)
+        if timestamp_invalid or duration_invalid:
+            if not _upsert_recording_metadata(
+                recording,
+                recorded_at=None if timestamp_invalid else recorded_at,
+                duration_seconds=None if duration_invalid else duration_seconds,
+            ):
                 log.error(
                     "Stopping discovery batch after durable upsert failure pk=%s", pk
                 )
                 break
+            terminalized = _terminalize_invalid_recording_metadata(
+                recording,
+                already_upserted=True,
+                recorded_at=None if timestamp_invalid else recorded_at,
+                duration_seconds=None if duration_invalid else duration_seconds,
+            )
+            if not terminalized:
+                log.error(
+                    "Stopping discovery batch after terminal receipt failure pk=%s",
+                    pk,
+                )
+                break
             max_registered_pk = max(max_registered_pk, pk)
-            _terminalize_invalid_recording_timestamp(recording, already_upserted=True)
             continue
-        persisted = _upsert_recording_metadata(recording, recorded_at=recorded_at)
+        persisted = _upsert_recording_metadata(
+            recording,
+            recorded_at=recorded_at,
+            duration_seconds=duration_seconds,
+        )
         if not persisted:
             log.error("Stopping discovery batch after durable upsert failure pk=%s", pk)
             break
@@ -1282,13 +1340,29 @@ def _retry_waiting_for_files(limit: int) -> None:
         recording = refreshed.get(pk)
         if recording is not None:
             recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
-            if timestamp_invalid:
-                if _upsert_recording_metadata(recording, recorded_at=None):
-                    _terminalize_invalid_recording_timestamp(
-                        recording, already_upserted=True
+            duration_seconds, duration_invalid = _recording_duration_or_invalid(
+                recording
+            )
+            if timestamp_invalid or duration_invalid:
+                if _upsert_recording_metadata(
+                    recording,
+                    recorded_at=None if timestamp_invalid else recorded_at,
+                    duration_seconds=None if duration_invalid else duration_seconds,
+                ):
+                    _terminalize_invalid_recording_metadata(
+                        recording,
+                        already_upserted=True,
+                        recorded_at=None if timestamp_invalid else recorded_at,
+                        duration_seconds=(
+                            None if duration_invalid else duration_seconds
+                        ),
                     )
                 continue
-            if not _upsert_recording_metadata(recording, recorded_at=recorded_at):
+            if not _upsert_recording_metadata(
+                recording,
+                recorded_at=recorded_at,
+                duration_seconds=duration_seconds,
+            ):
                 continue
         else:
             recording = {
@@ -1321,13 +1395,29 @@ def _retry_voice_memo_recordings(limit: int) -> None:
             }
         else:
             recorded_at, timestamp_invalid = _recording_timestamp_or_invalid(recording)
-            if timestamp_invalid:
-                if _upsert_recording_metadata(recording, recorded_at=None):
-                    _terminalize_invalid_recording_timestamp(
-                        recording, already_upserted=True
+            duration_seconds, duration_invalid = _recording_duration_or_invalid(
+                recording
+            )
+            if timestamp_invalid or duration_invalid:
+                if _upsert_recording_metadata(
+                    recording,
+                    recorded_at=None if timestamp_invalid else recorded_at,
+                    duration_seconds=None if duration_invalid else duration_seconds,
+                ):
+                    _terminalize_invalid_recording_metadata(
+                        recording,
+                        already_upserted=True,
+                        recorded_at=None if timestamp_invalid else recorded_at,
+                        duration_seconds=(
+                            None if duration_invalid else duration_seconds
+                        ),
                     )
                 continue
-            if not _upsert_recording_metadata(recording, recorded_at=recorded_at):
+            if not _upsert_recording_metadata(
+                recording,
+                recorded_at=recorded_at,
+                duration_seconds=duration_seconds,
+            ):
                 continue
         process_recording(recording, already_upserted=True)
 
