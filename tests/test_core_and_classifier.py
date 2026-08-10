@@ -82,6 +82,14 @@ class CorePipelineTests(unittest.TestCase):
                 core.classify_and_route("canonical guard", source="test")
         maya.assert_not_called()
 
+    def test_route_to_maya_helper_rejects_missing_canonical_row_before_post(self) -> None:
+        core.cfg.maya.transcript_url = "http://maya/ingest/transcript"
+        core.cfg.maya.ingest_token = "token"
+        with patch.object(core.requests, "post") as post:
+            with self.assertRaisesRegex(core.RoutingError, "canonical_id_required"):
+                core._route_to_maya("canonical guard", source="test", row_id=None)
+        post.assert_not_called()
+
     def test_progress_flags_do_not_replace_apple_receipt_authority(self) -> None:
         receipt = AppleEffectReceipt(
             "a" * 64, "note", "note-id", "succeeded", actual_target="Penny",

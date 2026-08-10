@@ -416,6 +416,9 @@ def _route_to_maya(
     Returns False if Maya is not configured or unavailable (caller should fall back).
     Raises RoutingError if a row_id has no readable persisted transcript body.
     """
+    if row_id is None:
+        raise RoutingError("canonical_id_required")
+
     log = logging.getLogger("penny.core")
     maya_url = cfg.maya.transcript_url.strip()
     maya_token = cfg.maya.ingest_token.strip()

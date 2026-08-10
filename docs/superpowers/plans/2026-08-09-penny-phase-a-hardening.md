@@ -630,10 +630,24 @@ def test_note_replay_finds_existing_marker_without_create(self):
 
 
 def test_crash_after_apple_create_reconciles_marker_on_retry(self):
+    real_mark = transcript_log.mark_apple_effect_succeeded
+    attempts = 0
+
+    def flaky_mark(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("locked")
+        return real_mark(*args, **kwargs)
+
     with patch.object(
         reminders,
         "find_note_by_marker",
-        side_effect=[None, "x-coredata://note/provider-1"],
+        side_effect=[
+            [],
+            ["x-coredata://note/provider-1"],
+            ["x-coredata://note/provider-1"],
+        ],
     ), patch.object(
         reminders,
         "create_note_with_marker",
@@ -641,9 +655,9 @@ def test_crash_after_apple_create_reconciles_marker_on_retry(self):
     ) as create, patch.object(
         transcript_log,
         "mark_apple_effect_succeeded",
-        side_effect=[sqlite3.OperationalError("locked"), True],
+        side_effect=flaky_mark,
     ):
-        with self.assertRaises(sqlite3.OperationalError):
+        with self.assertRaisesRegex(AppleEffectError, "database_unavailable"):
             ensure_note(42, "body", "Penny", "test")
         receipt = ensure_note(42, "body", "Penny", "test")
     self.assertEqual(receipt.provider_id, "x-coredata://note/provider-1")
@@ -663,19 +677,46 @@ CREATE TABLE IF NOT EXISTS apple_effects (
     effect_key TEXT PRIMARY KEY,
     transcript_id INTEGER NOT NULL,
     effect_type TEXT NOT NULL,
-    target TEXT NOT NULL,
+    requested_target TEXT NOT NULL,
+    fallback_target TEXT NOT NULL DEFAULT '',
     payload_sha256 TEXT NOT NULL,
-    status TEXT NOT NULL,
+    state TEXT NOT NULL,
     provider_id TEXT,
+    actual_target TEXT,
+    reconciled INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    stale_attempt_at TEXT,
     last_error_code TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    succeeded_at TEXT,
     FOREIGN KEY(transcript_id) REFERENCES transcripts(id)
+);
+
+CREATE TABLE IF NOT EXISTS apple_effect_quarantine (
+    id INTEGER PRIMARY KEY,
+    effect_key TEXT NOT NULL,
+    transcript_id INTEGER,
+    effect_type TEXT,
+    requested_target TEXT,
+    payload_sha256 TEXT,
+    state TEXT,
+    provider_id TEXT,
+    actual_target TEXT,
+    reason_code TEXT NOT NULL,
+    quarantined_at TEXT NOT NULL,
+    UNIQUE(effect_key, reason_code)
 );
 ```
 
-Derive the key from canonical transcript ID, effect type, target, and normalized payload SHA-256. Use `BEGIN IMMEDIATE` to claim an effect; `succeeded` is monotonic.
+Derive the key from canonical transcript ID, effect type, requested/fallback target,
+and normalized payload SHA-256. Use `BEGIN IMMEDIATE` plus an exact lease owner
+to claim and transition non-succeeded effects. A `succeeded` provider receipt is
+monotonic; permission, marker/provider, invalid, and key conflicts quarantine the
+effect. Partial-schema migration preserves valid rows and moves orphan metadata
+(never transcript bodies) to `apple_effect_quarantine`.
 
 - [ ] **Step 4: Implement query-before-create AppleScript transports**
 
@@ -683,7 +724,11 @@ For Notes, search the configured folder for `<!-- penny-effect:<key> -->`, retur
 
 - [ ] **Step 5: Migrate `core.classify_and_route()` to effect receipts**
 
-Replace progress booleans as the external idempotency authority. Keep `routing_progress` as a readable compatibility summary, but call `ensure_note()`/`ensure_reminder()` with deterministic keys and mark routed only after durable `succeeded` receipts.
+Replace progress booleans as the external idempotency authority. Keep
+`routing_progress` as a readable compatibility summary, but call
+`ensure_note()`/`ensure_reminder()` with canonical transcript IDs so they derive
+and validate keys internally, and mark routed only after durable `succeeded`
+receipts.
 
 - [ ] **Step 6: Run Apple replay tests**
 
