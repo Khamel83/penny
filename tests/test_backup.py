@@ -249,6 +249,42 @@ class BackupTests(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
+    def test_remote_rejects_shell_syntax_globs_and_traversal_before_runner(self) -> None:
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        unsafe_remotes = (
+            "homelab:~/backups/penny>/tmp/stolen",
+            "homelab:~/backups/penny<input",
+            "homelab:~/backups/*/",
+            "homelab:~/backups/penny?/",
+            "homelab:~/backups/[penny]/",
+            "homelab:~/backups/penny]/",
+            "homelab:~/backups/../penny/",
+            "homelab:~/backups//penny/",
+            "homelab:relative/backups/penny/",
+        )
+
+        for remote in unsafe_remotes:
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: object) -> object:
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="")
+
+            with self.subTest(remote=remote):
+                with self.assertRaisesRegex(backup_penny.SyncError, "remote_invalid"):
+                    backup_penny.sync_backup_set(receipt, remote=remote, runner=runner)
+                self.assertEqual(calls, [])
+
+    def test_remote_accepts_default_and_safe_absolute_roots(self) -> None:
+        self.assertEqual(
+            backup_penny._safe_remote(backup_penny.DEFAULT_REMOTE),
+            ("homelab", "~/backups/penny/"),
+        )
+        self.assertEqual(
+            backup_penny._safe_remote("backup-host:/srv/penny.backups/nightly"),
+            ("backup-host", "/srv/penny.backups/nightly/"),
+        )
+
     def test_remote_rsync_failure_is_fatal(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
 

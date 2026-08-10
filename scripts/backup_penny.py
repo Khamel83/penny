@@ -40,6 +40,8 @@ DEFAULT_SCRATCH_ROOT = Path("~/Library/Caches/Penny/backup-scratch").expanduser(
 DEFAULT_REMOTE = "homelab:~/backups/penny/"
 DEFAULT_VERIFICATION_RECEIPT = DEFAULT_BACKUP_ROOT / "last_verification.json"
 _BACKUP_SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
+_REMOTE_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_REMOTE_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class SyncError(RuntimeError):
@@ -155,10 +157,21 @@ def _safe_remote(value: str) -> tuple[str, str]:
     if not remote or ":" not in remote:
         raise SyncError("remote_invalid")
     host, root = remote.split(":", 1)
-    if not host or not root or any(char in host for char in " /\\\n\t"):
+    if not _REMOTE_HOST_RE.fullmatch(host) or not root:
         raise SyncError("remote_invalid")
-    if any(char.isspace() for char in root) or any(
-        char in root for char in ";|&$`'\"\\"
+    if root.startswith("~/"):
+        path = root[2:]
+    elif root.startswith("/"):
+        path = root[1:]
+    else:
+        raise SyncError("remote_invalid")
+    path = path[:-1] if path.endswith("/") else path
+    components = path.split("/")
+    if not path or any(
+        not component
+        or component in {".", ".."}
+        or not _REMOTE_PATH_COMPONENT_RE.fullmatch(component)
+        for component in components
     ):
         raise SyncError("remote_invalid")
     return host, root.rstrip("/") + "/"
