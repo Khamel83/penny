@@ -3,6 +3,7 @@ from __future__ import annotations
 import plistlib
 import re
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from config import WHISPER_MODEL_REVISION
@@ -69,6 +70,10 @@ class ReliabilityContractTests(unittest.TestCase):
                 values["PENNY_HERMES_WEBHOOK_SECRET"],
                 values.get("PENNY_WEBHOOK_SECRET"),
             )
+        watcher = plistlib.loads(
+            (ROOT / "launchd" / "com.penny.watcher.plist.template").read_bytes()
+        )["EnvironmentVariables"]
+        self.assertNotIn("PENNY_WEBHOOK_SECRET", watcher)
 
     def test_doctor_workflow_is_read_only_and_uses_only_bounded_projection(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "health-check.yml").read_text(
@@ -90,6 +95,32 @@ class ReliabilityContractTests(unittest.TestCase):
         self.assertIn("scripts/penny_doctor.py", trust_check)
         self.assertNotIn("check_health_check_sync", trust_check)
         self.assertIn("FORBIDDEN_WORKFLOW_TOKENS", trust_check)
+
+    def test_trust_check_unit_environment_is_sanitized_and_networkless(self) -> None:
+        import scripts.trust_check as trust_check
+
+        inherited = {
+            "OPENROUTER_API_KEY": "real-openrouter-secret",
+            "PENNY_HERMES_WEBHOOK_SECRET": "real-hermes-secret",
+            "HERMES_WEBHOOK_URL": "https://real-hermes.example",
+            "PENNY_SLACK_BOT_TOKEN": "real-slack-secret",
+            "MAYA_INGEST_TOKEN": "real-maya-secret",
+            "MAYA_TRANSCRIPT_URL": "https://real-maya.example",
+            "PENNY_WEBHOOK_SECRET": "real-callback-secret",
+            "TELEGRAM_BOT_TOKEN": "legacy-secret",
+            "TELEGRAM_CHAT_ID": "legacy-chat",
+        }
+        with patch.dict("os.environ", inherited, clear=False):
+            env = trust_check._hermetic_test_environment()
+
+        for key in inherited:
+            self.assertNotIn(key, env)
+        self.assertEqual(env["PENNY_INGEST_TOKEN"], "ingest-test-token")
+        self.assertEqual(env["HF_HUB_OFFLINE"], "1")
+        self.assertEqual(env["HOME"], "/tmp/penny-trust-check-home")
+        self.assertEqual(env["PENNY_TRANSCRIPT_DB"], "/tmp/penny-trust-check-home/transcripts.db")
+        self.assertEqual(env["HTTP_PROXY"], "http://127.0.0.1:9")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:9")
 
     def test_phase_a_documentation_keeps_evidence_boundaries_explicit(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

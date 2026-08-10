@@ -249,6 +249,10 @@ def check_phase_a_contracts() -> None:
     _require_environment(watcher, "PENNY_SLACK_CHANNEL_ID", "C0BKS0QT7FU", ROOT / "launchd" / "com.penny.watcher.plist.template")
     _require_environment(watcher, "PENNY_MAYA_LEDGER_CHANNEL_ID", "YOUR_MAYA_LEDGER_CHANNEL_ID_HERE", ROOT / "launchd" / "com.penny.watcher.plist.template")
     _require_environment(watcher, "MAYA_DELIVERY_TIMEOUT_SECONDS", "10", ROOT / "launchd" / "com.penny.watcher.plist.template")
+    if "PENNY_WEBHOOK_SECRET" in watcher:
+        raise SystemExit(
+            "FAIL: watcher template must not reuse the webhook callback credential"
+        )
 
     webhook_path = ROOT / "launchd" / "com.penny.webhook.plist.template"
     webhook = plistlib.loads(webhook_path.read_bytes())["EnvironmentVariables"]
@@ -311,19 +315,59 @@ def check_phase_a_contracts() -> None:
     print(f"  OK: validated {len(template_paths)} launchd templates and Phase A docs", flush=True)
 
 
+def _hermetic_test_environment() -> dict[str, str]:
+    """Build a minimal, secret-free environment for repository tests.
+
+    Only process plumbing and explicit fixture values are carried into the
+    child. Provider credentials, URLs, and legacy notification settings are
+    intentionally absent. Invalid loopback proxies make an accidental network
+    call fail quickly rather than reaching a real provider.
+    """
+    env: dict[str, str] = {}
+    for key in ("PATH", "LANG", "LC_ALL", "TZ"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    trust_home = "/tmp/penny-trust-check-home"
+    env.update(
+        {
+            "HOME": trust_home,
+            "TMPDIR": "/tmp",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONUNBUFFERED": "1",
+            "HF_HUB_OFFLINE": "1",
+            "PENNY_INGEST_TOKEN": "ingest-test-token",
+            "PENNY_WEBHOOK_HOST": "127.0.0.1",
+            "PENNY_WEBHOOK_ALLOW_NONLOOPBACK": "0",
+            "PENNY_SOURCE_REVISION": "a" * 40,
+            "GOOGLE_CREDENTIALS_FILE": f"{trust_home}/google_credentials.json",
+            "GOOGLE_TOKEN_FILE": f"{trust_home}/google_token.json",
+            "PENNY_TRANSCRIPT_DB": f"{trust_home}/transcripts.db",
+            "PENNY_ARCHIVE_OBJECT_ROOT": f"{trust_home}/archive/objects",
+            "PENNY_ARCHIVE_MIRROR_ROOT": f"{trust_home}/Penny Archive",
+            "PENNY_BACKUP_ROOT": f"{trust_home}/backup",
+            "PENNY_BACKUP_VERIFICATION_RECEIPT": f"{trust_home}/backup/last_verification.json",
+            "PENNY_BACKUP_SCRATCH_ROOT": f"{trust_home}/backup-scratch",
+            "PENNY_HEALTH_FILE": f"{trust_home}/health.txt",
+            "PENNY_TASKS_HEALTH_FILE": f"{trust_home}/health_tasks.txt",
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+            "ALL_PROXY": "http://127.0.0.1:9",
+            "http_proxy": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9",
+            "all_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "",
+            "no_proxy": "",
+        }
+    )
+    return env
+
+
 def run_unit_tests() -> None:
     print("[6/8] Running hermetic unit tests...", flush=True)
     venv_python = ROOT / "venv" / "bin" / "python"
     python = str(venv_python) if venv_python.exists() else sys.executable
-    env = os.environ.copy()
-    env.update(
-        {
-            "HF_HUB_OFFLINE": "1",
-            "PENNY_INGEST_TOKEN": "ingest-test-token",
-            "PENNY_WEBHOOK_SECRET": "",
-            "OPENROUTER_API_KEY": "trust-check-placeholder",
-        }
-    )
+    env = _hermetic_test_environment()
     cmd = [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
     print("  OK: unit tests passed", flush=True)

@@ -41,8 +41,6 @@
         <string>C0BKS0QT7FU</string>
         <key>PENNY_MAYA_LEDGER_CHANNEL_ID</key>
         <string>YOUR_MAYA_LEDGER_CHANNEL_ID_HERE</string>
-        <key>PENNY_WEBHOOK_SECRET</key>
-        <string>YOUR_PENNY_WEBHOOK_SECRET_HERE</string>
         <key>PENNY_HERMES_WEBHOOK_SECRET</key>
         <string>YOUR_PENNY_HERMES_WEBHOOK_SECRET_HERE</string>
         <key>HERMES_WEBHOOK_URL</key>
