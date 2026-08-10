@@ -370,14 +370,17 @@ def _default_probe_apple_effects(_config: Any = None, *, now: datetime | None = 
 def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
     health = transcript_log.get_maya_delivery_health()
+    launchd_keys = _launchd_environment_keys(
+        "com.penny.watcher", ("MAYA_TRANSCRIPT_URL", "MAYA_INGEST_TOKEN")
+    )
     url_configured = bool(
         config is not None
         and str(getattr(config.maya, "transcript_url", "")).strip()
-    )
+    ) or "MAYA_TRANSCRIPT_URL" in launchd_keys
     token_configured = bool(
         config is not None
         and str(getattr(config.maya, "ingest_token", "")).strip()
-    )
+    ) or "MAYA_INGEST_TOKEN" in launchd_keys
     configured = url_configured and token_configured
     pending_age = max(
         int(health.get("oldest_pending_age_seconds", 0) or 0),
@@ -399,8 +402,12 @@ def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: 
 def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
     health = transcript_log.get_slack_delivery_health()
+    launchd_keys = _launchd_environment_keys(
+        "com.penny.watcher", ("PENNY_SLACK_BOT_TOKEN",)
+    )
     return {
-        "configured": bool(os.environ.get("PENNY_SLACK_BOT_TOKEN", "").strip()),
+        "configured": bool(os.environ.get("PENNY_SLACK_BOT_TOKEN", "").strip())
+        or "PENNY_SLACK_BOT_TOKEN" in launchd_keys,
         "query_ok": health.get("query_ok", 0),
         "health_error": health.get("health_error", 1),
         "pending_count": health.get("pending_count", 0),
@@ -460,6 +467,39 @@ def _launchd_status(*, runner: Callable[..., Any] = subprocess.run) -> bool:
         if getattr(result, "returncode", 1) != 0:
             return False
     return True
+
+
+def _launchd_environment_keys(
+    label: str,
+    keys: tuple[str, ...],
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> set[str]:
+    """Return configured key names without retaining or rendering values."""
+
+    if os.name != "posix" or not hasattr(os, "getuid") or not keys:
+        return set()
+    try:
+        result = runner(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TypeError):
+        return set()
+    if getattr(result, "returncode", 1) != 0:
+        return set()
+    output = str(getattr(result, "stdout", "") or "")
+    return {
+        key
+        for key in keys
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
+            output,
+        )
+    }
 
 
 def _default_probe_services(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -581,11 +621,14 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
 def _default_probe_ingress(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
     token = str(getattr(getattr(config, "webhook", None), "ingest_token", "") or "").strip()
+    launchd_keys = _launchd_environment_keys(
+        "com.penny.webhook", ("PENNY_INGEST_TOKEN",)
+    )
     host = str(getattr(getattr(config, "webhook", None), "host", "") or "").strip().lower()
     loopback = host in {"127.0.0.1", "::1", "localhost"}
     protected = os.environ.get("PENNY_WEBHOOK_ALLOW_NONLOOPBACK") == "1"
     return {
-        "secret_configured": bool(token),
+        "secret_configured": bool(token) or "PENNY_INGEST_TOKEN" in launchd_keys,
         "loopback_bind": loopback,
         "protected_bind": protected,
         "callback_secret_configured": bool(os.environ.get("PENNY_WEBHOOK_SECRET", "").strip()),

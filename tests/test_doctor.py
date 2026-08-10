@@ -35,7 +35,7 @@ def _ready_probes(tmp_path: Path):
         "transcription": {"verified": True, "offline": True},
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
         "maya": {"configured": False, "query_ok": 1, "pending_count": 0, "dead_letter_count": 0},
-        "slack": {"query_ok": 1, "failed_count": 0, "pending_count": 0},
+        "slack": {"configured": True, "query_ok": 1, "failed_count": 0, "pending_count": 0},
         "backup": {"verified": True, "age_seconds": 2},
         "services": {"watcher_ok": True, "tasks_ok": True, "launchd_ok": True, "age_seconds": 2},
         "ingress": {"secret_configured": True, "loopback_bind": True},
@@ -108,6 +108,31 @@ def test_slack_configuration_and_apple_failures_are_truthful(tmp_path: Path, mon
     report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
     assert report.components["slack"].reason == "configuration_missing"
     assert report.components["apple_effects"].reason == "provider_failure"
+
+
+def test_launchd_secret_presence_probe_keeps_values_out_of_report(monkeypatch):
+    import doctor
+
+    monkeypatch.delenv("PENNY_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        doctor.transcript_log,
+        "get_slack_delivery_health",
+        lambda: {"query_ok": 1, "health_error": 0, "pending_count": 0, "failed_count": 0},
+    )
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"returncode": 0, "stdout": "PENNY_SLACK_BOT_TOKEN = secret-value"}
+        )(),
+    )
+    probe = doctor._default_probe_slack()
+    assert probe["configured"] is True
+    report = doctor.run_doctor(
+        config=_config(Path("/tmp")),
+        probe_overrides={name: _ready_probes(Path("/tmp"))[name] for name in _ready_probes(Path("/tmp"))},
+    )
+    assert "secret-value" not in doctor.render_json(report)
 
 
 def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatch):
