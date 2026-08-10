@@ -3093,6 +3093,7 @@ def get_slack_delivery_health() -> dict[str, int]:
         "failed_count": 0,
         "quality_failure_pending_count": 0,
         "quality_failure_failed_count": 0,
+        "query_ok": 1,
         "health_error": 0,
     }
     try:
@@ -3133,6 +3134,7 @@ def get_slack_delivery_health() -> dict[str, int]:
             _safe_exception_class(e),
         )
         health["health_error"] = 1
+        health["query_ok"] = 0
         return health
     finally:
         if conn:
@@ -4882,6 +4884,8 @@ def get_voice_memo_recordings_waiting_for_file(limit: int = 20) -> list[dict[str
 def get_voice_memo_health() -> dict[str, Any]:
     conn = None
     health = {
+        "query_ok": 1,
+        "health_error": 0,
         "latest_recording_pk": 0,
         "awaiting_file_count": 0,
         "failed_count": 0,
@@ -4940,7 +4944,12 @@ def get_voice_memo_health() -> dict[str, Any]:
         health["source_watermark"] = int(watermark[0] or 0) if watermark else 0
         return health
     except Exception as e:
-        log.error("Failed to fetch voice memo health: %s", e)
+        log.error(
+            "Failed to fetch voice memo health: %s",
+            _safe_exception_class(e),
+        )
+        health["query_ok"] = 0
+        health["health_error"] = 1
         return health
     finally:
         if conn:

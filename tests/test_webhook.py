@@ -72,6 +72,28 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(data["status"], "ok")
             self.assertEqual(data["service"], "penny-webhook")
 
+    def test_ready_returns_doctor_projection_and_503_when_unready(self):
+        from doctor import ComponentStatus, DoctorReport
+
+        report = DoctorReport(
+            "unready",
+            {
+                "voice_memos": ComponentStatus(
+                    "voice_memos",
+                    "unready",
+                    "terminal_failure",
+                    {"terminal_failure_count": 1},
+                    "2026-08-10T10:00:00Z",
+                )
+            },
+            "2026-08-10T10:00:00Z",
+            "test",
+        )
+        with patch.object(server_module, "run_doctor", return_value=report):
+            response = app.test_client().get("/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["overall"], "unready")
+
 
 def test_upload_low_quality_transcript_is_durable_and_not_published(client, monkeypatch):
     import transcript_log

@@ -262,7 +262,7 @@ def _transcripts_pending() -> int:
 
 def update_health_check() -> None:
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now().isoformat()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     vm = 1 if _voicememos_running() else 0
     vm_responsive = 1 if vm and _voicememos_responsive() else 0
     pending = _transcripts_pending()

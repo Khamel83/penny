@@ -29,6 +29,7 @@ from core import (
     get_file_hash,
     classify_and_route,
 )
+from doctor import run_doctor
 from transcript_quality import TranscriptionResult, transcribe_with_quality
 from transcript_log import (
     InsertOutcome,
@@ -109,6 +110,14 @@ def health():
         "telegram_configured": bool(cfg.telegram_bot_token and cfg.telegram_chat_id),
         "llm_model": cfg.llm.model,
     })
+
+
+@app.route("/ready", methods=["GET"])
+def ready():
+    """Return the safe Doctor projection, separating readiness from liveness."""
+    report = run_doctor(config=cfg)
+    status_code = 503 if report.overall == "unready" else 200
+    return jsonify(report.to_dict()), status_code
 
 
 @app.route("/upload", methods=["POST"])

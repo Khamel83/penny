@@ -2,171 +2,43 @@ name: Penny Health Check
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # 9am UTC daily (2am PT)
-  workflow_dispatch:      # allow manual trigger
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 jobs:
   health-check:
     runs-on: [self-hosted, oci-dev]
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      # Explicit SSH options — bypasses HOME/config-file resolution issues in the runner
-      # environment that cause fallback to mDNS (192.168.7.x LAN IP instead of Tailscale).
       SSH_MACMINI: "ssh -F /home/ubuntu/.ssh/config -o ConnectTimeout=15 macmini"
 
     steps:
-      - name: Checkout repo (to read launchd templates)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify SSH to macmini
+      - name: Verify SSH connectivity
         run: |
-          echo "Testing SSH connectivity to macmini..."
-          $SSH_MACMINI "echo SSH_OK" || {
-            echo "ERROR: Cannot reach macmini. Tailscale may be down or key missing."
-            ssh -F /home/ubuntu/.ssh/config -o ConnectTimeout=15 -v macmini "echo SSH_OK" 2>&1 | grep -E "Connecting|HostName|config|error" | head -20
-            exit 1
-          }
-          echo "macmini reachable. OK."
+          set -euo pipefail
+          $SSH_MACMINI "echo SSH_OK" >/tmp/penny_ssh_probe.txt
+          grep -qx SSH_OK /tmp/penny_ssh_probe.txt
 
-      - name: Check launchd services (count derived from plist templates)
+      - name: Run read-only Penny Doctor
         run: |
-          # Expected count comes from the repo itself — adding a plist template
-          # automatically updates this check without any manual edits.
-          EXPECTED=$(ls launchd/com.penny.*.plist.template | wc -l | tr -d ' ')
-          $SSH_MACMINI "launchctl list | grep com.penny" | tee /tmp/penny_status.txt
-          COUNT=$(grep -c "com.penny" /tmp/penny_status.txt || true)
-          echo "Expected: $EXPECTED | Registered on macmini: $COUNT"
-          cat /tmp/penny_status.txt
-          if [ "$COUNT" -ne "$EXPECTED" ]; then
-            echo "ERROR: Expected $EXPECTED penny services (one per plist template), found $COUNT"
-            echo "Deploy missing templates or remove stale ones from macmini."
-            exit 1
-          fi
-          echo "All $EXPECTED services registered. OK."
+          set +e
+          $SSH_MACMINI \
+            "cd /Users/macmini/penny && HF_HUB_OFFLINE=1 /Users/macmini/penny/venv/bin/python scripts/penny_doctor.py --json" \
+            >/tmp/penny_doctor.json 2>/tmp/penny_doctor.stderr
+          doctor_status=$?
+          set -e
 
-      - name: Ensure persistent services are running (self-healing)
-        run: |
-          # Persistent services: plist templates WITHOUT StartInterval (run continuously).
-          # Interval-based services (like export) have no persistent PID — skip them.
-          PERSISTENT_LABELS=""
-          for f in launchd/com.penny.*.plist.template; do
-            if ! grep -q "StartInterval" "$f"; then
-              LABEL=$(basename "$f" .plist.template)
-              PERSISTENT_LABELS="$PERSISTENT_LABELS $LABEL"
-            fi
-          done
-          PERSISTENT_LABELS="${PERSISTENT_LABELS# }"
-          echo "Persistent services: $PERSISTENT_LABELS"
+          # The Doctor JSON is already bounded to status, timestamps, hashes,
+          # counters, and booleans.  Publish only those safe fields.
+          jq -c '{overall, source_revision, observed_at, components: (.components | with_entries(.value |= {state, reason, details}))}' \
+            /tmp/penny_doctor.json
 
-          UID_ON_MAC=$($SSH_MACMINI "id -u")
-          RESTARTED=""
-
-          for LABEL in $PERSISTENT_LABELS; do
-            PID=$($SSH_MACMINI "launchctl list | grep '$LABEL'" | awk '{print $1}')
-            if [ "$PID" = "-" ] || [ -z "$PID" ]; then
-              echo "WARNING: $LABEL not running — attempting restart..."
-              $SSH_MACMINI "launchctl kickstart -k gui/${UID_ON_MAC}/${LABEL}" \
-                && echo "$LABEL restarted." \
-                || echo "kickstart returned non-zero (may already be starting)"
-              RESTARTED="$RESTARTED $LABEL"
-            else
-              echo "$LABEL running (PID=$PID). OK."
-            fi
-          done
-
-          if [ -n "$RESTARTED" ]; then
-            echo "Waiting 15s for restarted services to stabilize..."
-            sleep 15
-            STILL_DOWN=""
-            for LABEL in $PERSISTENT_LABELS; do
-              PID=$($SSH_MACMINI "launchctl list | grep '$LABEL'" | awk '{print $1}')
-              if [ "$PID" = "-" ] || [ -z "$PID" ]; then
-                STILL_DOWN="$STILL_DOWN $LABEL"
-              else
-                echo "$LABEL recovered (PID=$PID). OK."
-              fi
-            done
-            if [ -n "$STILL_DOWN" ]; then
-              echo "ERROR: Services failed to restart:$STILL_DOWN"
-              $SSH_MACMINI "launchctl list | grep com.penny"
-              exit 1
-            fi
-            echo "All restarted services confirmed running."
-          fi
-
-      - name: Check watcher is polling (log updated in last 15 min, self-healing)
-        run: |
-          LAST=$($SSH_MACMINI "stat -f '%m' ~/.penny/logs/watcher.log")
-          NOW=$(date +%s)
-          AGE=$(( NOW - LAST ))
-          if [ "$AGE" -gt 900 ]; then
-            echo "WARNING: Watcher log last updated ${AGE}s ago (>15 min). Restarting watcher..."
-            UID_ON_MAC=$($SSH_MACMINI "id -u")
-            $SSH_MACMINI "launchctl kickstart -k gui/${UID_ON_MAC}/com.penny.watcher"
-            echo "Waiting 90s for watcher to complete a poll cycle..."
-            sleep 90
-            LAST=$($SSH_MACMINI "stat -f '%m' ~/.penny/logs/watcher.log")
-            NOW=$(date +%s)
-            AGE=$(( NOW - LAST ))
-            if [ "$AGE" -gt 900 ]; then
-              echo "ERROR: Watcher log still stale after restart (${AGE}s ago)"
-              $SSH_MACMINI "tail -10 ~/.penny/logs/watcher.log"
-              exit 1
-            fi
-            echo "Watcher recovered — log is now ${AGE}s old."
-          else
-            echo "Watcher log updated ${AGE}s ago. OK."
-          fi
-
-      - name: Check tasks poller (self-healing on repeated errors)
-        run: |
-          LOG="~/.penny/logs/tasks.system.log"
-          ERRORS=$($SSH_MACMINI "tail -20 $LOG 2>/dev/null | grep -c 'ERROR'" || echo 0)
-          RECENT_OK=$($SSH_MACMINI "tail -20 $LOG 2>/dev/null | grep -c 'connected\|Processed\|No new tasks'" || echo 0)
-          echo "Tasks poller — recent errors: $ERRORS, recent successes: $RECENT_OK"
-          if [ "$ERRORS" -gt 0 ] && [ "$RECENT_OK" -eq 0 ]; then
-            echo "WARNING: Tasks poller has errors and no successes. Restarting..."
-            UID_ON_MAC=$($SSH_MACMINI "id -u")
-            $SSH_MACMINI "launchctl kickstart -k gui/${UID_ON_MAC}/com.penny.tasks"
-            sleep 20
-            ERRORS=$($SSH_MACMINI "tail -20 $LOG 2>/dev/null | grep -c 'ERROR'" || echo 0)
-            RECENT_OK=$($SSH_MACMINI "tail -20 $LOG 2>/dev/null | grep -c 'connected\|Processed\|No new tasks'" || echo 0)
-            if [ "$ERRORS" -gt 0 ] && [ "$RECENT_OK" -eq 0 ]; then
-              echo "ERROR: Tasks poller still failing after restart"
-              $SSH_MACMINI "tail -20 $LOG 2>/dev/null"
-              exit 1
-            fi
-            echo "Tasks poller recovered after restart."
-          else
-            echo "Tasks poller OK."
-          fi
-
-      - name: Check transcript log
-        run: |
-          COUNT=$($SSH_MACMINI "sqlite3 ~/.penny/transcripts.db 'SELECT count(*) FROM transcripts;'")
-          PENDING=$($SSH_MACMINI "sqlite3 ~/.penny/transcripts.db \"SELECT count(*) FROM transcripts WHERE status IN ('pending','failed');\"")
-          echo "Transcript log: $COUNT total, $PENDING stuck in pending/failed"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "WARNING: Transcript log is empty (expected on fresh install only)"
-          fi
-          if [ "$PENDING" -gt 5 ]; then
-            echo "WARNING: $PENDING transcript(s) stuck — may need manual review"
-          fi
-          # Warnings only — stuck transcripts don't fail the health check
-
-      - name: Ensure VoiceMemos is running (self-healing)
-        run: |
-          PID=$($SSH_MACMINI "pgrep -x VoiceMemos || true")
-          if [ -z "$PID" ]; then
-            echo "WARNING: VoiceMemos not running — CloudKit sync will fail. Launching..."
-            $SSH_MACMINI "open -a VoiceMemos"
-            sleep 8
-            PID=$($SSH_MACMINI "pgrep -x VoiceMemos || true")
-            if [ -z "$PID" ]; then
-              echo "ERROR: VoiceMemos failed to launch — CloudKit sync will not work"
-              exit 1
-            fi
-            echo "VoiceMemos launched (PID=$PID)."
-          else
-            echo "VoiceMemos running (PID=$PID). OK."
-          fi
+          case "$doctor_status" in
+            0) echo "Penny Doctor ready." ;;
+            1) echo "Penny Doctor degraded; review component counters." ;;
+            2) echo "Penny Doctor unready." >&2; exit 1 ;;
+            *) echo "Penny Doctor returned an invalid status." >&2; exit 1 ;;
+          esac
