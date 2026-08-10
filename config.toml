@@ -40,3 +40,12 @@ ingest_token = ""
 # Bounds each Maya attempt so its outage cannot starve the Slack outbox.
 # Overridden by MAYA_DELIVERY_TIMEOUT_SECONDS and clamped to 1..30 seconds.
 delivery_timeout_seconds = 10
+
+[archive]
+# Penny-owned durable objects must remain outside iCloud/File Provider storage.
+object_root = "~/.penny/archive/objects"
+
+# Approved hydrated iCloud Drive mirror. Override only with
+# PENNY_ARCHIVE_MIRROR_ROOT; this mirror is not the durable object store.
+mirror_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Penny Archive"
+delivery_batch_limit = 5

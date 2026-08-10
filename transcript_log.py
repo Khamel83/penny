@@ -33,6 +33,7 @@ QUALITY_FAILURE_CONTENT_KIND = "transcript_quality_failure"
 QUALITY_FAILURE_DESTINATION = "maya-ledger"
 MAX_QUALITY_DETAIL_CHARACTERS = 255
 VOICE_MEMO_MAX_ATTEMPTS = 8
+ARCHIVE_MAX_ATTEMPTS = 5
 VOICE_MEMO_RETRY_ERROR_CODES = frozenset(
     {
         "file_not_downloaded",
@@ -128,6 +129,9 @@ def init_db() -> None:
                 quality_status  TEXT NOT NULL DEFAULT 'pending',
                 quality_detail  TEXT,
                 transcript_sha256 TEXT,
+                audio_sha256   TEXT,
+                transcription_backend TEXT,
+                transcription_model TEXT,
                 maya_delivery_status TEXT NOT NULL DEFAULT 'ineligible',
                 maya_delivery_eligible INTEGER NOT NULL DEFAULT 0,
                 maya_drop_id    TEXT,
@@ -243,6 +247,41 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_quality_failure_slack_due "
             "ON quality_failure_slack_deliveries(status, next_attempt_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transcript_row_id INTEGER NOT NULL UNIQUE,
+                local_object_path TEXT NOT NULL,
+                audio_sha256 TEXT NOT NULL,
+                byte_length INTEGER NOT NULL,
+                extension TEXT NOT NULL,
+                archive_source TEXT NOT NULL,
+                source_aliases TEXT NOT NULL DEFAULT '[]',
+                original_name TEXT,
+                recorded_at TEXT,
+                ingested_at TEXT,
+                archive_duration_seconds REAL,
+                mime_type TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error_code TEXT,
+                destination_audio_path TEXT,
+                destination_markdown_path TEXT,
+                destination_manifest_path TEXT,
+                receipt_sha256 TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                published_at TEXT,
+                FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_archive_deliveries_due "
+            "ON archive_deliveries(status, next_attempt_at)"
         )
         conn.commit()
 
@@ -373,6 +412,13 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         ),
         "quality_detail": "ALTER TABLE transcripts ADD COLUMN quality_detail TEXT",
         "transcript_sha256": "ALTER TABLE transcripts ADD COLUMN transcript_sha256 TEXT",
+        "audio_sha256": "ALTER TABLE transcripts ADD COLUMN audio_sha256 TEXT",
+        "transcription_backend": (
+            "ALTER TABLE transcripts ADD COLUMN transcription_backend TEXT"
+        ),
+        "transcription_model": (
+            "ALTER TABLE transcripts ADD COLUMN transcription_model TEXT"
+        ),
         "maya_delivery_status": (
             "ALTER TABLE transcripts "
             "ADD COLUMN maya_delivery_status TEXT NOT NULL DEFAULT 'ineligible'"
@@ -908,6 +954,8 @@ def _insert_transcript_transaction(
     quality_detail: str | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
+    archive_staged: Any | None = None,
+    archive_metadata: dict[str, Any] | None = None,
 ) -> int | None:
     """Insert a transcript and related outbox rows in one transaction."""
     if quality_status is None:
@@ -959,6 +1007,13 @@ def _insert_transcript_transaction(
             ),
         )
         if cursor.lastrowid and cursor.rowcount > 0:
+            if archive_staged is not None:
+                _queue_archive_delivery_conn(
+                    conn,
+                    int(cursor.lastrowid),
+                    archive_staged,
+                    archive_metadata,
+                )
             _queue_slack_delivery(
                 conn,
                 transcript_row_id=int(cursor.lastrowid),
@@ -1035,6 +1090,8 @@ def insert_transcript(
     quality_detail: str | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
+    archive_staged: Any | None = None,
+    archive_metadata: dict[str, Any] | None = None,
 ) -> int | None:
     """Compatibility wrapper returning an id only for a newly inserted row."""
     result = insert_transcript_result(
@@ -1054,6 +1111,8 @@ def insert_transcript(
         quality_detail=quality_detail,
         maya_delivery_eligible=maya_delivery_eligible,
         enqueue_slack=enqueue_slack,
+        archive_staged=archive_staged,
+        archive_metadata=archive_metadata,
     )
     return result.row_id if result.outcome is InsertOutcome.INSERTED else None
 
@@ -1845,6 +1904,249 @@ def get_maya_delivery_health() -> dict[str, int]:
             _safe_exception_class(e),
         )
         health["query_ok"] = 0
+        health["health_error"] = 1
+        return health
+    finally:
+        if conn:
+            conn.close()
+
+
+def _queue_archive_delivery_conn(
+    conn: sqlite3.Connection,
+    transcript_id: int,
+    staged: Any,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    metadata = dict(metadata or {})
+    canonical = conn.execute(
+        "SELECT source, audio_sha256 FROM transcripts WHERE id = ?",
+        (transcript_id,),
+    ).fetchone()
+    if canonical is None:
+        raise LookupError("Canonical transcript row does not exist")
+    existing_hash = canonical["audio_sha256"]
+    if existing_hash and existing_hash != staged.audio_sha256:
+        raise ValueError("Canonical archive audio hash conflict")
+
+    existing = conn.execute(
+        "SELECT source_aliases, status FROM archive_deliveries "
+        "WHERE transcript_row_id = ?",
+        (transcript_id,),
+    ).fetchone()
+    aliases = {
+        str(canonical["source"]),
+        str(metadata.get("source") or canonical["source"]),
+    }
+    alias = metadata.get("source_alias")
+    if alias:
+        aliases.add(str(alias))
+    aliases.update(str(value) for value in metadata.get("source_aliases", []) if value)
+    if existing is not None:
+        aliases.update(_json_loads_or_default(existing["source_aliases"], []))
+
+    backend = metadata.get("backend")
+    model = metadata.get("model")
+    conn.execute(
+        """
+        UPDATE transcripts
+        SET audio_sha256 = ?,
+            transcription_backend = COALESCE(?, transcription_backend),
+            transcription_model = COALESCE(?, transcription_model),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (staged.audio_sha256, backend, model, transcript_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO archive_deliveries (
+            transcript_row_id, local_object_path, audio_sha256, byte_length,
+            extension, archive_source, source_aliases, original_name,
+            recorded_at, ingested_at, archive_duration_seconds, mime_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(transcript_row_id) DO UPDATE SET
+            source_aliases = excluded.source_aliases,
+            updated_at = datetime('now')
+        """,
+        (
+            transcript_id,
+            str(staged.path),
+            staged.audio_sha256,
+            int(staged.byte_length),
+            staged.extension,
+            str(metadata.get("source") or canonical["source"]),
+            json.dumps(sorted(aliases)),
+            metadata.get("original_name"),
+            metadata.get("captured_at"),
+            metadata.get("ingested_at"),
+            metadata.get("duration_seconds"),
+            metadata.get("mime_type"),
+        ),
+    )
+
+
+def queue_archive_delivery(
+    transcript_id: int,
+    staged: Any,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Persist or reconcile the unique archive job after its canonical row exists."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        _queue_archive_delivery_conn(conn, transcript_id, staged, metadata)
+        conn.commit()
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_archive_deliveries(limit: int = 5) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT deliveries.*, transcripts.source, transcripts.transcript,
+                   transcripts.created_at, transcripts.quality_status,
+                   transcripts.transcription_backend, transcripts.transcription_model
+            FROM archive_deliveries AS deliveries
+            JOIN transcripts ON transcripts.id = deliveries.transcript_row_id
+            WHERE deliveries.status = 'pending'
+              AND (deliveries.next_attempt_at IS NULL
+                   OR deliveries.next_attempt_at <= datetime('now'))
+            ORDER BY deliveries.id
+            LIMIT ?
+            """,
+            (max(0, min(int(limit), 100)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        log.error("Failed to fetch archive deliveries due to a database error")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def needs_archive_delivery(content_hash: str) -> bool:
+    """Return whether a canonical row still lacks its durable archive job."""
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """
+            SELECT deliveries.id
+            FROM transcripts
+            LEFT JOIN archive_deliveries AS deliveries
+              ON deliveries.transcript_row_id = transcripts.id
+            WHERE transcripts.content_hash = ?
+            """,
+            (content_hash,),
+        ).fetchone()
+        return row is not None and row["id"] is None
+    except sqlite3.Error:
+        log.error("Failed to check archive reconciliation due to a database error")
+        return True
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_archive_delivery_failed(delivery_id: int, error_message: str) -> None:
+    """Record only a bounded operational class, never transcript/error content."""
+    del error_message
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE archive_deliveries
+            SET attempt_count = attempt_count + 1,
+                status = CASE WHEN attempt_count + 1 >= ? THEN 'failed' ELSE 'pending' END,
+                next_attempt_at = CASE
+                    WHEN attempt_count + 1 >= ? THEN NULL
+                    ELSE datetime('now', '+' || MIN(3600, 30 * (1 << attempt_count)) || ' seconds')
+                END,
+                last_error_code = 'archive_publish_error',
+                updated_at = datetime('now')
+            WHERE id = ? AND status != 'published'
+            """,
+            (ARCHIVE_MAX_ATTEMPTS, ARCHIVE_MAX_ATTEMPTS, delivery_id),
+        )
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_archive_delivery_published(
+    delivery_id: int,
+    *,
+    audio_path: str,
+    markdown_path: str,
+    manifest_path: str,
+    receipt_sha256: str,
+) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE archive_deliveries
+            SET status = 'published', next_attempt_at = NULL,
+                last_error_code = NULL, destination_audio_path = ?,
+                destination_markdown_path = ?, destination_manifest_path = ?,
+                receipt_sha256 = ?, published_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ? AND status != 'published'
+            """,
+            (audio_path, markdown_path, manifest_path, receipt_sha256, delivery_id),
+        )
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_archive_delivery_health() -> dict[str, int]:
+    health = {
+        "pending_count": 0,
+        "sent_count": 0,
+        "failed_count": 0,
+        "oldest_pending_age_seconds": 0,
+        "health_error": 0,
+    }
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS count FROM archive_deliveries GROUP BY status"
+        ).fetchall()
+        for row in rows:
+            key = {
+                "pending": "pending_count",
+                "published": "sent_count",
+                "failed": "failed_count",
+            }.get(str(row["status"]))
+            if key:
+                health[key] = int(row["count"])
+        age = conn.execute(
+            """
+            SELECT CAST(MAX(0, (julianday('now') - julianday(MIN(created_at))) * 86400)
+                        AS INTEGER)
+            FROM archive_deliveries WHERE status = 'pending'
+            """
+        ).fetchone()
+        health["oldest_pending_age_seconds"] = int(age[0] or 0)
+        return health
+    except Exception as exc:
+        log.error("Failed to fetch archive health: %s", _safe_exception_class(exc))
         health["health_error"] = 1
         return health
     finally:

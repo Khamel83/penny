@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import hashlib
+import json
 import logging
 import multiprocessing
 import os
@@ -30,6 +31,7 @@ os.environ["GOOGLE_TOKEN_FILE"] = "/tmp/penny_test_home/.penny/google_token.json
 logging.disable(logging.CRITICAL)
 
 import transcript_log  # noqa: E402
+from archive import StagedAudio  # noqa: E402
 
 
 def _init_db_in_process(
@@ -52,6 +54,11 @@ class TranscriptLogTests(unittest.TestCase):
         self.db_dir = tempfile.mkdtemp()
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
+        patch.object(
+            transcript_log,
+            "LEGACY_VOICE_MEMO_CURSOR_PATH",
+            Path(self.db_dir) / "legacy_last_pk.txt",
+        ).start()
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
 
@@ -81,6 +88,121 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(duplicate.outcome, transcript_log.InsertOutcome.DUPLICATE)
         self.assertEqual(duplicate.row_id, inserted.row_id)
         self.assertEqual(duplicate.existing_status, "pending")
+
+    def test_archive_schema_migrates_additively_and_queue_is_unique(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="legacy-md5-content-hash",
+            source="iCloud",
+            transcript="archive me",
+            recorded_at="2026-08-09T19:27:31Z",
+        )
+        self.assertIsNotNone(row_id)
+        staged_path = Path(self.db_dir) / "objects" / "audio.m4a"
+        staged_path.parent.mkdir()
+        staged_path.write_bytes(b"audio")
+        staged = StagedAudio(staged_path, hashlib.sha256(b"audio").hexdigest(), 5, ".m4a")
+
+        metadata = {
+            "source": "voice-memos",
+            "source_alias": "memo-alias",
+            "original_name": "Original Memo.m4a",
+            "captured_at": "2026-08-09T19:27:31Z",
+            "ingested_at": "2026-08-09T19:28:00Z",
+            "duration_seconds": 3.2,
+            "mime_type": "audio/mp4",
+            "backend": "mlx-whisper",
+            "model": "whisper-large-v3-turbo",
+            "quality_status": "passed",
+        }
+        transcript_log.queue_archive_delivery(int(row_id), staged, metadata)
+        transcript_log.queue_archive_delivery(
+            int(row_id), staged, {**metadata, "source_alias": "second-alias"}
+        )
+
+        conn = transcript_log._get_conn()
+        try:
+            transcript = conn.execute(
+                "SELECT content_hash, audio_sha256, transcription_backend, "
+                "transcription_model FROM transcripts WHERE id = ?", (row_id,)
+            ).fetchone()
+            deliveries = conn.execute("SELECT * FROM archive_deliveries").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(transcript["content_hash"], "legacy-md5-content-hash")
+        self.assertEqual(transcript["audio_sha256"], staged.audio_sha256)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["status"], "pending")
+        self.assertEqual(
+            json.loads(deliveries[0]["source_aliases"]),
+            ["iCloud", "memo-alias", "second-alias", "voice-memos"],
+        )
+
+    def test_new_canonical_row_rolls_back_when_atomic_archive_queue_fails(self) -> None:
+        staged_path = Path(self.db_dir) / "atomic.m4a"
+        staged_path.write_bytes(b"audio")
+        staged = StagedAudio(staged_path, hashlib.sha256(b"audio").hexdigest(), 5, ".m4a")
+        with patch.object(
+            transcript_log,
+            "_queue_archive_delivery_conn",
+            side_effect=sqlite3.OperationalError("queue unavailable"),
+        ):
+            result = transcript_log.insert_transcript_result(
+                content_hash="atomic-archive",
+                source="iCloud",
+                transcript="must be atomic",
+                archive_staged=staged,
+                archive_metadata={"source": "iCloud"},
+            )
+        self.assertEqual(result.outcome, transcript_log.InsertOutcome.FAILED)
+        self.assertIsNone(transcript_log.get_transcript_by_hash("atomic-archive"))
+
+    def test_archive_outbox_retry_receipt_health_and_connection_closure(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="archive-outbox", source="iCloud", transcript="safe body"
+        )
+        staged_path = Path(self.db_dir) / "object.m4a"
+        staged_path.write_bytes(b"audio")
+        staged = StagedAudio(staged_path, hashlib.sha256(b"audio").hexdigest(), 5, ".m4a")
+        transcript_log.queue_archive_delivery(int(row_id), staged, {"source": "iCloud"})
+        due = transcript_log.get_pending_archive_deliveries(limit=1)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["transcript"], "safe body")
+
+        transcript_log.mark_archive_delivery_failed(due[0]["id"], "raw secret body")
+        health = transcript_log.get_archive_delivery_health()
+        self.assertEqual(health["pending_count"], 1)
+        conn = transcript_log._get_conn()
+        try:
+            failed = dict(conn.execute(
+                "SELECT * FROM archive_deliveries WHERE id = ?", (due[0]["id"],)
+            ).fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(failed["last_error_code"], "archive_publish_error")
+        self.assertNotIn("raw secret body", failed["last_error_code"])
+        self.assertIsNotNone(failed["next_attempt_at"])
+
+        transcript_log.mark_archive_delivery_published(
+            due[0]["id"],
+            audio_path="/mirror/a.m4a",
+            markdown_path="/mirror/a.md",
+            manifest_path="/mirror/a.json",
+            receipt_sha256="receipt-hash",
+        )
+        self.assertEqual(transcript_log.get_archive_delivery_health()["sent_count"], 1)
+
+        real = transcript_log._get_conn()
+        class ClosingConnection:
+            closed = False
+            def execute(self, *args, **kwargs):
+                raise sqlite3.OperationalError("unavailable")
+            def close(self):
+                self.closed = True
+        broken = ClosingConnection()
+        real.close()
+        with patch.object(transcript_log, "_get_conn", return_value=broken):
+            self.assertEqual(transcript_log.get_archive_delivery_health()["health_error"], 1)
+        self.assertTrue(broken.closed)
 
     def test_insert_result_reports_database_failure(self) -> None:
         with patch.object(

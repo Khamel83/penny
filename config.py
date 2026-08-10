@@ -77,6 +77,13 @@ class MayaConfig:
 
 
 @dataclass
+class ArchiveConfig:
+    object_root: Path
+    mirror_root: Path
+    delivery_batch_limit: int = 5
+
+
+@dataclass
 class Config:
     llm: LLMConfig
     google_tasks: GoogleTasksConfig
@@ -86,6 +93,7 @@ class Config:
     logging: LoggingConfig
     notifications: NotificationsConfig
     maya: MayaConfig
+    archive: ArchiveConfig
     # Secrets — from environment variables
     openrouter_api_key: str
     telegram_bot_token: str
@@ -134,6 +142,40 @@ def get_config() -> Config:
         ),
         delivery_timeout_seconds=maya_timeout,
     )
+    archive_section = raw.get("archive", {})
+    archive_object_root = Path(
+        os.environ.get(
+            "PENNY_ARCHIVE_OBJECT_ROOT",
+            archive_section.get("object_root", "~/.penny/archive/objects"),
+        )
+    ).expanduser()
+    archive_mirror_root = Path(
+        os.environ.get(
+            "PENNY_ARCHIVE_MIRROR_ROOT",
+            archive_section.get(
+                "mirror_root",
+                "~/Library/Mobile Documents/com~apple~CloudDocs/Penny Archive",
+            ),
+        )
+    ).expanduser()
+    if "Mobile Documents" in archive_object_root.parts:
+        raise ValueError("PENNY_ARCHIVE_OBJECT_ROOT must be outside iCloud storage")
+    raw_archive_batch_limit = os.environ.get(
+        "PENNY_ARCHIVE_DELIVERY_BATCH_LIMIT",
+        str(archive_section.get("delivery_batch_limit", 5)),
+    )
+    try:
+        archive_batch_limit = int(raw_archive_batch_limit)
+    except (TypeError, ValueError):
+        archive_batch_limit = 5
+    archive = ArchiveConfig(
+        object_root=archive_object_root,
+        mirror_root=archive_mirror_root,
+        delivery_batch_limit=max(
+            1,
+            min(archive_batch_limit, 100),
+        ),
+    )
 
     _config = Config(
         llm=LLMConfig(
@@ -168,6 +210,7 @@ def get_config() -> Config:
             telegram_enabled=notifications_enabled,
         ),
         maya=maya,
+        archive=archive,
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
         telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),

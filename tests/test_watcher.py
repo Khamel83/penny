@@ -33,6 +33,7 @@ import transcript_log  # noqa: E402
 import watcher  # noqa: E402
 import core  # noqa: E402
 import maya_delivery  # noqa: E402
+from archive import StagedAudio  # noqa: E402
 from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
 
@@ -76,6 +77,123 @@ class WatcherTests(unittest.TestCase):
         )
         self.assertFalse(insert_mock.call_args.kwargs["enqueue_slack"])
         terminal_mock.assert_called_once_with(123, "skipped_too_large")
+
+    def test_stages_before_transcription_and_queues_after_canonical_insert(self) -> None:
+        audio_path = Path(self.db_dir) / "ordered.m4a"
+        audio_path.write_bytes(b"audio")
+        staged = StagedAudio(audio_path, "a" * 64, 5, ".m4a")
+        events: list[str] = []
+        with (
+            patch.object(watcher, "stage_audio", side_effect=lambda *a: (events.append("stage"), staged)[1]),
+            patch.object(watcher, "transcribe_with_quality", side_effect=lambda *a, **k: (events.append("transcribe"), TranscriptionResult("text", QualityResult(True), 1))[1]),
+            patch.object(watcher, "insert_transcript_result", side_effect=lambda **k: (events.append("insert"), _inserted(42))[1]) as insert,
+            patch.object(watcher, "queue_archive_delivery"),
+            patch.object(watcher, "classify_and_route"),
+        ):
+            self.assertTrue(watcher._process_audio_file(audio_path, file_hash="legacy-md5"))
+        self.assertEqual(events, ["stage", "transcribe", "insert"])
+        self.assertIs(insert.call_args.kwargs["archive_staged"], staged)
+
+    def test_persistence_failure_never_queues_archive(self) -> None:
+        audio_path = Path(self.db_dir) / "failed.m4a"
+        audio_path.write_bytes(b"audio")
+        staged = StagedAudio(audio_path, "b" * 64, 5, ".m4a")
+        with (
+            patch.object(watcher, "stage_audio", return_value=staged),
+            patch.object(watcher, "transcribe_with_quality", return_value=TranscriptionResult("text", QualityResult(True), 1)),
+            patch.object(watcher, "insert_transcript_result", return_value=TranscriptInsertResult(InsertOutcome.FAILED, error_code="database_unavailable")),
+            patch.object(watcher, "queue_archive_delivery") as queue,
+        ):
+            self.assertFalse(watcher._process_audio_file(audio_path, file_hash="legacy-md5"))
+        queue.assert_not_called()
+
+    def test_quality_oversize_and_existing_rows_queue_archive(self) -> None:
+        cases = [
+            ("quality", 50, {"id": 50, "quality_status": "needs_review", "status": "pending", "transcript": "review", "source": "iCloud"}),
+            ("oversize", 51, {"id": 51, "quality_status": "passed", "status": "pending", "transcript": "(skipped: file too large)", "source": "iCloud"}),
+            ("existing", 52, {"id": 52, "quality_status": "passed", "status": "routed", "transcript": "done", "source": "iCloud"}),
+        ]
+        for name, row_id, canonical in cases:
+            with self.subTest(name=name):
+                audio_path = Path(self.db_dir) / f"{name}.m4a"
+                audio_path.write_bytes(b"audio")
+                staged = StagedAudio(audio_path, str(row_id) * 32, 5, ".m4a")
+                with (
+                    patch.object(watcher, "stage_audio", return_value=staged),
+                    patch.object(watcher, "queue_archive_delivery") as queue,
+                    patch.object(watcher, "get_transcript_by_hash", return_value=canonical if name == "existing" else None),
+                    patch.object(watcher, "transcribe_with_quality", return_value=TranscriptionResult("review", QualityResult(False, "needs_review"), 1)),
+                    patch.object(watcher, "insert_transcript_result", return_value=_inserted(row_id)) as insert,
+                    patch.object(watcher, "MAX_FILE_SIZE", 0 if name == "oversize" else watcher.MAX_FILE_SIZE),
+                ):
+                    self.assertTrue(watcher._process_audio_file(audio_path, file_hash=f"hash-{name}"))
+                if name == "existing":
+                    queue.assert_called_once()
+                    self.assertIsNone(queue.call_args.args[2]["backend"])
+                elif name == "oversize":
+                    self.assertIsNone(
+                        insert.call_args.kwargs[
+                            "archive_metadata"
+                        ]["backend"]
+                    )
+
+    def test_valid_legacy_md5_must_match_staged_object_before_transcription(self) -> None:
+        audio_path = Path(self.db_dir) / "changed.m4a"
+        audio_path.write_bytes(b"new bytes")
+        staged = StagedAudio(audio_path, "c" * 64, len(b"new bytes"), ".m4a")
+        with (
+            patch.object(watcher, "stage_audio", return_value=staged),
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+        ):
+            with self.assertRaises(watcher.SourceChangedError):
+                watcher._process_audio_file(
+                    audio_path, file_hash="00000000000000000000000000000000"
+                )
+        transcribe.assert_not_called()
+
+    def test_archive_outbox_drains_independently_when_routing_outboxes_fail(self) -> None:
+        with (
+            patch.object(watcher, "_process_db_batch", side_effect=RuntimeError("source down")),
+            patch.object(watcher, "_process_archive_outbox") as archive_outbox,
+            patch.object(watcher, "_process_slack_outbox"),
+            patch.object(watcher, "_process_maya_outbox"),
+        ):
+            watcher._process_ingest_pass()
+        archive_outbox.assert_called_once()
+
+    def test_archive_outbox_persists_local_trio_receipt(self) -> None:
+        receipt = SimpleNamespace(
+            audio_path=Path("/mirror/a.m4a"),
+            markdown_path=Path("/mirror/a.md"),
+            manifest_path=Path("/mirror/a.json"),
+            receipt_sha256="manifest-hash",
+        )
+        with (
+            patch.object(watcher, "get_pending_archive_deliveries", return_value=[{"id": 17}]),
+            patch.object(watcher, "process_archive_delivery", return_value=receipt),
+            patch.object(watcher, "mark_archive_delivery_published") as published,
+        ):
+            watcher._process_archive_outbox()
+        published.assert_called_once_with(
+            17,
+            audio_path="/mirror/a.m4a",
+            markdown_path="/mirror/a.md",
+            manifest_path="/mirror/a.json",
+            receipt_sha256="manifest-hash",
+        )
+
+    def test_disk_scan_reconciles_canonical_row_missing_archive_delivery(self) -> None:
+        memo_dir = Path(self.db_dir) / "memos"
+        memo_dir.mkdir()
+        memo = memo_dir / "existing.m4a"
+        memo.write_bytes(b"audio")
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", memo_dir),
+            patch.object(watcher, "get_file_hash", return_value="existing-hash"),
+            patch.object(watcher, "is_already_logged", return_value=True),
+            patch.object(watcher, "needs_archive_delivery", return_value=True),
+        ):
+            self.assertEqual(watcher.scan_for_unprocessed_files(), [(memo, "existing-hash")])
 
     def test_watcher_does_not_mark_source_routed_after_insert_failure(self) -> None:
         audio_path = Path(self.db_dir) / "persistence-failure.m4a"

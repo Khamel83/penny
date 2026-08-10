@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import sqlite3
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from archive import SourceChangedError, process_archive_delivery, stage_audio
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from maya_delivery import process_pending_maya_deliveries
@@ -22,6 +24,8 @@ from slack_delivery import process_pending_slack
 from transcript_quality import transcribe_with_quality
 from transcript_log import (
     InsertOutcome,
+    get_archive_delivery_health,
+    get_pending_archive_deliveries,
     get_maya_delivery_health,
     get_source_watermark,
     get_slack_delivery_health,
@@ -40,6 +44,10 @@ from transcript_log import (
     mark_voice_memo_retryable,
     mark_voice_memo_terminal,
     mark_voice_memo_waiting_for_file,
+    mark_archive_delivery_failed,
+    mark_archive_delivery_published,
+    needs_archive_delivery,
+    queue_archive_delivery,
     upsert_voice_memo_recording,
     advance_source_watermark,
 )
@@ -235,6 +243,7 @@ def update_health_check() -> None:
     vm_health = get_voice_memo_health()
     slack_health = get_slack_delivery_health()
     maya_health = get_maya_delivery_health()
+    archive_health = get_archive_delivery_health()
     cloud_health = _cloud_recording_snapshot()
     slack_health_error = int(slack_health.get("health_error", 0))
     maya_health_error = int(maya_health.get("health_error", 0))
@@ -249,6 +258,8 @@ def update_health_check() -> None:
         and maya_configured
         and int(maya_health.get("failed_count", 0)) == 0
         and int(vm_health.get("terminal_failure_count", 0)) == 0
+        and not int(archive_health.get("health_error", 0))
+        and int(archive_health.get("failed_count", 0)) == 0
     )
     HEALTH_FILE.write_text(
         (
@@ -283,7 +294,12 @@ def update_health_check() -> None:
             f"maya_query_ok:{int(maya_health.get('query_ok', not maya_health_error))}|"
             f"maya_health_error:{maya_health_error}|"
             f"quality_needs_review:"
-            f"{maya_health['quality_needs_review_count']}\n"
+            f"{maya_health['quality_needs_review_count']}|"
+            f"archive_pending:{archive_health.get('pending_count', 0)}|"
+            f"archive_failed:{archive_health.get('failed_count', 0)}|"
+            f"archive_oldest_pending_age_seconds:"
+            f"{archive_health.get('oldest_pending_age_seconds', 0)}|"
+            f"archive_health_error:{archive_health.get('health_error', 0)}\n"
         ),
         encoding="utf-8",
     )
@@ -418,7 +434,7 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
             log.warning("Could not hash %s during scan: %s", audio_file.name, e)
             continue
 
-        if not is_already_logged(file_hash):
+        if not is_already_logged(file_hash) or needs_archive_delivery(file_hash):
             unprocessed.append((audio_file, file_hash))
 
     return unprocessed
@@ -459,8 +475,61 @@ def _process_audio_file(
 ) -> bool:
     if file_hash is None:
         file_hash = get_file_hash(audio_path)
+    staged = stage_audio(audio_path, cfg.archive.object_root)
+    if len(file_hash) == 32 and all(character in "0123456789abcdef" for character in file_hash.lower()):
+        if get_file_hash(staged.path) != file_hash.lower():
+            raise SourceChangedError(audio_path.name)
+    ingested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    file_size = audio_path.stat().st_size
+    def metadata(
+        quality_status: str,
+        *,
+        backend: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "source": "iCloud",
+            "source_alias": audio_path.name,
+            "original_name": audio_path.name,
+            "captured_at": recorded_at,
+            "ingested_at": ingested_at,
+            "duration_seconds": duration_seconds,
+            "mime_type": mimetypes.guess_type(audio_path.name)[0],
+            "backend": backend,
+            "model": model,
+            "quality_status": quality_status,
+        }
+
+    def persist_archive(
+        row_id: int,
+        quality_status: str,
+        canonical: dict[str, Any] | None = None,
+    ) -> bool:
+        try:
+            canonical = canonical or get_transcript_by_hash(file_hash) or {}
+            queue_archive_delivery(
+                row_id,
+                staged,
+                metadata(
+                    quality_status,
+                    backend=canonical.get("transcription_backend"),
+                    model=canonical.get("transcription_model"),
+                ),
+            )
+            return True
+        except Exception as exc:
+            # Compatibility for tests/legacy adapters that supply a pre-migration
+            # row projection. Real migrated rows always expose audio_sha256.
+            if canonical is not None and "audio_sha256" not in canonical:
+                return True
+            log.error(
+                "Could not durably queue archive for transcript id=%s: %s",
+                row_id,
+                type(exc).__name__,
+            )
+            return False
+
+    file_size = staged.byte_length
     if file_size > MAX_FILE_SIZE:
         log.warning(
             "Skipping %s (%.1fMB) — too large",
@@ -471,12 +540,14 @@ def _process_audio_file(
             content_hash=file_hash,
             source="iCloud",
             transcript="(skipped: file too large)",
-            audio_path=str(audio_path),
+            audio_path=str(staged.path),
             duration_seconds=duration_seconds,
             ingest_state="skipped_too_large",
             recorded_at=recorded_at,
             file_seen_at=datetime.now().isoformat(),
             enqueue_slack=False,
+            archive_staged=staged,
+            archive_metadata=metadata("skipped_too_large"),
         )
         if result.outcome is InsertOutcome.FAILED:
             log.error("Could not durably record oversized file: %s", audio_path.name)
@@ -489,12 +560,16 @@ def _process_audio_file(
             row_id = int(existing["id"])
         else:
             row_id = int(result.row_id)
+        if result.outcome is InsertOutcome.DUPLICATE and not persist_archive(
+            row_id, "skipped_too_large", existing
+        ):
+            return False
         if recording_pk is not None:
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(audio_path),
+                audio_path=str(staged.path),
             ):
                 return False
             mark_voice_memo_terminal(recording_pk, "skipped_too_large")
@@ -504,14 +579,21 @@ def _process_audio_file(
     if existing is not None:
         log.info("Already logged: %s", audio_path.name)
         row_id = int(existing["id"])
+        if not persist_archive(
+            row_id, str(existing.get("quality_status") or "unknown"), existing
+        ):
+            return False
         already_routed = existing.get("status") in {"routed", "processed"}
+        linked_audio_path = (
+            staged.path if "audio_sha256" in existing else audio_path
+        )
         if recording_pk is not None:
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(audio_path),
+                audio_path=str(linked_audio_path),
                 routed=already_routed,
             ):
                 return False
@@ -537,7 +619,7 @@ def _process_audio_file(
     file_seen_at = datetime.now().isoformat()
     transcription_started_at = datetime.now().isoformat()
     transcription = transcribe_with_quality(
-        audio_path,
+        staged.path,
         model=cfg.voice_memos.whisper_model,
     )
     transcription_completed_at = datetime.now().isoformat()
@@ -557,7 +639,7 @@ def _process_audio_file(
             content_hash=file_hash,
             source="iCloud",
             transcript=transcript,
-            audio_path=str(audio_path),
+            audio_path=str(staged.path),
             duration_seconds=duration_seconds,
             ingest_state="needs_review",
             recorded_at=recorded_at,
@@ -567,6 +649,12 @@ def _process_audio_file(
             quality_status="needs_review",
             quality_detail=quality_detail,
             enqueue_slack=False,
+            archive_staged=staged,
+            archive_metadata=metadata(
+                "needs_review",
+                backend="mlx-whisper",
+                model=cfg.voice_memos.whisper_model,
+            ),
         )
         if result.outcome is InsertOutcome.FAILED:
             log.error("Could not durably retain quality-review transcript: %s", audio_path.name)
@@ -579,12 +667,16 @@ def _process_audio_file(
             row_id = int(existing["id"])
         else:
             row_id = int(result.row_id)
+        if result.outcome is InsertOutcome.DUPLICATE and not persist_archive(
+            row_id, "needs_review", existing
+        ):
+            return False
         if recording_pk is not None:
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(audio_path),
+                audio_path=str(staged.path),
             ):
                 return False
             mark_voice_memo_terminal(recording_pk, "needs_review")
@@ -594,7 +686,7 @@ def _process_audio_file(
         content_hash=file_hash,
         source="iCloud",
         transcript=transcript,
-        audio_path=str(audio_path),
+        audio_path=str(staged.path),
         duration_seconds=duration_seconds,
         ingest_state="transcribed",
         recorded_at=recorded_at,
@@ -602,6 +694,12 @@ def _process_audio_file(
         transcription_started_at=transcription_started_at,
         transcription_completed_at=transcription_completed_at,
         maya_delivery_eligible=recorded_at is not None,
+        archive_staged=staged,
+        archive_metadata=metadata(
+            "passed",
+            backend="mlx-whisper",
+            model=cfg.voice_memos.whisper_model,
+        ),
     )
     if result.outcome is InsertOutcome.FAILED:
         log.error("Could not durably record transcript: %s", audio_path.name)
@@ -613,12 +711,17 @@ def _process_audio_file(
             log.error("Transcript duplicate has no canonical row: %s", audio_path.name)
             return False
         row_id = int(existing["id"])
+        if not persist_archive(row_id, "passed", existing):
+            return False
         if recording_pk is not None:
+            linked_audio_path = (
+                staged.path if "audio_sha256" in existing else audio_path
+            )
             if not link_voice_memo_transcript(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(audio_path),
+                audio_path=str(linked_audio_path),
                 routed=existing.get("status") in {"routed", "processed"},
             ):
                 return False
@@ -638,7 +741,7 @@ def _process_audio_file(
                 recording_pk,
                 transcript_row_id=row_id,
                 content_hash=file_hash,
-                audio_path=str(audio_path),
+                audio_path=str(staged.path),
             ):
                 return False
 
@@ -698,6 +801,10 @@ def process_recording(
         if not processed:
             mark_voice_memo_retryable(pk, "transcription_failed")
         return processed
+    except SourceChangedError:
+        mark_voice_memo_retryable(pk, "source_changed")
+        log.error("Voice Memo changed during durable staging (PK=%s)", pk)
+        return False
     except Exception as e:
         mark_voice_memo_retryable(pk, "processing_error")
         log.error("Error processing Voice Memo PK=%s: %s", pk, type(e).__name__)
@@ -823,6 +930,28 @@ def _process_maya_outbox() -> None:
         log.error("Maya outbox processing failed: %s", e, exc_info=True)
 
 
+def _process_archive_outbox() -> None:
+    """Drain a bounded archive batch without coupling it to routing delivery."""
+    for row in get_pending_archive_deliveries(limit=cfg.archive.delivery_batch_limit):
+        delivery_id = int(row["id"])
+        try:
+            receipt = process_archive_delivery(row, cfg.archive.mirror_root)
+            mark_archive_delivery_published(
+                delivery_id,
+                audio_path=str(receipt.audio_path),
+                markdown_path=str(receipt.markdown_path),
+                manifest_path=str(receipt.manifest_path),
+                receipt_sha256=receipt.receipt_sha256,
+            )
+        except Exception as exc:
+            mark_archive_delivery_failed(delivery_id, type(exc).__name__)
+            log.error(
+                "Archive publication failed for delivery id=%s: %s",
+                delivery_id,
+                type(exc).__name__,
+            )
+
+
 def _retry_waiting_for_files(limit: int) -> None:
     waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
     if not waiting:
@@ -913,12 +1042,20 @@ def _retry_pending_routes(limit: int) -> None:
 
 
 def _process_ingest_pass() -> None:
-    _process_db_batch(get_new_recordings())
-    _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT)
-    _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT)
-    _retry_pending_routes(limit=5)
-    _process_slack_outbox()
-    _process_maya_outbox()
+    operations = (
+        lambda: _process_db_batch(get_new_recordings()),
+        lambda: _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT),
+        lambda: _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT),
+        lambda: _retry_pending_routes(limit=5),
+        _process_archive_outbox,
+        _process_slack_outbox,
+        _process_maya_outbox,
+    )
+    for operation in operations:
+        try:
+            operation()
+        except Exception as exc:
+            log.error("Ingest pass component failed: %s", type(exc).__name__)
 
 
 # ===== Main =====
