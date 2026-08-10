@@ -1,11 +1,46 @@
 import sys
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from config import WHISPER_MODEL_REPOSITORY, WHISPER_MODEL_REVISION
 from transcript_quality import evaluate_transcript, transcribe_with_quality
+
+
+def _verified_model(tmp_path: Path) -> Path:
+    model = tmp_path / "models" / WHISPER_MODEL_REVISION
+    model.mkdir(parents=True)
+    config = model / "config.json"
+    weights = model / "weights.npz"
+    config.write_text(json.dumps({"model_type": "whisper"}), encoding="utf-8")
+    weights.write_bytes(b"test weights")
+    files = []
+    for path in (config, weights):
+        files.append(
+            {
+                "path": path.name,
+                "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    (model / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repository": WHISPER_MODEL_REPOSITORY,
+                "revision": WHISPER_MODEL_REVISION,
+                "config_path": "config.json",
+                "weights_path": "weights.npz",
+                "files": files,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return model
 
 
 def test_repeated_suffix_fails():
@@ -43,7 +78,7 @@ def test_empty_or_punctuation_only_output_fails(text):
     assert result.reason == "empty_output"
 
 
-def test_transcription_retries_once_and_selects_clean_second_result(monkeypatch):
+def test_transcription_retries_once_and_selects_clean_second_result(monkeypatch, tmp_path):
     transcribe = Mock(
         side_effect=[
             {"text": "A valid memo first. " + "Vous " * 20},
@@ -51,9 +86,10 @@ def test_transcription_retries_once_and_selects_clean_second_result(monkeypatch)
         ]
     )
     monkeypatch.setitem(sys.modules, "mlx_whisper", SimpleNamespace(transcribe=transcribe))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     path = Path("/tmp/penny-test.m4a")
 
-    result = transcribe_with_quality(path, model="test-model")
+    result = transcribe_with_quality(path, model=str(_verified_model(tmp_path)))
 
     assert result.text == "Create one ticket in the repository after checking the API."
     assert result.quality.passed is True
@@ -65,7 +101,7 @@ def test_transcription_retries_once_and_selects_clean_second_result(monkeypatch)
         assert invocation.kwargs["condition_on_previous_text"] is False
 
 
-def test_transcription_stops_after_two_bad_results_and_needs_review(monkeypatch):
+def test_transcription_stops_after_two_bad_results_and_needs_review(monkeypatch, tmp_path):
     transcribe = Mock(
         side_effect=[
             {"text": "A valid memo first. " + "Vous " * 20},
@@ -73,8 +109,11 @@ def test_transcription_stops_after_two_bad_results_and_needs_review(monkeypatch)
         ]
     )
     monkeypatch.setitem(sys.modules, "mlx_whisper", SimpleNamespace(transcribe=transcribe))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-    result = transcribe_with_quality(Path("/tmp/penny-test.m4a"), model="test-model")
+    result = transcribe_with_quality(
+        Path("/tmp/penny-test.m4a"), model=str(_verified_model(tmp_path))
+    )
 
     assert result.quality.passed is False
     assert result.quality.reason == "needs_review"

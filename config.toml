@@ -12,7 +12,12 @@ default_list = "Inbox"
 
 [voice_memos]
 max_file_size_mb = 50
-whisper_model = "mlx-community/whisper-large-v3-turbo"
+# Durable identity only. Runtime resolves the verified local path below and
+# never passes this repository ID to MLX or the Hugging Face client.
+whisper_model = "mlx-community/whisper-large-v3-turbo@a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+whisper_model_repository = "mlx-community/whisper-large-v3-turbo"
+whisper_model_revision = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+whisper_model_path = "~/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 poll_interval_seconds = 60
 startup_process_limit = 5
 

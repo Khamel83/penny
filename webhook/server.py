@@ -69,7 +69,7 @@ def transcribe(path: Path) -> TranscriptionResult:
     try:
         return transcribe_with_quality(
             transcribe_path,
-            model=cfg.voice_memos.whisper_model,
+            model=cfg.voice_memos.whisper_model_path,
         )
     finally:
         if wav_path.exists():

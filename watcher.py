@@ -30,7 +30,11 @@ from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
-from transcript_quality import transcribe_with_quality
+from transcript_quality import (
+    ModelUnavailableError,
+    resolve_whisper_model,
+    transcribe_with_quality,
+)
 from transcript_log import (
     InsertOutcome,
     get_archive_delivery_health,
@@ -117,6 +121,13 @@ def check_dependencies() -> tuple[List[str], List[str]]:
         import mlx_whisper  # noqa: F401
     except ImportError:
         errors.append("mlx_whisper not installed")
+
+    if os.environ.get("HF_HUB_OFFLINE") != "1":
+        errors.append("HF_HUB_OFFLINE must equal 1 for local transcription")
+    try:
+        resolve_whisper_model(cfg.voice_memos.whisper_model_path)
+    except ModelUnavailableError as exc:
+        errors.append(f"pinned Whisper model unavailable ({exc})")
 
     try:
         import requests  # noqa: F401
@@ -640,7 +651,7 @@ def _process_audio_file(
     transcription_started_at = datetime.now().isoformat()
     transcription = transcribe_with_quality(
         staged.path,
-        model=cfg.voice_memos.whisper_model,
+        model=cfg.voice_memos.whisper_model_path,
     )
     transcription_completed_at = datetime.now().isoformat()
     transcript = transcription.text

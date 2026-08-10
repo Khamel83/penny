@@ -23,6 +23,17 @@ except ImportError:
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 
+# The model repository and revision are part of Penny's durable transcription
+# identity.  Runtime code must use the local path below; this identity is what
+# is persisted in the SQLite/archive metadata and remains portable between
+# machines.
+WHISPER_MODEL_REPOSITORY = "mlx-community/whisper-large-v3-turbo"
+WHISPER_MODEL_REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+WHISPER_MODEL_ID = f"{WHISPER_MODEL_REPOSITORY}@{WHISPER_MODEL_REVISION}"
+DEFAULT_WHISPER_MODEL_PATH = (
+    Path("~/.penny/models/whisper-large-v3-turbo") / WHISPER_MODEL_REVISION
+)
+
 _config: "Config | None" = None
 
 
@@ -47,6 +58,9 @@ class AppleRemindersConfig:
 class VoiceMemosConfig:
     max_file_size_mb: int
     whisper_model: str
+    whisper_model_repository: str
+    whisper_model_revision: str
+    whisper_model_path: Path
     poll_interval_seconds: int
     startup_process_limit: int
 
@@ -217,6 +231,41 @@ def get_config() -> Config:
         ),
     )
 
+    voice_memos_section = raw.get("voice_memos", {})
+    configured_model = str(
+        voice_memos_section.get("whisper_model", WHISPER_MODEL_REPOSITORY)
+    ).strip()
+    configured_repository = str(
+        voice_memos_section.get("whisper_model_repository", configured_model)
+    ).strip()
+    configured_revision = str(
+        voice_memos_section.get("whisper_model_revision", WHISPER_MODEL_REVISION)
+    ).strip()
+    # Accept the concise repo@revision spelling in config.toml while retaining
+    # explicit keys for operators and older config files.
+    if "@" in configured_model:
+        model_repository, model_revision = configured_model.rsplit("@", 1)
+        configured_repository = model_repository.strip()
+        configured_revision = model_revision.strip()
+    if (
+        configured_repository != WHISPER_MODEL_REPOSITORY
+        or configured_revision != WHISPER_MODEL_REVISION
+    ):
+        raise ValueError(
+            "voice_memos.whisper_model must pin the approved MLX Whisper "
+            f"revision {WHISPER_MODEL_ID}"
+        )
+    model_path = Path(
+        os.environ.get(
+            "PENNY_WHISPER_MODEL_PATH",
+            voice_memos_section.get(
+                "whisper_model_path", str(DEFAULT_WHISPER_MODEL_PATH)
+            ),
+        )
+    ).expanduser()
+    if not model_path.is_absolute():
+        raise ValueError("PENNY_WHISPER_MODEL_PATH must be an absolute path")
+
     _config = Config(
         llm=LLMConfig(
             model=raw["llm"]["model"],
@@ -230,10 +279,13 @@ def get_config() -> Config:
             default_list=raw["apple_reminders"]["default_list"],
         ),
         voice_memos=VoiceMemosConfig(
-            max_file_size_mb=raw["voice_memos"]["max_file_size_mb"],
-            whisper_model=raw["voice_memos"]["whisper_model"],
-            poll_interval_seconds=raw["voice_memos"]["poll_interval_seconds"],
-            startup_process_limit=raw["voice_memos"]["startup_process_limit"],
+            max_file_size_mb=voice_memos_section["max_file_size_mb"],
+            whisper_model=WHISPER_MODEL_ID,
+            whisper_model_repository=WHISPER_MODEL_REPOSITORY,
+            whisper_model_revision=WHISPER_MODEL_REVISION,
+            whisper_model_path=model_path,
+            poll_interval_seconds=voice_memos_section["poll_interval_seconds"],
+            startup_process_limit=voice_memos_section["startup_process_limit"],
         ),
         webhook=WebhookConfig(
             port=raw["webhook"]["port"],

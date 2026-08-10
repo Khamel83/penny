@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for Penny configuration loading."""
 import os
+import plistlib
 import sys
 import unittest
 from pathlib import Path
@@ -60,6 +61,16 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("Groceries", cfg.apple_reminders.lists)
         self.assertEqual(cfg.apple_reminders.default_list, "Inbox")
         self.assertEqual(cfg.voice_memos.max_file_size_mb, 50)
+        self.assertEqual(cfg.voice_memos.whisper_model, config.WHISPER_MODEL_ID)
+        self.assertEqual(
+            cfg.voice_memos.whisper_model_repository,
+            config.WHISPER_MODEL_REPOSITORY,
+        )
+        self.assertEqual(
+            cfg.voice_memos.whisper_model_revision,
+            config.WHISPER_MODEL_REVISION,
+        )
+        self.assertTrue(cfg.voice_memos.whisper_model_path.is_absolute())
         self.assertEqual(cfg.voice_memos.poll_interval_seconds, 60)
         self.assertEqual(cfg.webhook.port, 5678)
         self.assertEqual(cfg.webhook.host, "127.0.0.1")
@@ -149,6 +160,26 @@ class ConfigTests(unittest.TestCase):
                 cfg = config.get_config()
                 self.assertEqual(cfg.maya.max_attempts, expected_attempts)
                 self.assertEqual(cfg.maya.max_age_days, expected_age_days)
+
+    def test_whisper_model_path_override_must_be_absolute(self):
+        os.environ["PENNY_WHISPER_MODEL_PATH"] = "relative/model"
+        config._config = None
+        with self.assertRaises(ValueError):
+            config.get_config()
+        os.environ.pop("PENNY_WHISPER_MODEL_PATH", None)
+        config._config = None
+
+    def test_launch_templates_require_offline_pinned_model_path(self):
+        revision = config.WHISPER_MODEL_REVISION
+        expected_path = (
+            f"/Users/macmini/.penny/models/whisper-large-v3-turbo/{revision}"
+        )
+        for name in ("com.penny.watcher", "com.penny.webhook"):
+            with self.subTest(name=name):
+                path = ROOT / "launchd" / f"{name}.plist.template"
+                values = plistlib.loads(path.read_bytes())["EnvironmentVariables"]
+                self.assertEqual(values["HF_HUB_OFFLINE"], "1")
+                self.assertEqual(values["PENNY_WHISPER_MODEL_PATH"], expected_path)
 
 
 if __name__ == "__main__":

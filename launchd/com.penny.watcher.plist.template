@@ -14,6 +14,11 @@
         <!-- IMPORTANT: launchd doesn't inherit shell PATH -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Transcription is strictly local; no Hugging Face resolution at runtime. -->
+        <key>HF_HUB_OFFLINE</key>
+        <string>1</string>
+        <key>PENNY_WHISPER_MODEL_PATH</key>
+        <string>/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb</string>
         <!-- Replace with actual values -->
         <key>OPENROUTER_API_KEY</key>
         <string>YOUR_OPENROUTER_API_KEY_HERE</string>
