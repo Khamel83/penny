@@ -4,35 +4,68 @@ project:
   name: Penny
   repository: https://github.com/Khamel83/penny
   kind: service
-  lifecycle: development
+  lifecycle: phase-a-candidate
   owner: homelab
 monitoring:
   state: observing
+  source: penny-doctor
+  evidence: metadata-only
 runtime:
   production:
     host: macmini
-    managed_by: unknown
+    managed_by: user-launchd
     unit: penny
-    sync_mode: runtime-local-backup-to-homelab
+    deployment_proof: exact-source-revision-plus-doctor
+  canonical_record:
+    type: sqlite
+    authority: local
+    mirror: icloud-drive-penny-archive
+    mirror_is_backup: false
+  transcription:
+    backend: mlx-whisper
+    network: offline-required
+    model: pinned-local-revision
+backup:
+  independent_source: homelab-versioned-sets
+  contents:
+    - sqlite-snapshot
+    - immutable-archive-objects
+    - catalog
+  verification: scratch-only
+  receipt: metadata-only
 health:
-  source: macOS launchd on Mac mini
   checks:
-  - id: penny.launchd
-    type: catalog
-    name: penny.launchd
-    severity: medium
-    repair_id: null
+    - id: penny.doctor
+      type: readiness
+      severity: high
+      repair_id: null
+    - id: penny.backup
+      type: verification-receipt
+      severity: high
+      repair_id: null
 observability:
   event_sink: homelab-api:/observations
   evidence_policy: sanitized
+  external_effects: receipt-required
 dependencies:
-  required: []
-  optional: []
+  required:
+    - macos-launchd
+    - local-mlx-model
+  optional:
+    - maya-v2
 secrets:
   broker_consumer: penny
-  references: []
+  references:
+    - dedicated-ingest-credential
+    - callback-credential
+    - slack-credential
+    - maya-v2-credential
 operations:
   repair_ids: []
+  destructive_actions: disabled
 docs:
   index: README.md
-  operations: docs/OPERATIONS.md
+  handoff: HANDOFF.md
+  reliability: docs/reliability.md
+  deployment: docs/macmini-deployment.md
+  troubleshooting: docs/troubleshooting.md

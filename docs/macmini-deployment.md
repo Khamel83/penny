@@ -1,150 +1,103 @@
-# Penny Deployment on Mac Mini
+# Penny deployment on the Mac mini
 
-## File Locations
+This runbook describes a controlled deployment. It does not claim that the
+current host is on this revision. Record the exact pushed SHA, runtime checkout
+SHA, launchd labels, and Doctor result before calling a deployment complete.
 
-### Service Files
-```
-/Users/macmini/penny/
-├── watcher.py              # Voice memo poller + Whisper transcription + routing
-├── tasks_poller.py         # Google Tasks poller → Apple Reminders
-├── webhook/
-│   └── server.py           # HTTP server for direct uploads and text ingestion
-├── core.py                 # Shared pipeline, hashing, Telegram, logging
-├── classifier.py           # LLM classification (OpenRouter)
-├── reminders.py            # AppleScript interface to Reminders/Notes
-├── transcript_log.py       # SQLite transcript database (dedup + history)
-├── config.py               # Config loader (config.toml + env vars)
-├── config.toml             # Non-secret settings
-├── scripts/
-│   ├── trust_check.py      # Pre-deploy validation
-│   ├── google_auth.py      # Google OAuth setup
-│   └── export_transcripts.py  # Periodic backup to homelab
-├── launchd/                # plist templates (substitute secrets and deploy)
-│   ├── com.penny.watcher.plist.template
-│   ├── com.penny.webhook.plist.template
-│   ├── com.penny.tasks.plist.template
-│   └── com.penny.export.plist.template
-├── tests/                  # Unit tests
-└── venv/                   # Python virtual environment
-```
+## Runtime layout
 
-### Runtime State
-```
-~/.penny/
-├── transcripts.db          # SQLite DB — single source of truth for all transcriptions
-├── transcript_history.json # JSON export (backed up to homelab every 6h)
-├── last_pk.txt             # Last processed voice memo PK
-├── health.txt              # Watcher health status (written every 5 min)
-├── health_tasks.txt        # Tasks poller health status
-├── google_token.json       # Google OAuth token (auto-refreshes)
-├── google_credentials.json # Google OAuth app credentials
-└── logs/
-    ├── watcher.log         # Application log (rotating)
-    ├── watcher.system.log  # launchd stdout/stderr
-    ├── webhook.log
-    ├── tasks.log
-    └── export.system.log
-```
+The repository checkout contains Python services, `config.toml`, launchd
+templates, scripts, and tests. The runtime state directory (configured by
+`PENNY_*` paths) contains:
 
-### Voice Memos Directory
-```
-~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/
-```
-Contains: *.m4a files, CloudRecordings.db (iCloud Voice Memos database)
+- canonical `transcripts.db`;
+- immutable local archive objects;
+- iCloud `Penny Archive` mirror metadata;
+- versioned backup sets and the latest verification receipt;
+- health freshness files and service diagnostics;
+- private OAuth/runtime state where required.
 
-### Launchd Services
-```
-~/Library/LaunchAgents/com.penny.{watcher,webhook,tasks,export}.plist
-```
+The launchd-installed wrappers and plists are runtime artifacts, not tracked
+templates. A wrapper must invoke the intended checkout/virtualenv and preserve
+the dedicated runtime environment. A template documents the expected shape; it
+does not prove that a plist is loaded, approved, or running. The launchd
+`watcher.system.log` file is diagnostic output only.
 
 ## Services
 
-| Service | File | Interval | Description |
-|---------|------|----------|-------------|
-| `com.penny.watcher` | `watcher.py` | 60s | Polls iCloud Voice Memos DB, transcribes via Whisper, classifies and routes |
-| `com.penny.tasks` | `tasks_poller.py` | 180s | Polls Google Tasks API, routes items to Apple Reminders |
-| `com.penny.webhook` | `webhook/server.py` | continuous | HTTP server on port 5678 (direct uploads + text ingestion) |
-| `com.penny.export` | `scripts/export_transcripts.py` | 6h | Dumps transcripts.db to JSON, rsyncs to homelab |
+| Label | Function | Schedule |
+| --- | --- | --- |
+| `com.penny.watcher` | Voice Memos compatibility ingest, staging, offline MLX, local routing, and outboxes | continuous/polling |
+| `com.penny.tasks` | Approved Google Tasks input and durable local routing | periodic |
+| `com.penny.webhook` | Authenticated loopback upload/ingest/callback plus `/health` and `/ready` | continuous |
+| `com.penny.export` | Versioned backup, scratch verification, and safe verification receipt | periodic |
 
-## Verification Commands
+## Preconditions
 
-```bash
-# Check all services
-ssh macmini "launchctl list | grep penny"
+1. Work from a clean, reviewed revision and run the repository trust check.
+2. Confirm the Mac has the approved arm64 Python/MLX/ffmpeg runtime.
+3. Confirm the exact pinned model is already provisioned and verifies locally.
+4. Keep `HF_HUB_OFFLINE=1` for the transcription services.
+5. Load dedicated credentials through the runtime secret mechanism; never put
+   values in tracked config, templates, logs, or shell history.
+6. Confirm the webhook bind policy is loopback or explicitly protected.
+7. Create a verified backup set before changing code/config.
 
-# Check health
-ssh macmini "cat ~/.penny/health.txt"
-# Format: timestamp|db_records:XXX|watcher_ok:1|voicememos:1|voicememos_responsive:1|voice_db_ok:1|voice_db_wal_age_seconds:X|cloud_latest_recording_pk:X|pending:X|latest_recording_pk:X|awaiting_file:X|voice_memo_failed:X|slack_pending:X|slack_failed:X|slack_health_error:0|quality_failure_slack_pending:X|quality_failure_slack_failed:X|maya_configured:1|maya_pending:X|maya_due:X|maya_failed:X|maya_oldest_due_age_seconds:X|maya_query_ok:1|maya_health_error:0|quality_needs_review:X
+## Controlled deployment
 
-# Check transcript database
-ssh macmini "sqlite3 ~/.penny/transcripts.db 'SELECT status, COUNT(*) FROM transcripts GROUP BY status;'"
-
-# Check last PK
-ssh macmini "cat ~/.penny/last_pk.txt"
-
-# View logs
-ssh macmini "tail -20 ~/.penny/logs/watcher.log"
-
-# Restart a service
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
-```
-
-## Recovery Procedures
-
-### If Service Stops Running
-```bash
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
-```
-
-### If CloudRecordings.db Gets Corrupted
-```bash
-ssh macmini "rm ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db*"
-ssh macmini "killall bird && open -a VoiceMemos"
-```
-
-### If transcripts.db Gets Corrupted
-```bash
-ssh macmini "rm ~/.penny/transcripts.db"
-# Re-create on next watcher startup via init_db()
-# Migrated entries from old processed.txt files will be re-imported
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
-```
-
-### After System Reboot
-All services auto-start via `RunAtLoad`. Verify:
-```bash
-ssh macmini "launchctl list | grep penny"
-```
-
-## How to Deploy Code Updates
+Run local checks first:
 
 ```bash
-python3 scripts/trust_check.py
-
-rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
-  /home/ubuntu/github/penny/ macmini:/Users/macmini/penny/
-
-ssh macmini "for svc in watcher webhook tasks export; do
-  launchctl kickstart -k gui/\$(id -u)/com.penny.\${svc}
-done"
+venv/bin/python scripts/trust_check.py
+venv/bin/python -m pytest -q
 ```
 
-## Files Not in Git
+Copy the reviewed checkout and wrapper/template inputs using the approved
+deployment channel. Preserve runtime state, databases, archive objects,
+outboxes, receipts, and prior backup sets. Update the installed wrappers/plists
+only after checking their rendered environment for names (never values): model
+path/revision, offline mode, dedicated ingress/callback credentials, Slack, and
+Maya v2.
 
-- `~/.penny/` — all runtime state (transcripts.db, logs, health files, Google tokens)
-- `~/Library/LaunchAgents/com.penny.*.plist` — contain secrets (OPENROUTER_API_KEY, etc.)
-- Templates at `launchd/*.plist.template` have placeholder values
+Restart only the Penny labels that changed, using the normal launchd operator
+procedure. Do not restart Apple providers, reset state, or replay outboxes as a
+deployment step. Verify the installed labels and wrapper revision, then run the
+Doctor and both HTTP endpoints locally.
 
-## Power Settings
+## Acceptance evidence
 
-From `pmset -g`:
-- sleep: 1 (but prevented by screensharingd, powerd)
-- disksleep: 10
-- displaysleep: 0
-- autorestart: 1
+Deployment evidence must include:
 
-## Backup
+- pushed SHA equals the runtime checkout SHA;
+- wrappers point to the intended checkout and virtualenv;
+- launchd labels are registered and approved (registration is not a health
+  result by itself);
+- `penny doctor` exit/status and component reason codes;
+- `/health` liveness and `/ready` readiness responses;
+- latest backup verification receipt bound to its catalog and database metadata;
+- a safe authenticated ingress canary that creates no external side effect.
 
-Transcript history is backed up to homelab every 6 hours via `com.penny.export`:
-- Local: `~/.penny/transcript_history.json`
-- Remote: `homelab:~/backups/penny/transcript_history.json`
+Do not call a deployment healthy based on PIDs, `watcher.system.log`, a template,
+or a provider request. Physical Watch, Apple effect, Slack, and Maya canaries
+require their own explicit approval and downstream receipts.
+
+## Rollback
+
+If a gate fails, stop the changed Penny labels, restore the prior reviewed code
+and runtime configuration, and rerun read-only Doctor/backup checks. Preserve
+new staged objects, SQLite rows, outboxes, receipts, dead letters, and backup
+sets for investigation. Restore the whole database only from a verified set and
+only in a staging/scratch procedure before any external effect resumes.
+
+Never delete or reset Apple Voice Memos data, the canonical SQLite database,
+archive objects, or backup sets to force a green check. Credential rotation,
+permanent deletion, external sends/shares, and production deployment remain
+explicit human gates.
+
+## Ongoing checks
+
+Use the Doctor for readiness and the ledger/receipt tables for durable evidence.
+Use `watcher.system.log` and other service logs only to explain a bounded reason
+code. Keep iCloud as a rebuildable mirror and homelab backup sets as the
+independent recovery source; neither should be silently substituted for the
+canonical SQLite ledger.

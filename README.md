@@ -1,308 +1,107 @@
 # Penny
 
-Penny is voice capture middleware for Apple's native apps.
+Penny is a local-first voice-capture pipeline for an Apple Watch, iPhone, and
+Mac. A capture is staged and written to the canonical SQLite ledger before any
+transcription, routing, or provider work. The current Phase A source is Voice
+Memos; Just Press Record (JPR) is a later, explicitly gated pilot.
 
-You speak naturally, Penny transcribes and routes it, and the result lands in Apple Reminders or Apple Notes. The primary flow is Apple Watch Voice Memos syncing to a Mac mini. The system is optimized for reliability over speed.
+## Contract
 
-```
-Voice front-end            →  Penny (middleware)  →  Apple back-end
-────────────────────────────────────────────────────────────────────
-Apple Watch Voice Memo     →  transcribe + classify  →  Reminders / Notes
-Google Home                →  classify               →  Reminders / Notes
-Clio routed item           →  classify               →  Reminders / Notes
-```
-
----
-
-Canonical documentation:
-- `HANDOFF.md`
-- `docs/README.md`
-- `docs/reliability.md`
-- `docs/macmini-deployment.md`
-- `docs/troubleshooting.md`
-
----
-
-## The architecture
-
-**Front-ends** (how you speak to it):
-- **Apple Watch Voice Memo** — primary input path, synced through Voice Memos/iCloud to the Mac mini
-- **Google Home** — add to "My Tasks", give any time when prompted
-
-**Middleware** (Penny, running on an always-on Apple Silicon Mac):
-- Transcribes audio locally with Whisper (no cloud, no cost)
-- Classifies free-form speech into actionable items using an LLM
-- Routes each item to the right Apple list
-
-**Back-end** (Apple's native apps, synced to all your devices via iCloud):
-- **Apple Reminders** — for actionable items, sorted by category
-- **Apple Notes** (Penny folder) — for everything else: thoughts, observations, things that aren't tasks
-
-## Repo Map
-
-- `watcher.py` — primary Apple Watch Voice Memos ingest path
-- `transcript_log.py` — SQLite persistence, dedup, ingest state, retry metadata
-- `core.py` — shared routing pipeline
-- `classifier.py` — content-type detection and item extraction
-- `reminders.py` — AppleScript bridge to Notes and Reminders
-- `tasks_poller.py` — Google Home / Google Tasks ingest path
-- `webhook/server.py` — optional direct-upload ingest path
-- `scripts/` — auth, export, and validation helpers
-- `launchd/` — launch agent templates for the Mac mini
-- `docs/` — canonical product and operations documentation
-
----
-
-## Routing
-
-Clio should use Penny for Apple-side delivery instead of writing directly to Apple Notes or Reminders from OCI. Clio remains the ledger/router; Penny remains the Mac-side Apple bridge.
-
-| What you say | Where it goes |
-|---|---|
-| "get milk, eggs, sausages" | Reminders → Groceries |
-| "call dentist, pick up dry cleaning" | Reminders → Health, Errands |
-| "fix the leaky faucet" | Reminders → Home |
-| "expense report due Friday" | Reminders → Work |
-| "the weather today is beautiful" | Notes → Penny folder |
-| Any pure thought or observation | Notes → Penny folder |
-| Short ambiguous memo | Notes → Penny folder + Reminders → Inbox |
-
-Reminders lists: Groceries, Errands, Home, Health, Work, Kids, Inbox
-
-One input can produce multiple routed items — "get milk, call dentist, fix faucet" becomes three reminders in three different lists.
-
-Reliability rules:
-- Voice Memos on Apple Watch is the primary ingest path.
-- Memo duration is used as a soft routing signal, never a hard rule.
-- Short ambiguous memos always go to Notes and also create an Inbox reminder with a timestamped excerpt.
-- Reliability is prioritized over raw speed.
-
----
-
-## Google Home constraint — read this before touching anything
-
-> **⚠️ This is the only way it works. Do not change it.**
->
-> Google Home will only write to the default Google Tasks list, which must be named **"My Tasks"**.
-> Google locked down every other integration path between 2022 and 2023 — custom list names,
-> third-party apps, IFTTT variable capture — all gone. "My Tasks" is the one shot.
-> If you rename it, the integration breaks with no workaround.
-
-Voice command: **"Hey Google, add [items] to my tasks"** — give any time when prompted. The time is discarded; it's just Google's required prompt. Items are crossed off automatically after Penny processes them.
-
----
-
-## Services (running on Mac Mini as launchd agents)
-
-| Service | File | What it does |
-|---------|------|-------------|
-| `com.penny.watcher` | `watcher.py` | Polls iCloud Voice Memos every 60s, transcribes via Whisper, classifies and routes |
-| `com.penny.tasks` | `tasks_poller.py` | Polls Google Tasks every 3 min, routes to Apple Reminders |
-| `com.penny.webhook` | `webhook/server.py` | HTTP server on port 5678 for direct uploads and text ingestion |
-| `com.penny.export` | `scripts/export_transcripts.py` | Dumps transcript history to JSON and rsyncs to homelab every 6h |
-
----
-
-## Configuration
-
-Non-secret settings live in `config.toml`. The key ones:
-
-```toml
-[notifications]
-telegram_enabled = false   # true to turn Telegram back on, false to silence it
-                           # This only controls Telegram; it does not disable Slack transcript mirroring
-
-[google_tasks]
-list_name = "My Tasks"     # Do not change — see Google Home constraint above
-
-[apple_reminders]
-lists = ["Groceries", "Errands", "Home", "Health", "Work", "Kids", "Inbox"]
-default_list = "Inbox"
-
-[voice_memos]
-max_file_size_mb = 50
-whisper_model = "mlx-community/whisper-large-v3-turbo"
-poll_interval_seconds = 60
-startup_process_limit = 5
+```text
+capture -> immutable local staging -> canonical SQLite -> local MLX transcript
+        -> local routing / Maya reasoning -> Hermes execution -> receipts
 ```
 
-After changing `config.toml`, rsync it to the Mac and restart the affected service:
+The ledger is the operational authority. Apple Notes and Reminders are
+projections, Slack is an independent delivery stream, and Maya v2 is an
+independent delivery stream. A provider outage cannot erase a locally persisted
+capture. Every retry uses durable state and a deterministic idempotency key.
+
+The iCloud Drive `Penny Archive` folder is a human-readable mirror, not the
+database and not disaster recovery. Each published object has the same basename
+for original audio, Markdown transcript, and JSON manifest. The manifest is
+published last, after hashes and complete-copy checks succeed. Versioned
+homelab backup sets contain a consistent SQLite snapshot, archive bytes, and a
+catalog; verification runs in a scratch directory only.
+
+## Phase A status and boundaries
+
+Phase A hardens the existing Voice Memos + MLX path without requiring JPR,
+macOS 27, Swift/EventKit, Apple Speech, or MacWhisper. The MLX Whisper package
+and model revision are pinned locally and the transcription path requires
+`HF_HUB_OFFLINE=1`. Model provisioning is a separate, explicit network step.
+
+Any remaining direct OpenRouter classification is transitional. It remains only
+until the Maya replacement is deployed, authenticated, idempotent, and verified
+on representative captures; it is not the transcription backend. No provider
+action, purchase, send, share, credential change, or deployment is implied by a
+passing local test.
+
+## Repository map
+
+- `watcher.py` — Voice Memos compatibility adapter, staging, transcription, and
+  durable outbox polling
+- `transcript_log.py` — sole SQLite schema/migration owner and typed state,
+  receipt, retry, archive, Slack, and Maya primitives
+- `archive.py` — complete-copy staging, immutable objects, and manifest-last
+  archive publication
+- `backup.py` / `scripts/backup_penny.py` — versioned backup sets and scratch
+  verification
+- `doctor.py` / `scripts/penny_doctor.py` — read-only readiness probes and CLI
+- `webhook/server.py` — authenticated, bounded upload/ingest/deliver routes
+- `launchd/` — templates; a template is not proof that the installed agent is
+  loaded or approved
+- `docs/` — operational contracts and recovery guidance
+
+## Services
+
+| Agent | Responsibility |
+| --- | --- |
+| `com.penny.watcher` | Polls the Voice Memos compatibility source, stages audio, transcribes offline, and drains local/Slack/Maya outboxes |
+| `com.penny.tasks` | Polls the approved Google Tasks input and persists work before local routing |
+| `com.penny.webhook` | Loopback-by-default authenticated upload, text ingest, callback, `/health`, and `/ready` |
+| `com.penny.export` | Creates a versioned backup, verifies it in scratch, and records a safe verification receipt |
+
+## Readiness and operations
+
+Run the Doctor from the repository environment:
 
 ```bash
-rsync -av config.toml macmini:/Users/macmini/penny/
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.watcher"
+venv/bin/python scripts/penny_doctor.py
 ```
 
-### Notification policy
+Exit status is `0` for ready, `1` for degraded, and `2` for unready. Output is
+metadata-only: bounded states, reason codes, counters, ages, and booleans; it
+does not include transcript/audio bodies, secrets, paths, URLs, provider
+responses, or process IDs. `/health` is an unauthenticated liveness endpoint.
+`/ready` returns `200` for ready or degraded and `503` for unready.
 
-Penny has four separate notification controls. They are intentionally independent:
+Use the canonical docs for recovery and deployment:
 
-| Concern | Controlled by | In repo? | Default / current intent |
-| --- | --- | --- | --- |
-| Telegram alerts from Penny | `config.toml` → `[notifications].telegram_enabled` | Yes | Disabled (`false`) unless explicitly re-enabled |
-| Verbatim Slack delivery for successful iCloud Voice Memo transcripts | `PENNY_SLACK_BOT_TOKEN`; destination is pinned in code/template | Yes | Enabled when the Slack token is present; only channel ID `C0BKS0QT7FU` is allowed |
-| Metadata-only quality-failure receipts | `PENNY_SLACK_BOT_TOKEN` + `PENNY_MAYA_LEDGER_CHANNEL_ID` | Yes | One durable, idempotent receipt per quarantined transcript; never includes transcript text |
-| Whether Slack sends a mention, badge, push, or other notification to people in that channel | Slack workspace/channel/user settings | No | External preference; verify in Slack, never infer from Penny's Telegram setting |
+- [Handoff](HANDOFF.md)
+- [Reliability](docs/reliability.md)
+- [Mac mini deployment](docs/macmini-deployment.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
-Do not add a Penny config setting for Slack mention behavior. Penny only decides whether to mirror the transcript into Slack; Slack decides how that post notifies people.
+When investigating a capture, distinguish these evidence streams: local receipt,
+durable archive, local routing, Apple receipt, independent Slack, independent
+Maya v2, and backup verification. One stream never proves another.
 
----
+## Runtime configuration
 
-## Operations
+Non-secret policy lives in `config.toml`. Secrets are runtime-only and dedicated
+by boundary. The relevant names are `PENNY_INGEST_TOKEN` for upload/ingest,
+`PENNY_WEBHOOK_SECRET` for the callback, `PENNY_SLACK_BOT_TOKEN` for the Slack
+outbox, and `MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. Values must
+never be committed, printed, or copied into Doctor output. The webhook binds to
+loopback unless an explicitly protected deployment policy says otherwise.
+
+## Development checks
 
 ```bash
-# Check all services are running (exit code 0 = healthy)
-ssh macmini "launchctl list | grep penny"
-
-# View logs
-ssh macmini "tail -f ~/.penny/logs/watcher.log"
-ssh macmini "tail -f ~/.penny/logs/tasks.log"
-ssh macmini "tail -f ~/.penny/logs/webhook.log"
-
-# Restart a service
-ssh macmini "launchctl kickstart -k gui/\$(id -u)/com.penny.SVCNAME"
+venv/bin/python scripts/trust_check.py
+venv/bin/python -m pytest -q
 ```
 
-### Automated health monitoring
-
-A GitHub Actions workflow (`.github/workflows/health-check.yml`) runs daily at 9am UTC on a
-self-hosted runner (`oci-dev`). It SSHes into macmini and checks:
-- All services registered (count derived automatically from `launchd/*.plist.template` — no hardcoded number)
-- Persistent services (watcher, tasks, webhook) have a running PID
-- Watcher log updated in the last 15 minutes
-- Tasks poller connected to Google Tasks
-- VoiceMemos running and Apple Event responsive (required for CloudKit sync)
-
-Each check is **self-healing**: before failing, the workflow attempts to fix the problem
-(restart the service via `launchctl kickstart`, relaunch VoiceMemos) and re-verifies.
-Only if recovery fails does it exit non-zero and trigger a GitHub email.
-
-No emails = everything is healthy.
-
-The runner is installed as a systemd service on oci-dev:
-```bash
-sudo systemctl status actions.runner.Khamel83-penny.oci-dev.service
-```
-
-## Deploy from repo
-
-```bash
-python3.12 scripts/trust_check.py
-
-rsync -av --exclude='.git' --exclude='__pycache__' --exclude='venv' \
-  /path/to/penny/ macmini:/Users/macmini/penny/
-
-ssh macmini "for svc in watcher webhook tasks; do
-  launchctl kickstart -k gui/\$(id -u)/com.penny.\${svc}
-done"
-```
-
-`scripts/trust_check.py` is the pre-deploy sanity gate — 7 checks: compile, duplicate entrypoints, sqlite3 leak detection, config invariants, launchd template keys, health-check.yml sync (verifies no hardcoded service count), and unit tests.
-
----
-
-## Requirements
-
-- **Mac** — required for AppleScript access to Reminders and Notes. This repo uses MLX-based Whisper (Apple Silicon only), but any Whisper backend would work on Intel if you swap it out. An always-on Mac Mini is the natural fit.
-- macOS with Homebrew
-- Python 3.11+
-- ffmpeg (`brew install ffmpeg`)
-- Always-on (Mac Mini recommended)
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Setup
-
-### Environment variables (set in launchd plists)
-
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | LLM classification via OpenRouter |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token (kept even when notifications off) |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-| `GOOGLE_CREDENTIALS_FILE` | Path to Google OAuth credentials JSON |
-| `GOOGLE_TOKEN_FILE` | Path to Google OAuth token JSON |
-| `HERMES_WEBHOOK_URL` | Optional Hermes webhook endpoint; defaults to `http://100.126.13.70:7778/webhooks/penny` |
-| `PENNY_WEBHOOK_SECRET` | Optional Hermes HMAC secret; if unset, Hermes notification is skipped |
-| `PENNY_SLACK_BOT_TOKEN` | Slack bot token used by the watcher to post every voice memo transcript |
-| `PENNY_SLACK_CHANNEL_ID` | Pinned watcher-template invariant `C0BKS0QT7FU`; alternate values cannot redirect delivery |
-| `PENNY_MAYA_LEDGER_CHANNEL_ID` | Dedicated destination for body-free Penny quality-failure metadata |
-| `MAYA_TRANSCRIPT_URL` | Maya `/ingest/transcript` endpoint used for Penny transcript routing when enabled |
-| `MAYA_INGEST_TOKEN` | Bearer token for Maya transcript ingest; read from runtime env and never persisted in repo config |
-| `MAYA_DELIVERY_TIMEOUT_SECONDS` | Per-pass Maya request timeout, clamped to 1–30 seconds (default 10) |
-
-Plist templates with placeholders: `launchd/*.plist.template`
-
-Important separation:
-
-- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` matter only when `telegram_enabled = true`.
-- `PENNY_SLACK_BOT_TOKEN` is the only accepted Slack credential. Penny never falls back to a generic `SLACK_BOT_TOKEN`.
-- Transcript mirroring is independent of Telegram, Apple routing, and Maya delivery state; the transcript destination is fixed to `C0BKS0QT7FU`.
-- `PENNY_MAYA_LEDGER_CHANNEL_ID` is a separate required destination for quarantined-transcript metadata. The quarantined transcript body is not copied into that outbox.
-- Slack-side mention or notification behavior is configured in Slack itself, not in this repository.
-
-Hermes notifications are best-effort. Penny signs each payload with
-`X-Webhook-Signature` and a 3-second timeout. Penny continues routing normally
-if Hermes is down, unreachable, or rejects the webhook.
-
-### One-time macOS permissions
-
-Two approvals required, each permanent after the first:
-
-1. **System Settings → Privacy & Security → Automation → Python → Reminders** ✓
-2. **System Settings → Privacy & Security → Automation → Python → Notes** ✓
-
-### Google Tasks setup
-
-OAuth credentials and token live at `~/.penny/` on the Mac.
-
-Google Cloud project `neon-feat-488623-u3` (Penny), Tasks API enabled.
-**The app is published (Production mode)** — refresh tokens do not expire.
-
-To re-authorize (should never be needed again): run `scripts/google_auth.py` on the Mac.
-
-> **Why "Testing" mode kills the token every 7 days:** Google limits refresh token lifetime for apps
-> in Testing mode. Publishing the app (APIs & Services → OAuth consent screen → Publish App) removes
-> this restriction. The app does not need Google verification for personal use.
-
----
-
-## Runtime state (Mac Mini, never commit these)
-
-| File | Purpose |
-|------|---------|
-| `~/.penny/transcripts.db` | SQLite transcript log — single source of truth for all transcriptions |
-| `~/.penny/transcript_history.json` | Periodic JSON export (backed up to homelab) |
-| `~/.penny/logs/` | Service logs |
-| `~/.penny/last_pk.txt` | Last processed voice memo PK — do not delete |
-| `~/.penny/health.txt` | Watcher health status (written every 5 min) |
-| `~/.penny/health_tasks.txt` | Tasks poller health status |
-| `~/.penny/google_token.json` | Google OAuth token (auto-refreshes) |
-| `~/.penny/google_credentials.json` | Google OAuth app credentials |
-
-## Routing evidence categories
-
-Keep these three evidence streams separate when debugging or reporting Penny:
-
-- Penny receipt/persistence: transcript row exists in `~/.penny/transcripts.db`, with ingest timestamps and local status showing the memo was received and stored.
-- Maya acceptance/rejection: `routing_progress.maya_route` records the latest Maya attempt state (`attempting`, `accepted`, `rejected`, or `failed`), client ref `penny:<transcript_id>`, and any HTTP/transport error details. A Maya failure does not erase the local transcript row.
-- Slack acceptance/rejection: `slack_deliveries` tracks the outbox state, attempts, provider timestamp, and terminal failures for the verbatim Slack copy.
-
-Do not treat one category as proof of another. A transcript can be persisted locally even when Maya rejects it, and Slack can fail independently after Maya or local routing succeeds.
-
-Legacy dedup files (`processed.txt`, `processed_webhook.txt`, `synced_tasks.txt`) are still present but superseded by `transcripts.db`.
-
-Slack delivery is durable for eligible iCloud voice transcripts: each transcript
-gets one outbox row keyed by transcript id, retries honor bounded backoff and
-Slack `Retry-After`, successful acknowledgements persist the Slack timestamp,
-long bodies are deterministically chunked at Slack's 40,000-character boundary
-with durable per-chunk progress, and each outbox pass attempts at most one
-chunk. Fresh recordings complete Maya or local routing before Slack delivery is
-attempted, and terminal failures stay visible in watcher health. The full
-original body remains persisted and warning-bearing provider responses never
-mark a delivery sent. Non-voice transcripts and skipped
-oversized placeholders explicitly opt out of Slack enqueue.
+Tests and trust checks are local evidence only; they do not prove live launchd
+registration, macOS privacy permission, provider receipt, or downstream effect.

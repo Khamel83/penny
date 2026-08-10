@@ -1,145 +1,119 @@
-# Penny Troubleshooting Guide
+# Penny troubleshooting
 
-## Symptom: New recordings not appearing on mac mini
+Use this order: run the read-only Doctor, identify the component/reason code,
+inspect the canonical ledger and receipt metadata, then make the smallest
+evidence-preserving change. Do not use process presence, log freshness, or a
+successful HTTP request as proof of durable work.
 
-### Diagnosis
-
-Check the database for latest PK:
-```bash
-ssh macmini 'sqlite3 "$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db" "SELECT Z_PK, ZCUSTOMLABEL, ZDATE FROM ZCLOUDRECORDING ORDER BY Z_PK DESC LIMIT 5;"'
-```
-
-If the highest PK doesn't match your latest recording on iPhone → **iPhone is not uploading to iCloud**.
-
-### Root Cause: iPhone → iCloud Sync Failure
-
-The Penny system works as follows:
-1. **Apple Watch** → Records voice memo
-2. **iPhone** → Receives recording from watch
-3. **iCloud** → iPhone uploads to iCloud (⚠️ THIS STEP FAILS)
-4. **Mac mini** → Downloads from iCloud and transcribes
-
-If step 3 fails, mac mini never receives the recording.
-
-### Solutions
-
-#### 1. Check iPhone iCloud Settings (Most Common Fix)
-
-On your iPhone:
-1. Settings → [Your Name] → iCloud
-2. Tap "Show All" → Find "Voice Memos"
-3. **Ensure "Sync this [Device]" is ON**
-
-#### 2. Force Voice Memos Sync on iPhone
-
-On your iPhone:
-1. Open Voice Memos app
-2. Pull down to trigger sync (look for spinning icon)
-3. Keep app open for 1-2 minutes
-
-#### 3. Check Network Conditions
-
-Voice Memos only sync over WiFi when:
-- iPhone is connected to WiFi
-- iPhone is NOT in Low Power Mode
-- iPhone has sufficient iCloud storage
-
-Check: Settings → iCloud → Account Storage
-
-#### 4. Restart iCloud Sync on iPhone
-
-On your iPhone:
-1. Settings → [Your Name] → iCloud → Show All → Voice Memos
-2. Turn OFF "Sync this iPhone"
-3. Wait 10 seconds
-4. Turn ON "Sync this iPhone"
-5. Open Voice Memos app and trigger sync
-
-#### 5. Check for iCloud Outages
-
-Visit: https://www.apple.com/support/systemstatus/
-
-Look for issues with "iCloud Drive" or "CloudKit".
-
-### Mac Mini Side Checks
-
-**Key fact**: CloudKit (Voice Memos sync) requires the VoiceMemos app to be running. It does NOT sync in the background like iCloud Drive. The watcher refreshes VoiceMemos every 60s, probes Apple Event responsiveness, and recycles an unresponsive process after three failed probes. It is also a login item so it starts on boot.
-
-The watcher polls the database every 60 seconds. Verify it's running:
+## First check
 
 ```bash
-# Check service
-ssh macmini "launchctl list | grep penny"
-
-# Check log
-ssh macmini "tail -f ~/.penny/logs/watcher.log"
-
-# Check last seen PK
-ssh macmini "cat ~/.penny/last_pk.txt"
+venv/bin/python scripts/penny_doctor.py
+curl -fsS http://127.0.0.1:5678/health
+curl -i http://127.0.0.1:5678/ready
 ```
 
-### Expected Behavior After Fix
+Doctor exit `0` is ready, `1` is degraded, and `2` is unready. `/health` is
+liveness; `/ready` reflects the readiness report. The output contains bounded
+metadata only. Never paste transcript text, audio, secrets, URLs, or raw errors
+into an incident report.
 
-Once iPhone uploads to iCloud:
-1. Database entry appears within 30 seconds
-2. Mac mini detects new PK within 60 seconds
-3. Audio file downloads (can take 1-5 minutes depending on size)
-4. Transcription completes
-5. Telegram message sent
+## New Watch recording is missing
 
-Total latency: **2-7 minutes** after iPhone uploads to iCloud.
+Confirm the recording exists on the paired iPhone/Watch and that Voice Memos is
+enabled in iCloud on both devices. Keep the app open long enough for sync, and
+confirm the device has network and iCloud capacity. The private Voice Memos
+reader may be denied by macOS privacy controls; grant the approved runtime the
+required permission through System Settings, then let the normal watcher retry.
 
-### Alternate Path: iOS Automation (Optional)
+On the Mac, check Doctor's `voice_memos` component for source query, watermark,
+awaiting-file, retryable, and terminal-failure metadata. Use the canonical
+SQLite row and source receipt to decide whether the memo is absent upstream,
+staged locally, retryable, or quarantined. `watcher.system.log` is diagnostic
+context only; do not tail it as a health check.
 
-The primary Penny flow is still Apple Watch Voice Memos through iCloud. If you ever need an alternate ingest path for troubleshooting, you can create an iOS Shortcut automation:
+If Voice Memos remains unavailable, use the supported Share/Finder export path.
+It must enter the same authenticated ingest and persistence pipeline; it must
+not bypass provenance, archive publication, policy, or receipts.
 
-1. Open Shortcuts app on iPhone
-2. Create Automation: "When Voice Memos is closed"
-3. Action: "Get latest Voice Memo" → "Upload to http://macmini:5678/upload"
-4. Turn off "Notify when run"
+## Capture is pending or retrying
 
-This sends recordings directly to mac mini when you close the Voice Memos app, bypassing iCloud delays.
+Inspect the Doctor reason and bounded age/counter fields. A changing source file
+or missing audio is expected to remain retryable. A database or archive failure
+must not advance completion. A terminal failure is visible quarantine/dead-letter
+state and needs a specific operator decision; do not repeatedly replay it.
 
-See: `docs/ios-shortcut-setup.md`
+If a capture is persisted but not routed, verify local routing, Apple receipt,
+independent Slack, and independent Maya v2 separately. One failure does not
+erase the local row or imply that another stream failed.
 
----
+## Archive or iCloud mirror is degraded
 
-## Symptom: GitHub health check failing — SSH timeout / wrong IP
+The local immutable object is authoritative for archive recovery. Check that the
+audio, `.md`, and `.json` files share a basename and that the manifest is last
+and hash-valid. iCloud `Penny Archive` is a mirror and may be delayed or
+rebuildable; it is not a database or backup.
 
-### Diagnosis
+Do not move, rename, edit, or delete files in an approved iCloud inbox/mirror as
+a troubleshooting shortcut. Preserve invalid or partial objects for quarantine
+and let the archive worker retry after the source is stable.
 
-In the GitHub Actions run log, you see:
-```
-ssh: connect to host 192.168.7.165 port 22: Connection timed out
-```
+## Apple Notes or Reminders effect is uncertain
 
-The runner is resolving `macmini` to its LAN IP instead of the Tailscale IP (`100.113.216.27`).
+Use the Apple-effect receipt ledger. A pending state is safe to retry; a
+provider identifier plus read-back receipt is evidence of success. Permission
+denial is an explicit failure. For an ambiguous timeout, reconcile the durable
+effect key before another attempt. Never infer success from an AppleScript exit
+code alone and never bulk replay the outbox from a health check.
 
-### Root cause
+## Slack or Maya delivery is unhealthy
 
-The self-hosted runner's job environment doesn't always inherit `~/.ssh/config`, so SSH falls back to mDNS and finds the macmini's LAN address. OCI can't reach `192.168.7.x`, so every connection silently hangs for ~2 minutes before failing.
+Slack and Maya are independent outboxes. Check their Doctor component and the
+row's bounded state, attempt age, and terminal/dead-letter counters. Slack
+requires its dedicated runtime credential and has its own retry window. Maya v2
+requires its dedicated authenticated endpoint/token, has a 20-attempt/seven-day
+bound, and uses claims so only one worker owns a delivery at a time.
 
-### Quick checks
+Do not print credentials or provider responses. Do not turn a network timeout
+into `sent`; require an identity-matching durable receipt. A disabled optional
+Maya route is degraded, while partial configuration, ledger errors, or invalid
+receipts are unready.
 
-```bash
-# 1. Is macmini reachable from oci-dev right now?
-ssh -F /home/ubuntu/.ssh/config -o ConnectTimeout=10 macmini "echo OK"
+## Transcription/model is unready
 
-# 2. Is Tailscale running on macmini?
-ssh macmini "tailscale status | head -5"
+Doctor requires the exact pinned local MLX model and `HF_HUB_OFFLINE=1`. If the
+model is missing or tampered, stop transcription, preserve staged audio, and
+run the approved provisioning/verification procedure separately. Provisioning
+is the only network boundary. Apple Speech and MacWhisper are challengers, not
+automatic fallbacks.
 
-# 3. Trigger a fresh health check run to get new logs
-gh workflow run health-check.yml --ref main
-```
+## Backup is unverified or stale
 
-### Fix if Tailscale is down on macmini
+The backup worker must publish a versioned set and verify it in a scratch
+directory. Doctor requires a valid metadata-only receipt bound to the latest set,
+catalog hash, row count/max ID, and remote catalog verification. A failed verify
+or sync leaves the prior good receipt unchanged. JSON exports are readable aids,
+not restorable backups.
 
-```bash
-# Via LAN (if on same network or via homelab as jump host)
-ssh -i ~/.ssh/id_ed25519 macmini@192.168.7.165 "sudo tailscale up"
-# Or physically: System Preferences → Tailscale → Connect
-```
+For recovery, stop writers, verify a set in scratch, restore the whole database,
+reconcile archive hashes, and rerun Doctor before resuming. Preserve prior sets;
+never reset the live database or delete evidence to make readiness green.
 
-### Fix if SSH config resolution breaks again
+## Ingress returns 401/413/503
 
-The workflow uses `-F /home/ubuntu/.ssh/config` explicitly on every SSH call. If the runner user or config path changes, update `SSH_MACMINI` in `.github/workflows/health-check.yml`.
+- `401`: missing/incorrect dedicated ingest credential; `/deliver` uses a
+  separate callback credential.
+- `413`: request exceeds the configured content or text limit; no transcription
+  or routing should have run.
+- `503`: persistence or readiness boundary is unavailable; retry only after the
+  canonical state is inspected.
+
+The webhook is loopback by default. A non-loopback bind requires an explicit
+protected deployment policy and still requires authentication and content limits.
+
+## What not to do
+
+Do not delete/reset SQLite or Apple databases, remove archive objects, erase
+backup sets, relaunch providers from automation, replay all pending work, or
+change credentials from a health check. Keep all raw and derived evidence until
+a verified restore and retention window are complete.
