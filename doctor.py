@@ -509,6 +509,21 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
             return {**data, "reason": "backup_unverified"}
         receipt_id = str(receipt.get("backup_set_id", ""))
         receipt_hash = str(receipt.get("catalog_sha256", "")).lower()
+        receipt_set_catalog = root / "sets" / receipt_id / "catalog.json"
+        receipt_set_present = (
+            bool(_SET_ID_RE.fullmatch(receipt_id))
+            and all(
+                not component.is_symlink()
+                for component in (
+                    root,
+                    root / "sets",
+                    root / "sets" / receipt_id,
+                    receipt_set_catalog,
+                )
+            )
+            and receipt_set_catalog.is_file()
+        )
+        data["backup_set_present"] = receipt_set_present
         valid = bool(
             receipt.get("schema_version") == 1
             and receipt.get("status") == "verified"
@@ -516,7 +531,7 @@ def _default_probe_backup(*, now: datetime | None = None, **_kwargs: Any) -> dic
             and receipt.get("remote_catalog_verified") is True
             and _SET_ID_RE.fullmatch(receipt_id)
             and re.fullmatch(r"[0-9a-f]{64}", receipt_hash)
-            and catalog_present
+            and receipt_set_present
         )
         timestamp = receipt.get("verified_at") or receipt.get("observed_at") or receipt.get("created_at")
         age, timestamp_valid = _age_seconds(timestamp, now=current)
