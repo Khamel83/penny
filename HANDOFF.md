@@ -31,7 +31,7 @@ read-after-write receipts.
 The routing boundaries are deliberately separate: **local routing** is the
 fallback and user-facing Apple projection; **independent Slack** delivery is a
 durable outbox; **independent Maya v2** delivery is a separately acknowledged
-outbox with bounded retries and dead-letter state. A receipt in one boundary is
+outbox with bounded retries and `dead_letter` state. A receipt in one boundary is
 not evidence of success in another.
 
 ## Doctor contract
@@ -63,8 +63,8 @@ An ingest is acknowledged only after a typed persistence result is `inserted` or
 retryable/backoff state or `failed_terminal`; there is no separate completion
 watermark. Incomplete or changing audio remains `awaiting_file`/retryable until
 the source is fully materialized; a terminal source row remains `failed_terminal`.
-Retryable work uses bounded exponential backoff. Quarantine is reserved for
-archive, Apple-effect, and Maya terminal workflows.
+Retryable work uses bounded exponential backoff. Archive and Apple-effect
+failures use quarantine; Maya terminal delivery uses `dead_letter`.
 
 Apple effects persist a deterministic key before attempting the side effect and
 record provider identifiers plus a read-back receipt. An ambiguous timeout is
@@ -107,9 +107,11 @@ replay, send, share, purchase, deploy, or change credentials from a health check
 ## Transitional gaps
 
 Tracked/runtime webhook templates must converge to loopback or an explicitly
-protected non-loopback bind; Doctor treats an unprotected bind as unready. The
-callback credential is also reused by the transitional Hermes
-notification path, and ordinary logging still has a redaction follow-up.
+protected non-loopback bind; Doctor treats an unprotected bind as unready.
+The callback uses `PENNY_WEBHOOK_SECRET`; Hermes uses the dedicated
+`PENNY_HERMES_WEBHOOK_SECRET`. Selected provider/task/webhook logs use bounded
+fields and redacted exception classes; this does not retroactively clean every
+historical log artifact.
 
 ## Future gates
 

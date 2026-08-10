@@ -96,20 +96,19 @@ Maya v2, and backup verification. One stream never proves another.
 
 Non-secret policy lives in `config.toml`. Secrets are runtime-only and dedicated
 by boundary. The relevant names are `PENNY_INGEST_TOKEN` for upload/ingest,
-`PENNY_WEBHOOK_SECRET` for the callback/Hermes notification boundary,
-`PENNY_HERMES_WEBHOOK_SECRET` is the target future dedicated Hermes credential
-(not a live Phase A setting),
+`PENNY_WEBHOOK_SECRET` for the callback, and
+`PENNY_HERMES_WEBHOOK_SECRET` for the dedicated Hermes notification boundary,
 `PENNY_SLACK_BOT_TOKEN` for the Slack outbox, and
 `MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. The callback/Hermes
-secret reuse is a known transitional gap; do not describe those boundaries as
-independently credentialed until a later change proves it. Values must never be
-committed, printed, or copied into Doctor output. Tracked/runtime webhook
+Values must never be committed, printed, or copied into Doctor output.
+Tracked/runtime webhook
 templates must converge to loopback or an explicitly protected non-loopback
 policy, and Doctor fails readiness for an unprotected bind.
 
-Current service logging still has a redaction follow-up: some provider URLs or
-exception details may appear in ordinary logs. Doctor output and deployment
-evidence must remain metadata-only until that logging gap is closed.
+Selected provider, Google Tasks, and webhook runtime logs now use bounded fields
+and redacted exception classes. This is not a claim about every historical log
+artifact in the repository; Doctor output and deployment evidence remain
+metadata-only.
 
 ## Development checks
 

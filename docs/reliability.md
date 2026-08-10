@@ -35,7 +35,8 @@ An audio file is copied into Penny-owned local staging, checked for a stable
 size/signature, and hashed. A source that changes during copying is retried;
 partial materialization remains `awaiting_file`/retryable, and a terminal source
 row is `failed_terminal`. Temporary archive material is removed after a failed
-copy; quarantine is reserved for archive, Apple-effect, and Maya workflows.
+copy; archive and Apple-effect failures use quarantine, while Maya terminal
+delivery uses `dead_letter`.
 Retryable failures use bounded backoff and a terminal attempt/age limit.
 
 ## Archive and iCloud mirror
@@ -114,10 +115,11 @@ must never be used as the readiness source.
 Raw audio stays within the approved Apple/Penny storage and backup boundary.
 Transcription is local and offline. Only authenticated, policy-mediated Maya or
 Hermes paths may receive transcript text; Slack quality receipts are metadata
-only. The callback credential is currently reused by the Hermes notification
-path, and ordinary service logs still have a provider-URL/exception redaction
-follow-up. Doctor output, tests, and deployment evidence must remain
-metadata-only; do not treat ordinary logs as already clean.
+only. The callback uses `PENNY_WEBHOOK_SECRET`; Hermes uses the dedicated
+`PENNY_HERMES_WEBHOOK_SECRET`. Selected provider, Google Tasks, and webhook runtime logs use bounded
+fields and redacted exception classes; this does not retroactively clean every
+historical log artifact. Doctor output, tests, and deployment evidence remain
+metadata-only.
 
 ## Recovery principles
 

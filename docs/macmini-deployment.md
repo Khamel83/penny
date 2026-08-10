@@ -47,9 +47,8 @@ does not prove that a plist is loaded, approved, or running. The launchd
    values in tracked config, templates, logs, or shell history.
 6. Confirm the tracked/runtime webhook templates converge to loopback or an
    explicitly protected non-loopback policy; Doctor fails an unprotected bind.
-   The callback credential is currently reused for Hermes notifications;
-   `PENNY_HERMES_WEBHOOK_SECRET` is the target future dedicated name, not a
-   live Phase A setting.
+   The callback uses `PENNY_WEBHOOK_SECRET`; Hermes uses the dedicated
+   `PENNY_HERMES_WEBHOOK_SECRET`.
 7. Create a verified backup set before changing code/config.
 
 ## Controlled deployment
@@ -65,8 +64,8 @@ Copy the reviewed checkout and wrapper/template inputs using the approved
 deployment channel. Preserve runtime state, databases, archive objects,
 outboxes, receipts, and prior backup sets. Update the installed wrappers/plists
 only after checking their rendered environment for names (never values): model
-path/revision, offline mode, dedicated ingress/callback credentials, Slack, and
-Maya v2.
+path/revision, offline mode, dedicated ingress/callback/Hermes credentials,
+Slack, and Maya v2.
 
 Restart only the Penny labels that changed, using the normal launchd operator
 procedure. Do not restart Apple providers, alter durable state, or replay outboxes as a
@@ -108,7 +107,9 @@ explicit human gates.
 
 Use the Doctor for readiness and the ledger/receipt tables for durable evidence.
 Use `watcher.system.log` and other service logs only to explain a bounded reason
-code. Ordinary logs still have a provider-URL/exception redaction follow-up.
+code. Selected provider, Google Tasks, and webhook runtime logs use bounded
+fields and redacted exception classes; historical log artifacts are not
+retroactively rewritten.
 Keep iCloud as a rebuildable mirror and homelab backup sets as the
 independent recovery source; neither should be silently substituted for the
 canonical SQLite ledger.
