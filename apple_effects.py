@@ -22,6 +22,8 @@ _SAFE_ERROR_CODES = frozenset(
         "effect_key_conflict", "effect_not_found", "invalid_effect",
         "marker_conflict", "permission_denied", "provider_conflict",
         "provider_error", "timeout_uncertain",
+        "find_timeout_uncertain", "readback_timeout_uncertain",
+        "retry_not_due", "attempt_cap",
     }
 )
 _TERMINAL_ERROR_CODES = frozenset(
@@ -220,10 +222,18 @@ def _ensure_effect(
         matches = _match_ids(find())
     except Exception as exc:
         code = _error_code(exc)
-        ambiguous = bool(getattr(exc, "ambiguous", False) or code == "timeout_uncertain")
-        if ambiguous:
-            code = "timeout_uncertain"
-            _mark_uncertain(key, "timeout_uncertain", owner)
+        if claim.get("reconcile_only"):
+            # This probe follows a provider call whose durable outcome is
+            # unknown.  Permission/provider failures here cannot prove that
+            # no object exists, so retain uncertainty and never reopen create.
+            if getattr(exc, "ambiguous", False) or code == "timeout_uncertain":
+                code = "timeout_uncertain"
+            _mark_uncertain(key, code, owner)
+        elif getattr(exc, "ambiguous", False) or code == "timeout_uncertain":
+            # No provider write has happened yet: preserve that phase so the
+            # next claim may safely create after a successful marker probe.
+            code = "find_timeout_uncertain"
+            _mark_uncertain(key, code, owner)
         else:
             _mark_failed(key, code, owner)
         raise AppleEffectError(code) from None
@@ -253,6 +263,14 @@ def _ensure_effect(
             transcript_log.get_apple_effect(key), key=key, effect_type=effect_type
         )
 
+    # A prior ambiguous call may have created the provider object even though
+    # its marker was not visible yet.  Reconcile-only claims are deliberately
+    # forbidden from creating a second object; a later retry can converge once
+    # Notes exposes the marker.
+    if claim.get("reconcile_only"):
+        _mark_uncertain(key, "timeout_uncertain", owner)
+        raise AppleEffectError("timeout_uncertain")
+
     try:
         created = create()
         provider_id, actual_target = _provider_id_target(created, requested_target)
@@ -276,17 +294,20 @@ def _ensure_effect(
     except Exception as exc:
         code = _error_code(exc)
         if getattr(exc, "ambiguous", False) or code == "timeout_uncertain":
-            code = "timeout_uncertain"
-            _mark_uncertain(key, code, owner)
-        else:
-            _mark_failed(key, code, owner)
+            code = "readback_timeout_uncertain"
+        # The provider create already returned before this probe.  Even a
+        # generic provider or permission error is therefore ambiguous: the
+        # provider may have persisted the object while readback failed.  Keep
+        # the durable row uncertain so retries probe the marker and never
+        # issue a second create.
+        _mark_uncertain(key, code, owner)
         raise AppleEffectError(code) from None
     if len(readback) > 1:
         _mark_failed(key, "marker_conflict", owner)
         raise AppleEffectError("marker_conflict")
     if len(readback) != 1:
-        _mark_uncertain(key, "timeout_uncertain", owner)
-        raise AppleEffectError("timeout_uncertain")
+        _mark_uncertain(key, "readback_timeout_uncertain", owner)
+        raise AppleEffectError("readback_timeout_uncertain")
     if readback[0][0] != provider_id:
         _mark_failed(key, "provider_conflict", owner)
         raise AppleEffectError("provider_conflict")

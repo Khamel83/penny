@@ -267,6 +267,105 @@ class TranscriptLogTests(unittest.TestCase):
         )
         self.assertEqual(transcript_log.get_apple_effect(key2)["state"], "in_flight")
 
+    def test_apple_effect_uncertain_retries_are_backed_off_and_capped(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="apple-effect-bounded-retry",
+            source="test",
+            transcript="body",
+        )
+        key = "8" * 64
+        kwargs = dict(
+            effect_key=key,
+            transcript_id=int(row_id),
+            effect_type="note",
+            requested_target="Penny",
+            payload_sha256=key,
+        )
+        first = transcript_log.claim_apple_effect(**kwargs)
+        self.assertTrue(first["claimable"])
+        self.assertTrue(
+            transcript_log.mark_apple_effect_uncertain(
+                key, lease_owner=first["lease_owner"]
+            )
+        )
+
+        # One immediate reconciliation is allowed.  Once that also fails, a
+        # subsequent worker pass must be refused until the durable backoff is
+        # due, rather than hot-looping AppleScript.
+        second = transcript_log.claim_apple_effect(**kwargs)
+        self.assertTrue(second["claimable"])
+        self.assertTrue(
+            transcript_log.mark_apple_effect_uncertain(
+                key, lease_owner=second["lease_owner"]
+            )
+        )
+        blocked = transcript_log.claim_apple_effect(**kwargs)
+        self.assertFalse(blocked["claimable"])
+        self.assertEqual(blocked["error_code"], "retry_not_due")
+
+        # Advance the logical clock past the retry schedule and exhaust the
+        # bounded attempts.  The final state is visible failure, not an
+        # unbounded sequence of provider writes.
+        for _ in range(transcript_log.APPLE_EFFECT_MAX_ATTEMPTS - 2):
+            current = transcript_log.get_apple_effect(key)
+            updated_at = datetime.fromisoformat(
+                current["updated_at"].replace("Z", "+00:00")
+            )
+            due = transcript_log.claim_apple_effect(
+                **kwargs,
+                now=updated_at + timedelta(hours=1),
+            )
+            if not due["claimable"]:
+                self.assertEqual(due["error_code"], "retry_not_due")
+                due = transcript_log.claim_apple_effect(
+                    **kwargs,
+                    now=updated_at + timedelta(days=1),
+                )
+            self.assertTrue(due["claimable"])
+            self.assertTrue(
+                transcript_log.mark_apple_effect_uncertain(
+                    key, lease_owner=due["lease_owner"]
+                )
+            )
+
+        capped = transcript_log.claim_apple_effect(
+            **kwargs,
+            now=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        self.assertFalse(capped["claimable"])
+        self.assertEqual(capped["error_code"], "attempt_cap")
+        self.assertEqual(transcript_log.get_apple_effect(key)["state"], "failed")
+
+    def test_pre_create_find_timeout_retry_remains_createable(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="apple-effect-find-timeout",
+            source="test",
+            transcript="body",
+        )
+        key = "a" * 64
+        kwargs = dict(
+            effect_key=key,
+            transcript_id=int(row_id),
+            effect_type="note",
+            requested_target="Penny",
+            payload_sha256=key,
+        )
+        first = transcript_log.claim_apple_effect(**kwargs)
+        self.assertTrue(first["claimable"])
+        self.assertFalse(first["reconcile_only"])
+        self.assertTrue(
+            transcript_log.mark_apple_effect_uncertain(
+                key,
+                "find_timeout_uncertain",
+                lease_owner=first["lease_owner"],
+            )
+        )
+
+        retry = transcript_log.claim_apple_effect(**kwargs)
+
+        self.assertTrue(retry["claimable"])
+        self.assertFalse(retry["reconcile_only"])
+
     def test_apple_effect_failure_codes_are_allowlisted_and_timestamps_are_iso_z(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="apple-effect-safe-code", source="test", transcript="body"

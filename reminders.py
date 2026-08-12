@@ -95,10 +95,20 @@ def _marker(effect_key: str) -> str:
 
 
 def _note_marker_html(effect_key: str, text: str) -> str:
-    marker = f"<!-- {_marker(effect_key)} -->"
+    marker = _marker(effect_key)
+    # Keep the legacy comment for older readers, but also include a small
+    # visible text marker.  Notes may discard comments and hidden elements
+    # during sync; ordinary text survives ``body of n as text`` readback.
+    # The marker contains only the opaque effect key and is placed on its own
+    # low-contrast line so it remains unobtrusive without being invisible.
+    marker_html = (
+        f"<!-- {marker} -->"
+        f"<br><span style=\"color:#8a8a8a;font-size:9px\">"
+        f"{html.escape(marker, quote=True)}</span>"
+    )
     body = "<br>" + html.escape(str(text or ""), quote=True)
     body = body.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
-    return marker + body
+    return marker_html + body
 
 
 def find_note_by_marker(effect_key: str, folder_name: str = "Penny") -> list[str]:

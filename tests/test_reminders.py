@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for Penny AppleScript bridge (reminders.py)."""
+from html.parser import HTMLParser
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,41 @@ if str(ROOT) not in __import__("sys").path:
 import reminders  # noqa: E402
 
 SUCCESS = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+
+class _NotesTextSanitizer(HTMLParser):
+    """Model the observed Notes sync behavior for marker contract tests.
+
+    Notes discards comments and display:none content before AppleScript's
+    ``body of n as text`` readback.  Ordinary text, including low-impact
+    visible marker text, remains searchable.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        style = dict(attrs).get("style") or ""
+        if "display:none" in style.replace(" ", "").lower():
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        del tag
+        if self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def _notes_text_after_sync(body: str) -> str:
+    parser = _NotesTextSanitizer()
+    parser.feed(body)
+    parser.close()
+    return "".join(parser.parts)
 
 
 def _script(mock_run):
@@ -135,6 +171,47 @@ class AddReminderTests(unittest.TestCase):
 
 
 class ReceiptTransportContractTests(unittest.TestCase):
+    def test_note_marker_survives_notes_sanitizer_as_visible_text(self):
+        key = "c" * 64
+        marker = reminders._marker(key)
+
+        persisted_text = _notes_text_after_sync(
+            reminders._note_marker_html(key, "visible body")
+        )
+
+        self.assertIn("visible body", persisted_text)
+        self.assertIn(marker, persisted_text)
+
+    def test_note_marker_is_preserved_outside_html_comment_for_readback(self):
+        key = "a" * 64
+        marker = reminders._marker(key)
+
+        rendered = reminders._note_marker_html(key, "body")
+
+        # Notes may discard HTML comments while normalizing a note body.  The
+        # marker therefore needs a text-bearing fallback that remains searchable
+        # through ``body of n as text``.  Keep the legacy comment for existing
+        # readers, but require a second, low-impact visible marker occurrence.
+        self.assertIn(f"<!-- {marker} -->", rendered)
+        self.assertGreaterEqual(rendered.count(marker), 2)
+        self.assertIn("color:#8a8a8a", rendered)
+        self.assertNotIn("display:none", rendered)
+
+    @patch("reminders._run_osascript", side_effect=["note-1", "note-1"])
+    def test_note_create_and_readback_share_the_exact_marker(self, run_mock):
+        key = "b" * 64
+
+        created = reminders.create_note_with_marker(key, "body", "Penny")
+        found = reminders.find_note_by_marker(key, "Penny")
+
+        self.assertEqual(created.provider_id, "note-1")
+        self.assertEqual(found, ["note-1"])
+        create_script, find_script = (
+            call.args[0] for call in run_mock.call_args_list
+        )
+        self.assertIn(reminders._marker(key), create_script)
+        self.assertIn(reminders._marker(key), find_script)
+
     @patch("reminders.subprocess.run")
     def test_automation_denial_is_bounded_permission_error(self, run_mock):
         sentinel = "secret transcript provider stderr"

@@ -77,11 +77,20 @@ APPLE_EFFECT_STATES = frozenset(
 )
 APPLE_EFFECT_TYPES = frozenset({"note", "reminder"})
 APPLE_EFFECT_LEASE_SECONDS = 120
+APPLE_EFFECT_MAX_ATTEMPTS = 5
+# The first replay is deliberately immediate so an eventually-consistent
+# provider can converge quickly.  Later passes are backed off to keep a
+# missing marker from hot-looping AppleScript.  The final value is reused for
+# any attempt beyond the tuple length, although the attempt cap normally
+# prevents that case.
+APPLE_EFFECT_RETRY_DELAYS_SECONDS = (0, 1, 5, 30, 300)
 APPLE_EFFECT_SAFE_ERROR_CODES = frozenset(
     {
         "provider_error",
         "permission_denied",
         "timeout_uncertain",
+        "find_timeout_uncertain",
+        "readback_timeout_uncertain",
         "database_unavailable",
         "marker_conflict",
         "provider_conflict",
@@ -91,6 +100,8 @@ APPLE_EFFECT_SAFE_ERROR_CODES = frozenset(
         "active_claim",
         "effect_key_conflict",
         "migration_invalid_state",
+        "retry_not_due",
+        "attempt_cap",
     }
 )
 SLACK_API_ERROR_CODES = frozenset(
@@ -5039,6 +5050,33 @@ def _apple_effect_safe_code(value: str | None, default: str = "provider_error") 
     return default
 
 
+def _apple_effect_retry_delay_seconds(attempt_count: int) -> int:
+    """Return the bounded delay before another ambiguous-effect probe."""
+    try:
+        attempt = max(1, int(attempt_count))
+    except (TypeError, ValueError):
+        attempt = 1
+    index = min(attempt - 1, len(APPLE_EFFECT_RETRY_DELAYS_SECONDS) - 1)
+    return int(APPLE_EFFECT_RETRY_DELAYS_SECONDS[index])
+
+
+def _apple_effect_retry_due(row: dict[str, Any], now: datetime) -> bool:
+    """Use the durable update timestamp as a retry schedule without new schema."""
+    raw_updated = row.get("updated_at")
+    try:
+        updated = datetime.fromisoformat(str(raw_updated).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    try:
+        attempt_count = int(row.get("attempt_count") or 0)
+    except (TypeError, ValueError):
+        attempt_count = 0
+    delay = timedelta(seconds=_apple_effect_retry_delay_seconds(attempt_count))
+    return now >= updated.astimezone(timezone.utc) + delay
+
+
 def get_apple_effect(effect_key: str) -> dict[str, Any] | None:
     """Return one operational Apple-effect row without provider content."""
     if not isinstance(effect_key, str) or not effect_key:
@@ -5133,7 +5171,11 @@ def claim_apple_effect(
             ).fetchone()
             conn.commit()
             result = dict(row)
-            result.update({"claimable": True, "lease_owner": owner})
+            result.update({
+                "claimable": True,
+                "lease_owner": owner,
+                "reconcile_only": False,
+            })
             return result
 
         result = dict(row)
@@ -5199,6 +5241,51 @@ def claim_apple_effect(
             conn.commit()
             result.update({"claimable": False, "error_code": "active_claim"})
             return result
+
+        # An uncertain provider call may already have created the object even
+        # when the marker query was empty or timed out.  Replays are therefore
+        # probes only; they must never create another object.  A stale lease is
+        # treated the same way because the previous worker may have died after
+        # the external write.
+        reconcile_only = (
+            (
+                result["state"] == "uncertain"
+                and result.get("last_error_code") != "find_timeout_uncertain"
+            )
+            or (
+                result["state"] == "in_flight"
+                and lease_expired
+            )
+        )
+
+        try:
+            attempt_count = int(result.get("attempt_count") or 0)
+        except (TypeError, ValueError):
+            attempt_count = 0
+        if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS:
+            conn.execute(
+                """UPDATE apple_effects
+                   SET state = 'failed', last_error_code = 'attempt_cap',
+                       lease_owner = NULL, lease_expires_at = NULL,
+                       updated_at = ? WHERE effect_key = ?
+                """,
+                (now_iso, effect_key),
+            )
+            row = conn.execute(
+                "SELECT * FROM apple_effects WHERE effect_key = ?", (effect_key,)
+            ).fetchone()
+            conn.commit()
+            result = dict(row)
+            result.update({"claimable": False, "error_code": "attempt_cap"})
+            return result
+
+        if result["state"] in {"uncertain", "failed"} and not _apple_effect_retry_due(
+            result, now_dt
+        ):
+            conn.commit()
+            result.update({"claimable": False, "error_code": "retry_not_due"})
+            return result
+
         conn.execute(
             """UPDATE apple_effects
                SET state = 'in_flight', attempt_count = attempt_count + 1,
@@ -5214,7 +5301,11 @@ def claim_apple_effect(
         ).fetchone()
         conn.commit()
         result = dict(row)
-        result.update({"claimable": True, "lease_owner": owner})
+        result.update({
+            "claimable": True,
+            "lease_owner": owner,
+            "reconcile_only": reconcile_only,
+        })
         return result
     except sqlite3.IntegrityError:
         if conn:

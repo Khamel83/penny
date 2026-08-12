@@ -54,6 +54,181 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
         create.assert_not_called()
         self.assertEqual(find.call_count, 2)
 
+    def test_find_timeout_before_create_can_retry_create_after_later_empty_probe(self) -> None:
+        """A pre-create marker probe timeout must not permanently disable create."""
+        timeout = reminders.AppleScriptError("timeout_uncertain", ambiguous=True)
+        with (
+            patch.object(
+                apple_effects.reminders,
+                "find_note_by_marker",
+                side_effect=[timeout, [], ["note-new"]],
+            ) as find,
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                return_value=reminders.ProviderReceipt("note-new", "Penny"),
+            ) as create,
+        ):
+            with self.assertRaisesRegex(
+                apple_effects.AppleEffectError, "find_timeout_uncertain"
+            ):
+                apple_effects.ensure_note(self.row_id, "probe-before-create")
+            receipt = apple_effects.ensure_note(
+                self.row_id, "probe-before-create"
+            )
+
+        self.assertEqual(receipt.provider_id, "note-new")
+        self.assertFalse(receipt.reconciled)
+        create.assert_called_once()
+        self.assertEqual(find.call_count, 3)
+
+    def test_first_create_with_new_marker_readback_is_success(self) -> None:
+        """A clean create is committed only after its new marker reads back."""
+        with (
+            patch.object(
+                apple_effects.reminders,
+                "find_note_by_marker",
+                side_effect=[[], ["note-fresh"]],
+            ) as find,
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                return_value=reminders.ProviderReceipt("note-fresh", "Penny"),
+            ) as create,
+        ):
+            receipt = apple_effects.ensure_note(self.row_id, "fresh marker")
+
+        self.assertEqual(receipt.provider_id, "note-fresh")
+        self.assertFalse(receipt.reconciled)
+        self.assertEqual(receipt.state, "succeeded")
+        create.assert_called_once()
+        self.assertEqual(find.call_count, 2)
+
+    def test_generic_post_create_readback_failure_never_recreates(self) -> None:
+        """Any readback failure after create is ambiguous and probe-only."""
+        readback_failure = reminders.AppleScriptError("provider_error")
+        with (
+            patch.object(
+                apple_effects.reminders,
+                "find_note_by_marker",
+                side_effect=[[], readback_failure, []],
+            ) as find,
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                return_value=reminders.ProviderReceipt("note-generic", "Penny"),
+            ) as create,
+        ):
+            with self.assertRaisesRegex(
+                apple_effects.AppleEffectError, "provider_error"
+            ):
+                apple_effects.ensure_note(self.row_id, "generic readback failure")
+
+            with self.assertRaisesRegex(
+                apple_effects.AppleEffectError, "timeout_uncertain"
+            ):
+                apple_effects.ensure_note(self.row_id, "generic readback failure")
+
+        create.assert_called_once()
+        self.assertEqual(find.call_count, 3)
+        key = apple_effects.effect_key_for(
+            self.row_id,
+            "note",
+            "Penny",
+            "",
+            apple_effects.normalized_payload_sha256("generic readback failure"),
+        )
+        stored = transcript_log.get_apple_effect(key)
+        self.assertEqual(stored["state"], "uncertain")
+
+    def test_reconcile_probe_error_stays_uncertain_and_never_recreates(self) -> None:
+        """A failed reconciliation probe must not reopen an ambiguous create."""
+        with (
+            patch.object(
+                apple_effects.reminders,
+                "find_note_by_marker",
+                side_effect=[
+                    [],
+                    reminders.AppleScriptError("provider_error"),
+                    reminders.AppleScriptError("permission_denied"),
+                ],
+            ) as find,
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                return_value=reminders.ProviderReceipt("note-reconcile", "Penny"),
+            ) as create,
+        ):
+            with self.assertRaisesRegex(
+                apple_effects.AppleEffectError, "provider_error"
+            ):
+                apple_effects.ensure_note(self.row_id, "reconcile probe error")
+
+            with self.assertRaisesRegex(
+                apple_effects.AppleEffectError, "permission_denied"
+            ):
+                apple_effects.ensure_note(self.row_id, "reconcile probe error")
+
+        create.assert_called_once()
+        self.assertEqual(find.call_count, 3)
+        key = apple_effects.effect_key_for(
+            self.row_id,
+            "note",
+            "Penny",
+            "",
+            apple_effects.normalized_payload_sha256("reconcile probe error"),
+        )
+        self.assertEqual(
+            transcript_log.get_apple_effect(key)["state"],
+            "uncertain",
+        )
+
+    def test_missing_readback_reconciles_without_creating_a_duplicate(self) -> None:
+        """An ambiguous create must never be repeated when the marker is absent."""
+        with (
+            patch.object(
+                apple_effects.reminders,
+                "find_note_by_marker",
+                side_effect=[[], [], [], ["note-ambiguous"]],
+            ) as find,
+            patch.object(
+                apple_effects.reminders,
+                "create_note_with_marker",
+                return_value=reminders.ProviderReceipt("note-ambiguous", "Penny"),
+            ) as create,
+        ):
+            with self.assertRaisesRegex(apple_effects.AppleEffectError, "timeout_uncertain"):
+                apple_effects.ensure_note(self.row_id, "ambiguous create")
+
+            # The first replay reconciles immediately, but it must not issue a
+            # second provider create merely because Notes did not expose the
+            # marker yet.  The next replay observes the eventual marker.
+            with self.assertRaisesRegex(apple_effects.AppleEffectError, "timeout_uncertain"):
+                apple_effects.ensure_note(self.row_id, "ambiguous create")
+            key = apple_effects.effect_key_for(
+                self.row_id,
+                "note",
+                "Penny",
+                "",
+                apple_effects.normalized_payload_sha256("ambiguous create"),
+            )
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE apple_effects SET updated_at = '2020-01-01T00:00:00Z' "
+                    "WHERE effect_key = ?",
+                    (key,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            receipt = apple_effects.ensure_note(self.row_id, "ambiguous create")
+
+        self.assertEqual(receipt.provider_id, "note-ambiguous")
+        self.assertTrue(receipt.reconciled)
+        create.assert_called_once()
+        self.assertEqual(find.call_count, 4)
+
     def test_receipt_write_failure_after_create_retries_by_marker_without_duplicate(self) -> None:
         real_mark = transcript_log.mark_apple_effect_succeeded
         mark_attempts = 0
@@ -107,9 +282,21 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
             patch.object(apple_effects.reminders, "find_note_by_marker", side_effect=[[], ["note-4"]]),
             patch.object(apple_effects.reminders, "create_note_with_marker", return_value="note-4") as create,
         ):
+            with self.assertRaisesRegex(apple_effects.AppleEffectError, "timeout_uncertain"):
+                apple_effects.ensure_note(self.row_id, "active")
+            conn = transcript_log._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE apple_effects SET updated_at = '2020-01-01T00:00:00Z' "
+                    "WHERE effect_key = ?",
+                    (key,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
             stale = apple_effects.ensure_note(self.row_id, "active")
         self.assertEqual(stale.provider_id, "note-4")
-        create.assert_called_once()
+        create.assert_not_called()
 
     def test_multiple_markers_quarantine_without_create(self) -> None:
         with (
