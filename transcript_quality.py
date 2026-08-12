@@ -20,7 +20,9 @@ from config import (
 
 CONTROL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
 TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
-MAX_CONSECUTIVE_TOKEN_REPETITION = 3
+# Three identical tokens can be ordinary spoken emphasis (for example,
+# "no no no").  Four or more remains a deterministic hallucination signal.
+MAX_CONSECUTIVE_TOKEN_REPETITION = 4
 SUFFIX_TOKEN_WINDOW = 20
 LOW_DIVERSITY_SUFFIX_MAX_UNIQUE_TOKENS = 2
 MAX_QUALITY_DETAIL_CHARACTERS = 255

@@ -69,6 +69,19 @@ def test_repeated_suffix_fails():
     assert result.reason == "consecutive_token_repetition"
 
 
+def test_natural_triplicate_passes():
+    result = evaluate_transcript("No no no, I mean the other folder.")
+
+    assert result.passed is True
+
+
+def test_longer_consecutive_repetition_still_fails():
+    result = evaluate_transcript("No no no no, I mean the other folder.")
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
+
 def test_clean_english_passes():
     assert evaluate_transcript(
         "Create one ticket in the repository after checking the API."

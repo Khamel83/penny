@@ -1776,6 +1776,27 @@ class InsertOutcome(str, Enum):
     FAILED = "failed"
 
 
+class QualityReviewStatus(str, Enum):
+    """Outcome of one durable operator quality re-evaluation."""
+
+    PROMOTED = "promoted"
+    ALREADY_PROMOTED = "already_promoted"
+    REJECTED = "rejected"
+    CONFLICT = "conflict"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class QualityReviewResult:
+    """Metadata-only result for the quality re-evaluation operator command."""
+
+    transcript_id: int
+    status: str
+    reason: str | None = None
+    slack_queued: bool = False
+    maya_queued: bool = False
+
+
 @dataclass(frozen=True)
 class TranscriptInsertResult:
     outcome: InsertOutcome
@@ -1972,6 +1993,258 @@ def insert_transcript(
         archive_unavailable_reason=archive_unavailable_reason,
     )
     return result.row_id if result.outcome is InsertOutcome.INSERTED else None
+
+
+def re_evaluate_quality_review(transcript_id: int) -> QualityReviewResult:
+    """Re-evaluate one retained quality-review row under current policy.
+
+    The transcript body is read only inside one short SQLite write transaction.
+    A passing result promotes the canonical row, reopens its linked Voice Memo
+    source for the normal route worker, and creates the ordinary Slack/Maya
+    delivery state in that same transaction.  The original metadata-only
+    quality-failure receipt remains as an immutable audit row; a still-pending
+    receipt is marked ``resolved`` so it cannot emit a stale warning after the
+    operator has confirmed the capture.
+    """
+    try:
+        row_id = int(transcript_id)
+    except (TypeError, ValueError):
+        return QualityReviewResult(0, QualityReviewStatus.CONFLICT.value, "invalid_id")
+    if row_id <= 0:
+        return QualityReviewResult(row_id, QualityReviewStatus.CONFLICT.value, "invalid_id")
+
+    conn = None
+    try:
+        # Import lazily so ordinary ledger/readiness imports do not pull the
+        # transcription runtime into every process.
+        from transcript_quality import evaluate_transcript
+
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, content_hash, source, transcript, audio_path,
+                   duration_seconds, ingest_state, status, recorded_at,
+                   quality_status, quality_detail, transcript_sha256,
+                   maya_delivery_status, maya_delivery_eligible, maya_drop_id,
+                   maya_claim_token, maya_claim_owner, maya_claim_expires_at
+            FROM transcripts
+            WHERE id = ?
+            """,
+            (row_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return QualityReviewResult(row_id, QualityReviewStatus.CONFLICT.value, "missing_row")
+
+        current_status = str(row["quality_status"] or "")
+        if current_status == "passed" and str(row["ingest_state"] or "") in {
+            "transcribed",
+            "routed",
+        }:
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.ALREADY_PROMOTED.value,
+            )
+        if current_status != "needs_review" or str(row["status"] or "") == "routed":
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.CONFLICT.value,
+                "state_conflict",
+            )
+
+        transcript = str(row["transcript"] or "")
+        quality = evaluate_transcript(transcript)
+        if not quality.passed:
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.REJECTED.value,
+                quality.reason or "quality_failed",
+            )
+
+        persisted_sha256 = str(row["transcript_sha256"] or "")
+        if persisted_sha256 != hashlib.sha256(transcript.encode("utf-8")).hexdigest():
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.CONFLICT.value,
+                "transcript_hash_mismatch",
+            )
+
+        linked_sources = conn.execute(
+            """
+            SELECT recording_pk, status, content_hash
+            FROM voice_memo_ingest
+            WHERE transcript_row_id = ?
+            ORDER BY recording_pk
+            """,
+            (row_id,),
+        ).fetchall()
+        for source_row in linked_sources:
+            if str(source_row["content_hash"] or "") != str(row["content_hash"]):
+                conn.rollback()
+                return QualityReviewResult(
+                    row_id,
+                    QualityReviewStatus.CONFLICT.value,
+                    "voice_memo_hash_mismatch",
+                )
+            if str(source_row["status"] or "") not in {"needs_review", "transcribed"}:
+                conn.rollback()
+                return QualityReviewResult(
+                    row_id,
+                    QualityReviewStatus.CONFLICT.value,
+                    "voice_memo_state_conflict",
+                )
+
+        maya_status = str(row["maya_delivery_status"] or "ineligible")
+        if row["maya_drop_id"] is not None or maya_status == "sent":
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.CONFLICT.value,
+                "maya_receipt_conflict",
+            )
+        if maya_status == "delivering":
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.CONFLICT.value,
+                "maya_claim_conflict",
+            )
+
+        normalized_recorded_at: str | None = None
+        if row["recorded_at"]:
+            try:
+                normalized_recorded_at = _as_iso8601_utc(row["recorded_at"])
+            except ValueError:
+                # A malformed legacy capture can still be routed locally, but
+                # it must not be made eligible for the Maya v2 timestamped
+                # contract.
+                normalized_recorded_at = None
+        maya_eligible = _is_maya_delivery_eligible(
+            requested=True,
+            source=str(row["source"]),
+            transcript=transcript,
+            ingest_state="transcribed",
+            quality_status="passed",
+            recorded_at=normalized_recorded_at,
+        )
+        prior_maya_status = maya_status
+        existing_slack_delivery = conn.execute(
+            "SELECT 1 FROM slack_deliveries WHERE transcript_row_id = ?",
+            (row_id,),
+        ).fetchone()
+
+        conn.execute(
+            """
+            UPDATE transcripts
+            SET status = 'pending',
+                ingest_state = 'transcribed',
+                quality_status = 'passed',
+                error_message = NULL,
+                last_error_at = NULL,
+                maya_delivery_status = ?,
+                maya_delivery_eligible = ?,
+                maya_delivery_error = NULL,
+                maya_delivery_attempt_count = 0,
+                maya_next_attempt_at = NULL,
+                maya_first_attempt_at = NULL,
+                maya_last_attempt_at = NULL,
+                maya_dead_letter_at = NULL,
+                maya_dead_letter_reason = NULL,
+                maya_claim_token = NULL,
+                maya_claim_owner = NULL,
+                maya_claimed_at = NULL,
+                maya_claim_expires_at = NULL,
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND quality_status = 'needs_review'
+            """,
+            ("pending" if maya_eligible else "ineligible", int(maya_eligible), row_id),
+        )
+        if conn.execute("SELECT changes()").fetchone()[0] != 1:
+            raise sqlite3.IntegrityError("quality review row changed during promotion")
+
+        _queue_slack_delivery(
+            conn,
+            transcript_row_id=row_id,
+            source=str(row["source"]),
+            transcript=transcript,
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=True,
+        )
+
+        # Preserve the body-free receipt for audit, but do not send a stale
+        # quality warning after the operator's successful re-evaluation.
+        conn.execute(
+            """
+            UPDATE quality_failure_slack_deliveries
+            SET status = 'resolved',
+                next_attempt_at = NULL,
+                slack_claim_token = NULL,
+                slack_claim_owner = NULL,
+                slack_claimed_at = NULL,
+                slack_claim_expires_at = NULL,
+                updated_at = datetime('now')
+            WHERE transcript_row_id = ?
+              AND status = 'pending'
+              AND sent_at IS NULL
+            """,
+            (row_id,),
+        )
+
+        if linked_sources:
+            conn.execute(
+                """
+                UPDATE voice_memo_ingest
+                SET status = 'transcribed',
+                    error_message = NULL,
+                    retryable = 0,
+                    next_attempt_at = NULL,
+                    terminal_at = NULL,
+                    updated_at = datetime('now')
+                WHERE transcript_row_id = ?
+                  AND status IN ('needs_review', 'transcribed')
+                """,
+                (row_id,),
+            )
+
+        conn.commit()
+        slack_queued = (
+            str(row["source"]) == "iCloud"
+            and existing_slack_delivery is None
+            and conn.execute(
+                "SELECT 1 FROM slack_deliveries WHERE transcript_row_id = ?",
+                (row_id,),
+            ).fetchone()
+            is not None
+        )
+        return QualityReviewResult(
+            row_id,
+            QualityReviewStatus.PROMOTED.value,
+            slack_queued=slack_queued,
+            maya_queued=maya_eligible and prior_maya_status != "pending",
+        )
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        log.error(
+            "Quality review promotion failed id=%s: %s",
+            row_id,
+            _safe_exception_class(exc),
+        )
+        return QualityReviewResult(
+            row_id,
+            QualityReviewStatus.FAILED.value,
+            _safe_exception_class(exc),
+        )
+    finally:
+        if conn:
+            conn.close()
 
 
 def queue_slack_delivery(transcript_id: int) -> None:
