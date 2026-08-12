@@ -20,9 +20,10 @@ from config import (
 
 CONTROL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
 TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
-# Three identical tokens can be ordinary spoken emphasis (for example,
-# "no no no").  Four or more remains a deterministic hallucination signal.
-MAX_CONSECUTIVE_TOKEN_REPETITION = 4
+MAX_CONSECUTIVE_TOKEN_REPETITION = 3
+# A triplicate "no" is common spoken emphasis in the retained Voice Memo;
+# every other triplicate remains a deterministic repetition signal.
+NATURAL_EMPHASIS_TRIPLICATE_TOKENS = frozenset({"no"})
 SUFFIX_TOKEN_WINDOW = 20
 LOW_DIVERSITY_SUFFIX_MAX_UNIQUE_TOKENS = 2
 MAX_QUALITY_DETAIL_CHARACTERS = 255
@@ -467,6 +468,11 @@ def evaluate_transcript(text: str) -> QualityResult:
     for previous, current in zip(tokens, tokens[1:]):
         consecutive = consecutive + 1 if current == previous else 1
         if consecutive >= MAX_CONSECUTIVE_TOKEN_REPETITION:
+            if (
+                consecutive == MAX_CONSECUTIVE_TOKEN_REPETITION
+                and current in NATURAL_EMPHASIS_TRIPLICATE_TOKENS
+            ):
+                continue
             return QualityResult(False, "consecutive_token_repetition")
 
     suffix = tokens[-SUFFIX_TOKEN_WINDOW:]

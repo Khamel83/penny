@@ -82,6 +82,14 @@ def test_longer_consecutive_repetition_still_fails():
     assert result.reason == "consecutive_token_repetition"
 
 
+@pytest.mark.parametrize("text", ["The the the, use the other folder.", "Vous vous vous."])
+def test_non_natural_triplicates_still_fail(text):
+    result = evaluate_transcript(text)
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
+
 def test_clean_english_passes():
     assert evaluate_transcript(
         "Create one ticket in the repository after checking the API."
