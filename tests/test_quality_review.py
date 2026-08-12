@@ -195,3 +195,109 @@ def test_quality_recheck_rolls_back_every_write_on_outbox_failure(isolated_db) -
     assert source["error_message"] == "needs_review"
     assert source["terminal_at"] is not None
     assert receipt["status"] == "pending"
+
+
+def test_quality_recheck_rejects_active_maya_claim_without_clearing_lease(isolated_db) -> None:
+    row_id, _ = _review_row()
+    conn = transcript_log._get_conn()
+    try:
+        conn.execute(
+            """
+            UPDATE transcripts
+            SET maya_delivery_status = 'pending',
+                maya_delivery_eligible = 1,
+                maya_claim_token = 'maya-claim-token',
+                maya_claim_owner = 'maya-worker',
+                maya_claimed_at = '2099-01-01T00:00:00Z',
+                maya_claim_expires_at = '2099-01-01T00:05:00Z'
+            WHERE id = ?
+            """,
+            (row_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = transcript_log.re_evaluate_quality_review(row_id)
+
+    assert result.status == "conflict"
+    assert result.reason == "maya_claim_conflict"
+    row = transcript_log.get_transcript(row_id)
+    assert row["quality_status"] == "needs_review"
+    assert row["maya_delivery_status"] == "pending"
+    assert row["maya_claim_token"] == "maya-claim-token"
+    assert row["maya_claim_owner"] == "maya-worker"
+    assert row["maya_claim_expires_at"] == "2099-01-01T00:05:00Z"
+
+
+def test_quality_recheck_rejects_inflight_quality_receipt_without_resolving_it(
+    isolated_db,
+) -> None:
+    row_id, _ = _review_row()
+    conn = transcript_log._get_conn()
+    try:
+        conn.execute(
+            """
+            UPDATE quality_failure_slack_deliveries
+            SET status = 'delivering',
+                slack_claim_token = 'slack-claim-token',
+                slack_claim_owner = 'slack-worker',
+                slack_claimed_at = '2099-01-01T00:00:00Z',
+                slack_claim_expires_at = '2099-01-01T00:05:00Z'
+            WHERE transcript_row_id = ?
+            """,
+            (row_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = transcript_log.re_evaluate_quality_review(row_id)
+
+    assert result.status == "conflict"
+    assert result.reason == "quality_failure_delivery_conflict"
+    assert transcript_log.get_transcript(row_id)["quality_status"] == "needs_review"
+    conn = transcript_log._get_conn()
+    try:
+        receipt = conn.execute(
+            """
+            SELECT status, slack_claim_token, slack_claim_owner,
+                   slack_claim_expires_at
+            FROM quality_failure_slack_deliveries
+            WHERE transcript_row_id = ?
+            """,
+            (row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert receipt["status"] == "delivering"
+    assert receipt["slack_claim_token"] == "slack-claim-token"
+    assert receipt["slack_claim_owner"] == "slack-worker"
+    assert receipt["slack_claim_expires_at"] == "2099-01-01T00:05:00Z"
+
+
+def test_quality_recheck_rejects_pending_quality_receipt_with_claim_fields(
+    isolated_db,
+) -> None:
+    row_id, _ = _review_row()
+    conn = transcript_log._get_conn()
+    try:
+        conn.execute(
+            """
+            UPDATE quality_failure_slack_deliveries
+            SET status = 'pending',
+                slack_claim_token = 'stale-claim-token',
+                slack_claim_owner = 'stale-worker'
+            WHERE transcript_row_id = ?
+            """,
+            (row_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = transcript_log.re_evaluate_quality_review(row_id)
+
+    assert result.status == "conflict"
+    assert result.reason == "quality_failure_delivery_conflict"
+    assert transcript_log.get_transcript(row_id)["quality_status"] == "needs_review"

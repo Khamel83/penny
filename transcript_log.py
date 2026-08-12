@@ -2055,6 +2055,48 @@ def re_evaluate_quality_review(transcript_id: int) -> QualityReviewResult:
                 "state_conflict",
             )
 
+        normalized_now = _maya_now()
+        if _maya_claim_is_active(row, normalized_now):
+            conn.rollback()
+            return QualityReviewResult(
+                row_id,
+                QualityReviewStatus.CONFLICT.value,
+                "maya_claim_conflict",
+            )
+
+        quality_receipts = conn.execute(
+            """
+            SELECT status, slack_claim_token, slack_claim_owner,
+                   slack_claimed_at, slack_claim_expires_at
+            FROM quality_failure_slack_deliveries
+            WHERE transcript_row_id = ?
+            """,
+            (row_id,),
+        ).fetchall()
+        for quality_receipt in quality_receipts:
+            receipt_status = str(quality_receipt["status"] or "").casefold()
+            if receipt_status in {"delivering", "in_flight", "in-flight"}:
+                conn.rollback()
+                return QualityReviewResult(
+                    row_id,
+                    QualityReviewStatus.CONFLICT.value,
+                    "quality_failure_delivery_conflict",
+                )
+            if receipt_status == "pending" and any(
+                quality_receipt[field]
+                for field in (
+                    "slack_claim_token",
+                    "slack_claim_owner",
+                    "slack_claimed_at",
+                    "slack_claim_expires_at",
+                )
+            ):
+                conn.rollback()
+                return QualityReviewResult(
+                    row_id,
+                    QualityReviewStatus.CONFLICT.value,
+                    "quality_failure_delivery_conflict",
+                )
         transcript = str(row["transcript"] or "")
         quality = evaluate_transcript(transcript)
         if not quality.passed:
