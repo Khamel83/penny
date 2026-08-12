@@ -218,6 +218,20 @@ def _voicememos_running() -> bool:
         return False
 
 
+def _voicememos_sync_daemon_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "voicememod"], capture_output=True, timeout=5
+        )
+        return result.returncode == 0
+    except Exception as e:
+        log.warning(
+            "VoiceMemos sync daemon probe errored (class=%s)",
+            type(e).__name__,
+        )
+        return False
+
+
 def _voicememos_responsive() -> bool:
     """Check that Voice Memos answers an Apple Event, not just has a PID."""
     try:
@@ -302,11 +316,12 @@ def _transcripts_pending() -> int:
     return len(pending)
 
 
-def update_health_check() -> None:
+def update_health_check() -> bool:
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     vm = 1 if _voicememos_running() else 0
     vm_responsive = 1 if vm and _voicememos_responsive() else 0
+    voicememod_running = 1 if _voicememos_sync_daemon_running() else 0
     pending = _transcripts_pending()
     vm_health = get_voice_memo_health()
     slack_health = get_slack_delivery_health()
@@ -320,6 +335,7 @@ def update_health_check() -> None:
     )
     watcher_ok = int(
         bool(vm_responsive)
+        and bool(voicememod_running)
         and bool(cloud_health.get("db_ok"))
         and not slack_health_error
         and int(slack_health.get("failed_count", 0)) == 0
@@ -338,6 +354,7 @@ def update_health_check() -> None:
             f"{now}|db_records:{cloud_health['record_count']}|"
             f"watcher_ok:{watcher_ok}|voicememos:{vm}|"
             f"voicememos_responsive:{vm_responsive}|"
+            f"voicememod_running:{voicememod_running}|"
             f"voice_db_ok:{int(cloud_health['db_ok'])}|"
             f"voice_db_wal_age_seconds:{cloud_health['wal_age_seconds']}|"
             f"cloud_latest_recording_pk:{cloud_health['latest_pk']}|"
@@ -383,6 +400,7 @@ def update_health_check() -> None:
         ),
         encoding="utf-8",
     )
+    return bool(watcher_ok)
 
 
 # ===== State (last seen DB primary key) =====
@@ -1130,6 +1148,29 @@ def _ensure_voicememos_running() -> None:
         else:
             _voicememos_unresponsive_streak = 0
 
+        if not _voicememos_sync_daemon_running():
+            try:
+                kickstart = subprocess.run(
+                    [
+                        "launchctl",
+                        "kickstart",
+                        f"gui/{os.getuid()}/com.apple.voicememod",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
+                if kickstart.returncode != 0:
+                    log.warning(
+                        "VoiceMemos sync daemon kickstart failed (exit=%s)",
+                        kickstart.returncode,
+                    )
+            except Exception as e:
+                log.warning(
+                    "VoiceMemos sync daemon kickstart errored (class=%s)",
+                    type(e).__name__,
+                )
+
         refresh = subprocess.run(
             ["open", "-g", "-a", "VoiceMemos"],
             check=False,
@@ -1611,9 +1652,10 @@ def main() -> None:
             time.sleep(POLL_INTERVAL)
 
             if time.time() - last_health_check > HEALTH_CHECK_INTERVAL:
-                update_health_check()
+                health_ok = update_health_check()
                 log.info(
-                    "Health check: OK | PK=%s | Files: %s",
+                    "Health check: %s | PK=%s | Files: %s",
+                    "OK" if health_ok else "UNREADY",
                     get_last_seen_pk(),
                     len(list(VOICE_MEMOS_DIR.glob("*.m4a"))),
                 )

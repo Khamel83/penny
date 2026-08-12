@@ -594,12 +594,71 @@ class WatcherTests(unittest.TestCase):
         self.assertIn("|watcher_ok:0|", health)
         self.assertIn("|voicememos_responsive:0|", health)
 
+    def test_health_check_requires_voicememod_running(self) -> None:
+        health_path = Path(self.db_dir) / "health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=False),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True,
+                    "record_count": 0,
+                    "latest_pk": 0,
+                    "latest_date": None,
+                    "wal_exists": False,
+                    "wal_age_seconds": -1,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 0,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                    "retry_due_count": 0,
+                    "terminal_count": 0,
+                    "terminal_failure_count": 0,
+                    "max_attempt_count": 0,
+                    "source_watermark": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={"pending_count": 0, "failed_count": 0, "health_error": 0},
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "due_count": 0,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 0,
+                    "quality_needs_review_count": 0,
+                    "health_error": 0,
+                },
+            ),
+        ):
+            self.assertFalse(watcher.update_health_check())
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|voicememod_running:0|", health)
+
     def test_health_check_requires_cloud_recording_database_integrity(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
         with (
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
             patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(
                 watcher,
@@ -1731,6 +1790,36 @@ class WatcherTests(unittest.TestCase):
         self.assertNotIn("exc_info", rendered)
         self.assertIn("RuntimeError", rendered)
 
+    def test_poll_loop_logs_unready_when_periodic_health_check_fails(self) -> None:
+        voice_root = Path(self.db_dir) / "health-log-voice-root"
+        voice_root.mkdir()
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher, "init_db"),
+            patch.object(watcher, "check_dependencies", return_value=([], [])),
+            patch.object(watcher, "get_last_seen_pk", return_value=42),
+            patch.object(watcher, "_ensure_voicememos_running"),
+            patch.object(watcher, "_process_ingest_pass"),
+            patch.object(watcher, "update_health_check", side_effect=[1, 0]) as health_check,
+            patch.object(watcher, "HEALTH_CHECK_INTERVAL", -1),
+            patch.object(
+                watcher.time, "sleep", side_effect=[None, None, KeyboardInterrupt]
+            ),
+            patch.object(watcher.log, "info") as info_log,
+        ):
+            watcher.main()
+
+        self.assertEqual(health_check.call_count, 2)
+        health_messages = [
+            entry.args
+            for entry in info_log.call_args_list
+            if entry.args and str(entry.args[0]).startswith("Health check:")
+        ]
+        self.assertEqual(len(health_messages), 1)
+        self.assertIn("UNREADY", health_messages[0])
+        self.assertNotIn("OK", health_messages[0])
+
     def test_audio_pipeline_logs_pk_without_filename_or_quality_detail(self) -> None:
         filename = "PRIVATE_PIPELINE_FILENAME_SENTINEL.m4a"
         audio_path = Path(self.db_dir) / filename
@@ -2183,6 +2272,37 @@ class WatcherTests(unittest.TestCase):
             [
                 ["pgrep", "-x", "VoiceMemos"],
                 ["osascript", "-e", watcher.VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
+                ["pgrep", "-x", "voicememod"],
+                ["open", "-g", "-a", "VoiceMemos"],
+            ],
+        )
+
+    def test_voicememod_sync_kickstarts_missing_daemon_before_refresh(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[0] == "osascript":
+                return SimpleNamespace(returncode=0, stdout="Voice Memos", stderr="")
+            if args == ["pgrep", "-x", "voicememod"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
+
+        with patch.object(watcher.subprocess, "run", side_effect=fake_run):
+            watcher._voicememos_unresponsive_streak = 0
+            watcher._ensure_voicememos_running()
+
+        self.assertEqual(
+            calls,
+            [
+                ["pgrep", "-x", "VoiceMemos"],
+                ["osascript", "-e", watcher.VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
+                ["pgrep", "-x", "voicememod"],
+                [
+                    "launchctl",
+                    "kickstart",
+                    f"gui/{os.getuid()}/com.apple.voicememod",
+                ],
                 ["open", "-g", "-a", "VoiceMemos"],
             ],
         )
@@ -2247,6 +2367,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
             patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(
                 watcher,
@@ -2295,6 +2416,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
             patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(
                 watcher,
@@ -2354,6 +2476,7 @@ class WatcherTests(unittest.TestCase):
 
         health = health_path.read_text(encoding="utf-8")
         self.assertIn("|watcher_ok:1|", health)
+        self.assertIn("|voicememod_running:1|", health)
         self.assertIn("|maya_configured:1|", health)
         self.assertIn("|maya_pending:3|maya_due:2|maya_failed:0|", health)
         self.assertIn("|maya_oldest_due_age_seconds:91|", health)
