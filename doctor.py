@@ -111,6 +111,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "uncertain_count",
         "verified",
         "watcher_ok",
+        "voicememod_running",
         "tasks_ok",
         "voicememos_responsive",
         "voice_db_ok",
@@ -206,6 +207,7 @@ _REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
     "voice_memos": frozenset(
         {
             "query_ok",
+            "voicememod_running",
             "voicememos_responsive",
             "voice_db_ok",
             "source_health_age_seconds",
@@ -220,6 +222,7 @@ _REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
             "launchd_ok",
             "age_seconds",
             "timestamp_valid",
+            "voicememod_running",
             "voicememos_responsive",
             "voice_db_ok",
         }
@@ -433,6 +436,9 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
     }
     data["voicememos_responsive"] = _health_flag(
         watcher_path, "voicememos_responsive"
+    )
+    data["voicememod_running"] = _health_flag(
+        watcher_path, "voicememod_running"
     )
     data["voice_db_ok"] = _health_flag(watcher_path, "voice_db_ok")
     file_age, file_valid = _health_file_age(watcher_path, now=current)
@@ -709,6 +715,7 @@ def _default_probe_services(_config: Any = None, *, now: datetime | None = None,
         "launchd_ok": _launchd_status(),
         "age_seconds": age,
         "timestamp_valid": bool(watcher_valid),
+        "voicememod_running": _health_flag(watcher_path, "voicememod_running"),
         "voicememos_responsive": _health_flag(
             watcher_path, "voicememos_responsive"
         ),
@@ -912,8 +919,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             values.get("source_health_age_seconds", 0) or 0
         ) > _DEFAULT_HEALTH_MAX_AGE_SECONDS:
             return "unready", "source_stale"
-        if not values.get("voicememos_responsive", False) or not values.get(
-            "voice_db_ok", False
+        if (
+            not values.get("voicememod_running", False)
+            or not values.get("voicememos_responsive", False)
+            or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"
         if int(values.get("terminal_failure_count", 0) or 0) > 0:
@@ -988,8 +997,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
     if name == "services":
         if values.get("timestamp_valid") is False:
             return "unready", "timestamp_invalid"
-        if not values.get("voicememos_responsive", False) or not values.get(
-            "voice_db_ok", False
+        if (
+            not values.get("voicememod_running", False)
+            or not values.get("voicememos_responsive", False)
+            or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"
         if not values.get("watcher_ok", False) or not values.get("launchd_ok", False):

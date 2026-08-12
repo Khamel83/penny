@@ -38,6 +38,7 @@ def _ready_probes(tmp_path: Path):
             "completion_pending_count": 0,
             "awaiting_file_count": 0,
             "source_watermark": 4,
+            "voicememod_running": True,
             "voicememos_responsive": True,
             "voice_db_ok": True,
             "source_health_age_seconds": 2,
@@ -55,6 +56,7 @@ def _ready_probes(tmp_path: Path):
             "launchd_ok": True,
             "age_seconds": 2,
             "timestamp_valid": True,
+            "voicememod_running": True,
             "voicememos_responsive": True,
             "voice_db_ok": True,
         },
@@ -98,7 +100,7 @@ def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypat
     tasks_health_file = tmp_path / "health_tasks.txt"
     health_file.write_text(
         "2026-08-10T12:00:00Z|watcher_ok:1|"
-        "voicememos_responsive:0|voice_db_ok:0|",
+        "voicememos_responsive:0|voicememod_running:1|voice_db_ok:0|",
         encoding="utf-8",
     )
     tasks_health_file.write_text("tasks_poller_ok:1\n", encoding="utf-8")
@@ -132,6 +134,52 @@ def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypat
     assert doctor._infer_status("services", services) == ("unready", "source_unavailable")
 
 
+def test_doctor_source_readiness_requires_voicememod_running(tmp_path: Path, monkeypatch):
+    import doctor
+
+    observed = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    health_file = tmp_path / "health.txt"
+    tasks_health_file = tmp_path / "health_tasks.txt"
+    health_file.write_text(
+        "2026-08-10T12:00:00Z|watcher_ok:1|"
+        "voicememos_responsive:1|voicememod_running:0|voice_db_ok:1|",
+        encoding="utf-8",
+    )
+    tasks_health_file.write_text("tasks_poller_ok:1\n", encoding="utf-8")
+    os.utime(health_file, (observed.timestamp(), observed.timestamp()))
+    os.utime(tasks_health_file, (observed.timestamp(), observed.timestamp()))
+    monkeypatch.setenv("PENNY_HEALTH_FILE", str(health_file))
+    monkeypatch.setenv("PENNY_TASKS_HEALTH_FILE", str(tasks_health_file))
+    monkeypatch.setattr(doctor, "_launchd_status", lambda: True)
+    monkeypatch.setattr(
+        doctor.transcript_log,
+        "get_voice_memo_health",
+        lambda: {
+            "query_ok": 1,
+            "health_error": 0,
+            "terminal_failure_count": 0,
+            "failed_count": 0,
+            "retry_due_count": 0,
+            "awaiting_file_count": 0,
+            "source_watermark": 4,
+        },
+    )
+
+    voice = doctor._default_probe_voice_memos(now=observed)
+    services = doctor._default_probe_services(now=observed)
+
+    assert voice["voicememod_running"] is False
+    assert services["voicememod_running"] is False
+    assert doctor._infer_status("voice_memos", voice) == (
+        "unready",
+        "source_unavailable",
+    )
+    assert doctor._infer_status("services", services) == (
+        "unready",
+        "source_unavailable",
+    )
+
+
 def test_doctor_source_evidence_must_be_fresh_exact_and_not_a_symlink(
     tmp_path: Path, monkeypatch
 ):
@@ -141,7 +189,7 @@ def test_doctor_source_evidence_must_be_fresh_exact_and_not_a_symlink(
     health_file = tmp_path / "health.txt"
     health_file.write_text(
         "2026-08-10T10:00:00Z|watcher_ok:1|"
-        "not_voicememos_responsive:1|not_voice_db_ok:1|",
+        "voicememod_running:1|not_voicememos_responsive:1|not_voice_db_ok:1|",
         encoding="utf-8",
     )
     stale_time = observed - timedelta(hours=2)
@@ -172,7 +220,8 @@ def test_doctor_source_evidence_must_be_fresh_exact_and_not_a_symlink(
 
     target = tmp_path / "healthy.txt"
     target.write_text(
-        "2026-08-10T12:00:00Z|voicememos_responsive:1|voice_db_ok:1|",
+        "2026-08-10T12:00:00Z|voicememos_responsive:1|"
+        "voicememod_running:1|voice_db_ok:1|",
         encoding="utf-8",
     )
     link = tmp_path / "health-link.txt"
