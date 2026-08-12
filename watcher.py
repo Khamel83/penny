@@ -221,7 +221,9 @@ def _voicememos_running() -> bool:
 def _voicememos_sync_daemon_running() -> bool:
     try:
         result = subprocess.run(
-            ["pgrep", "-x", "voicememod"], capture_output=True, timeout=5
+            ["pgrep", "-u", str(os.getuid()), "-x", "voicememod"],
+            capture_output=True,
+            timeout=5,
         )
         return result.returncode == 0
     except Exception as e:

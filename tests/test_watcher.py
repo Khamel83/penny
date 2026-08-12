@@ -2257,6 +2257,7 @@ class WatcherTests(unittest.TestCase):
 
     def test_voicememos_sync_is_refreshed_even_when_process_is_running(self) -> None:
         calls: list[list[str]] = []
+        daemon_probe = ["pgrep", "-u", str(os.getuid()), "-x", "voicememod"]
 
         def fake_run(args, **kwargs):
             calls.append(args)
@@ -2273,19 +2274,21 @@ class WatcherTests(unittest.TestCase):
             [
                 ["pgrep", "-x", "VoiceMemos"],
                 ["osascript", "-e", watcher.VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
-                ["pgrep", "-x", "voicememod"],
+                daemon_probe,
                 ["open", "-g", "-a", "VoiceMemos"],
             ],
         )
+        self.assertIn(daemon_probe, calls)
 
     def test_voicememod_sync_kickstarts_missing_daemon_before_refresh(self) -> None:
         calls: list[list[str]] = []
+        daemon_probe = ["pgrep", "-u", str(os.getuid()), "-x", "voicememod"]
 
         def fake_run(args, **kwargs):
             calls.append(args)
             if args[0] == "osascript":
                 return SimpleNamespace(returncode=0, stdout="Voice Memos", stderr="")
-            if args == ["pgrep", "-x", "voicememod"]:
+            if args == daemon_probe:
                 return SimpleNamespace(returncode=1, stdout="", stderr="")
             return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
 
@@ -2298,7 +2301,7 @@ class WatcherTests(unittest.TestCase):
             [
                 ["pgrep", "-x", "VoiceMemos"],
                 ["osascript", "-e", watcher.VOICE_MEMOS_RESPONSIVENESS_SCRIPT],
-                ["pgrep", "-x", "voicememod"],
+                daemon_probe,
                 [
                     "launchctl",
                     "kickstart",
