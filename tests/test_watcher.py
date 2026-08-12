@@ -543,6 +543,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
             patch.object(watcher, "_voicememos_responsive", return_value=False),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(
                 watcher,
@@ -2494,6 +2495,7 @@ class WatcherTests(unittest.TestCase):
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=True),
             patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(
                 watcher,
@@ -2541,6 +2543,7 @@ class WatcherTests(unittest.TestCase):
         with (
             patch.object(watcher, "HEALTH_FILE", health_path),
             patch.object(watcher, "_voicememos_running", return_value=False),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
             patch.object(watcher, "_transcripts_pending", return_value=0),
             patch.object(watcher, "_cloud_recording_snapshot", return_value={
                 "db_ok": True,
