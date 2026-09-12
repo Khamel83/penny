@@ -6,6 +6,7 @@ Freshness: current
 | Branch | Class | Sources | Merged | Ahead/behind | Worktree | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | auto-wip/20260912-210900 | abandoned_auto_wip | local | yes | +0/-4 | unattached | subject: fix: scope Voice Memos daemon health to user |
+| auto-wip/20260912-210902 | abandoned_auto_wip | local | no | +3/-13 | unattached | subject: fix: narrowly allow natural no emphasis; paths: scripts/re_evaluate_quality_review.py, tests/test_quality_review.py, tests/test_transcript_quality.py, transcript_log.py, transcript_quality.py |
 | codex/penny-quality-fix-20260811 | active | local | no | +3/-13 | dirty | subject: fix: narrowly allow natural no emphasis; paths: scripts/re_evaluate_quality_review.py, tests/test_quality_review.py, tests/test_transcript_quality.py, transcript_log.py, transcript_quality.py |
 | codex/penny-apple-actions | active | local, origin/codex/penny-apple-actions | no | +1/-78 | dirty | subject: feat: add structured Apple action routes and a completion reader; paths: reminders.py, tests/test_reminders.py, tests/test_webhook.py, webhook/server.py |
 | codex/foundational-agent-tooling-2026-08-26 | aging | local | no | +1/-1 | unattached | subject: docs: standardize foundational agent tooling; paths: AGENTS.md |
