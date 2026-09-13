@@ -30,6 +30,7 @@ Freshness: current
 | clio-agent/issue-6 | stale | local | no | +1/-110 | unattached | subject: fix: Housekeeping: wire deployments to git, then add Penny to Maya's fleet; paths: path |
 | claude/improve-memo-parsing-IT4m2 | stale | origin/claude/improve-memo-parsing-IT4m2 | no | +2/-141 | unattached | subject: Detect and discard repetitive Whisper hallucination transcripts; paths: classifier.py, core.py |
 | archive | stale | origin/archive | no | +1/-175 | unattached | subject: chore: Archive full Penny codebase before simplification; paths: .claude/skills/front-door/SKILL.md, .claude/skills/remote-exec/SKILL.md, .claude/skills/visual-iteration/SKILL.md, node_modules/.bin/mime, node_modules/.bin/sshpk-conv |
+| janitor/docs-162737609afc0a62cde4381887d8f016f81ce6a0 | active | origin/janitor/docs-162737609afc0a62cde4381887d8f016f81ce6a0 | no | +1/-0 | unattached | subject: docs: reconcile repository context and TODOs; paths: CONTEXT.md, TODO.md |
 | codex/penny-voicememos-sync-proof-20260812 | stale | local | yes | +0/-4 | clean | subject: fix: scope Voice Memos daemon health to user |
 | main | stale | local, origin/main | yes | +0/-4 | clean | subject: fix: scope Voice Memos daemon health to user |
 | codex/penny-phase-a | stale | local, origin/codex/penny-phase-a | yes | +0/-13 | clean | subject: test: isolate Voice Memo watermark leak check |
