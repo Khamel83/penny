@@ -11,11 +11,11 @@ durable audio.
 **Architecture:** Penny contains the service source. A small Flask/Werkzeug
 listener accepts the existing OpenAI-compatible transcription request and
 owns a priority supervisor. The supervisor starts one `spawn`ed MLX child for
-one bounded request, accepts only its complete result, and terminates the
-child when the request finishes or the idle policy requires it. The listener
-does not import `mlx_whisper`. Penny and MinusPod use bearer tokens that map to
-high and normal priority. The existing `10311` port remains the final port;
-`10312` is the canary port.
+serial requests while work is active, accepts only complete results, and
+terminates the child after a short bounded idle grace or when preemption or
+model-off requires it. The listener does not import `mlx_whisper`. Penny and
+MinusPod use bearer tokens that map to high and normal priority. The existing
+`10311` port remains the final port; `10312` is the canary port.
 
 The modules are deliberately split at the resource and trust boundaries:
 `worker.py` is the only MLX import boundary, `supervisor.py` owns admission and
@@ -41,14 +41,26 @@ systemd/Docker configuration for MinusPod, and pytest.
   helper must not import or execute MLX after cutover. The worker is the only
   runtime MLX boundary.
 - At most one MLX child and one inference request may exist on the Mac at a
-  time. Do not use a request thread pool in the shared service.
+  time. Reuse that child for sequential requests while the queue is active or
+  during the short configured idle grace; terminate it after the grace, on
+  preemption, on worker failure, or on model-off. Do not use a request thread
+  pool in the shared service.
 - The service must preserve `POST /v1/audio/transcriptions`, multipart file
   upload, FLAC decoding, `response_format=verbose_json`, segment timestamps,
   word timestamps, and complete-response-only success.
+- All upload, ffmpeg, and worker temporary files must use the 2TB SSD temp
+  directory. The service must fail closed if that directory is absent or not
+  writable; it must not silently fall back to the small internal disk. Every
+  request removes its temporary files on success, retryable failure, worker
+  crash, disconnect, or preemption.
 - A Penny request is high priority. A MinusPod request is normal priority. A
   preempted MinusPod request is HTTP 503 with a retryable error, or a transport
   failure that the client treats as retryable. It must never become a partial
   successful transcript.
+- The service must defensively cap MinusPod admission at one request total
+  (active or queued), even if the caller's settings are stale. Excess normal
+  requests receive HTTP 429 or 503 with `Retry-After`; this guard prevents a
+  misconfigured client from accumulating uploads in the Mac service.
 - MinusPod must be configured and persisted at one episode, one chunk worker,
   one admitted request, and one pool slot. `transcribe_concurrent_chunks=1`
   alone is insufficient because its current Whisper pool is disabled.
@@ -57,6 +69,13 @@ systemd/Docker configuration for MinusPod, and pytest.
   large-model service and must never be pointed at the large model.
 - Keep the existing `com.atlas.minuspod-whisper` plist, Atlas helper, queue,
   and systemd units as disabled rollback artifacts. Do not delete them.
+- Audit and retire every legacy Atlas path that can invoke or feed the old Mac
+  transcription queue, including the `atlas-whisper-pull`,
+  `atlas-whisper-push`, `atlas-whisper-sync`, `atlas-whisper-download`,
+  `atlas-whisper-import`/`import-fast`, and `atlas-whisper-cleanup` units and
+  the `com.atlas.whisperx` LaunchAgent. Preserve their files as disabled
+  rollback artifacts; do not disable the unrelated `com.wyoming.whisper`
+  tiny-model service.
 - Preserve the dirty Atlas worktree. Stage only intended ASR files; do not use
   `git add -A`.
 - Never place a token value in tracked files, logs, test output, or a rollout
@@ -71,8 +90,8 @@ systemd/Docker configuration for MinusPod, and pytest.
 
 - [ ] Add `tests/test_asr_config.py` covering default values, bounded numeric
   values, the `10311` final port, the `10312` canary override, required model
-  identity, allowed source CIDRs, and missing-token failure without printing a
-  token.
+  identity, allowed source CIDRs, the SSD temp directory, the one-request
+  normal-admission bound, and missing-token failure without printing a token.
 - [ ] Add `tests/test_asr_protocol.py` covering:
   - accepted request fields and `timestamp_granularities[]` parsing;
   - rejection of the wrong model or unsupported response format;
@@ -86,14 +105,21 @@ systemd/Docker configuration for MinusPod, and pytest.
 - [ ] Add an `[asr]` section to `config.toml` with these non-secret defaults:
   `host=0.0.0.0`, `port=10311`, `canary_port=10312`,
   `base_url=http://127.0.0.1:10311/v1`, `model_name=large-v3-turbo`,
-  `max_upload_bytes=52428800`, `max_queue=8`,
-  `preemption_grace_seconds=5`, and `worker_start_timeout_seconds=15`.
+  `max_upload_bytes=52428800`, `max_queue=8`, `max_normal_admitted=1`,
+  `temp_dir=/Volumes/2TB_SSD/atlas-whisper/tmp`,
+  `idle_grace_seconds=30`, `preemption_grace_seconds=5`,
+  `worker_start_timeout_seconds=15`, `worker_terminate_timeout_seconds=2`,
+  and `worker_join_timeout_seconds=3`.
   Keep the existing Voice Memos model path and pinned revision as the model
   source of truth.
 - [ ] Add `AsrConfig` to `config.py`. Read endpoint and timing overrides from
   `PENNY_ASR_HOST`, `PENNY_ASR_PORT`, `PENNY_ASR_BASE_URL`,
-  `PENNY_ASR_MAX_QUEUE`, `PENNY_ASR_PREEMPTION_GRACE_SECONDS`,
-  `PENNY_ASR_WORKER_START_TIMEOUT_SECONDS`, and
+  `PENNY_ASR_MAX_QUEUE`, `PENNY_ASR_MAX_NORMAL_ADMITTED`,
+  `PENNY_ASR_TEMP_DIR`, `PENNY_ASR_IDLE_GRACE_SECONDS`,
+  `PENNY_ASR_PREEMPTION_GRACE_SECONDS`,
+  `PENNY_ASR_WORKER_START_TIMEOUT_SECONDS`,
+  `PENNY_ASR_WORKER_TERMINATE_TIMEOUT_SECONDS`,
+  `PENNY_ASR_WORKER_JOIN_TIMEOUT_SECONDS`, and
   `PENNY_ASR_ALLOWED_CIDRS`. Read secrets only from
   `PENNY_ASR_TOKEN`, `MINUSPOD_ASR_TOKEN`, and
   `PENNY_ASR_ADMIN_TOKEN`.
@@ -108,7 +134,8 @@ systemd/Docker configuration for MinusPod, and pytest.
 - [ ] Define the API error mapping. Use HTTP 400 for invalid form data or
   model/format selection, HTTP 401 for a missing or wrong bearer token, HTTP
   413 for an oversized upload, HTTP 429/503 for bounded admission or service
-  pressure, and HTTP 503 with code `asr_preempted` for Penny preemption.
+  pressure with a bounded `Retry-After`, and HTTP 503 with code
+  `asr_preempted` for Penny preemption.
 - [ ] Keep `verbose_json` as the required success format. The worker always
   asks MLX for `word_timestamps=True`, even when a client requests only
   segment granularity, so the internal response remains useful for both
@@ -134,11 +161,14 @@ Commit: `test: define shared ASR configuration and contract`.
   - FIFO order within Penny and within MinusPod;
   - Penny ahead of queued MinusPod work;
   - exactly one active worker and one active request;
+  - reuse of one worker PID for sequential requests while work or the idle
+    grace is active, followed by termination after the grace;
   - a normal request preempted after the five-second bounded grace;
   - a normal request allowed to finish when it completes inside that grace;
   - no result publication after worker termination;
   - model-off rejection and retryable release of queued work;
-  - worker crash, timeout, queue full, and idle child termination;
+  - worker crash, timeout, bounded process-group termination, queue full, and
+    idle child termination;
   - status fields for queue counts, current client, request ID, worker PID,
     loaded state, and counters.
 
@@ -148,8 +178,14 @@ Commit: `test: define shared ASR configuration and contract`.
   entrypoint. Validate `PENNY_WHISPER_MODEL_PATH` with the existing pinned
   model receipt functions before calling MLX.
 - [ ] Use `multiprocessing.get_context("spawn")`, a private pipe or bounded
-  queue, and one child process per admitted bounded request. Pass only the
-  staged audio path and validated transcription options to the child.
+  queue, and one persistent child for the current active burst. The child
+  loads MLX once and processes requests serially while work is active or the
+  30-second idle grace is running; it never accepts a second simultaneous
+  request. Pass only the staged audio path and validated transcription options
+  to the child.
+- [ ] Start the child in its own process group and report its process-group ID
+  to the parent. Any ffmpeg descendants created during decoding must remain in
+  that group so preemption can clean up the whole worker tree.
 - [ ] Call MLX with the approved local model path, `language` when supplied,
   `task="transcribe"`, `condition_on_previous_text=False`, and
   `word_timestamps=True`. Normalize the result into `asr.protocol` objects.
@@ -157,9 +193,13 @@ Commit: `test: define shared ASR configuration and contract`.
   accept a result only after the child reports completion and the protocol
   validator succeeds. Do not return whatever partial data exists when the
   child exits unexpectedly.
-- [ ] Terminate and join the child after a completed request, preemption, or
-  worker timeout. This is the memory-release mechanism: no MLX arrays or Metal
-  buffers remain in the listener after the child exits.
+- [ ] Keep the child for the configured idle grace after the last completed
+  request so sequential MinusPod chunks and Penny quality retries can reuse
+  the loaded model. After the grace, or immediately on preemption,
+  model-off, worker timeout, or worker crash, terminate the entire process
+  group and join the child within the configured bounds. This is the
+  memory-release mechanism: no MLX arrays or Metal buffers remain in the
+  listener after the child exits.
 
 ### 2.3 Implement the supervisor
 
@@ -167,14 +207,19 @@ Commit: `test: define shared ASR configuration and contract`.
   number, one dispatcher, one active job, and a bounded queue. Give Penny
   priority `0` and MinusPod priority `10`; preserve FIFO order for equal
   priorities.
+- [ ] Track per-client admission separately from the global queue. Allow at
+  most one admitted MinusPod request total (active or queued); reject further
+  normal submissions with a bounded retryable error. Keep Penny's own bound
+  finite so duplicate captures cannot grow memory without limit.
 - [ ] On a Penny submission while a MinusPod child is active, allow the active
   child to finish only during the configured five-second grace. If it does not
-  finish, terminate only the supervisor-owned MinusPod child, wait for it to
-  exit, and escalate to `Process.kill()` if the bounded termination wait
-  expires. Verify that the child PID has been joined before starting Penny;
-  never signal a PID obtained from an unrelated process listing. Resolve the
-  MinusPod future as `asr_preempted` only after the child is dead, and publish
-  no result from that child.
+  finish, send `SIGTERM` to the supervisor-owned worker process group, wait
+  only `worker_terminate_timeout_seconds`, and escalate to `SIGKILL` for that
+  same group if it is still alive. Bound `Process.join()` by
+  `worker_join_timeout_seconds`, verify the child PID has been joined before
+  starting Penny, and never signal a PID obtained from an unrelated process
+  listing. Resolve the MinusPod future as `asr_preempted` only after the
+  worker tree is dead, and publish no result from that child.
 - [ ] When the normal child finishes inside the grace, publish its complete
   response and then start Penny. Record the wait in status so the one-minute
   Penny measurement is explainable.
@@ -190,9 +235,9 @@ Commit: `test: define shared ASR configuration and contract`.
   `pause_client("minuspod")`: for Penny preemption, allow the configured grace
   only while a Penny request is waiting; for an explicit model-off or
   MinusPod-pause command, stop the active normal child through its owned
-  `Process` handle, escalate only after the bounded termination wait, join it,
-  and resolve the request retryably. A Penny child is never preempted by a
-  MinusPod pause or normal admission change.
+  process-group handle, escalate only after the bounded termination wait,
+  join it, and resolve the request retryably. A Penny child is never preempted
+  by a MinusPod pause or normal admission change.
 - [ ] Implement `pause_client("minuspod")` and `resume_client("minuspod")`.
   Pausing rejects new normal requests and resolves queued normal requests
   retryably; it never stops a Penny request. Resuming only changes admission
@@ -216,7 +261,9 @@ Commit: `feat: add isolated on-demand ASR worker and supervisor`.
 - [ ] Add `tests/test_asr_server.py` using an injected fake supervisor. Cover
   bearer role selection, source-CIDR rejection, multipart FLAC upload,
   ffmpeg-path availability, form-field compatibility, health, model-off,
-  queue-full, preemption, and cleanup of temporary files.
+  queue-full, per-client admission rejection with `Retry-After`, preemption,
+  client disconnect while queued, and cleanup of temporary files on success,
+  retryable failure, crash, and preemption.
 - [ ] Add `tests/test_asr_client.py` with mocked HTTP responses. Assert the
   exact multipart request, bearer header, `model=large-v3-turbo`,
   `response_format=verbose_json`, both timestamp granularities, and bounded
@@ -233,10 +280,14 @@ Commit: `feat: add isolated on-demand ASR worker and supervisor`.
   field, enforce the upload cap before saving, preserve the safe basename and
   suffix, parse `model`, `language`, `response_format`, `vad_filter`, and
   `timestamp_granularities[]`, then submit one request to the supervisor.
-- [ ] Keep ffmpeg on the launchd `PATH` and verify it at service startup. The
-  service must accept MinusPod's ffmpeg-produced FLAC files and retain its
-  current decode behavior. A client-side FLAC conversion failure remains a
-  retryable caller error; it must not produce a false transcript.
+  Return bounded retryable errors with `Retry-After` for normal-admission
+  rejection, worker pressure, and preemption.
+- [ ] Keep ffmpeg on the launchd `PATH` and verify both ffmpeg and the SSD temp
+  directory at service startup. The service must accept MinusPod's
+  ffmpeg-produced FLAC files and retain its current decode behavior. A
+  client-side FLAC conversion failure remains a retryable caller error; it
+  must not produce a false transcript. Refuse startup if the temp directory is
+  unavailable or not writable.
 - [ ] Implement `GET /health` as metadata-only liveness plus supervisor state:
   service name, approved model identity, listener state, accepting state,
   worker PID, loaded/idle state, current client, queue counts, active request
@@ -264,8 +315,9 @@ Commit: `feat: add isolated on-demand ASR worker and supervisor`.
   `timestamp_granularities[]=word` are preserved.
 - [ ] Map HTTP 503/429, connection errors, timeout, and `asr_preempted` to a
   bounded `RetryableAsrError` carrying only a safe code and optional retry
-  delay. Do not automatically replay a preempted request inside the HTTP
-  client; the caller must retry the same durable audio unit.
+  delay. Parse and honor a bounded `Retry-After` value. Do not automatically
+  replay a preempted request inside the HTTP client; the caller must retry the
+  same durable audio unit.
 - [ ] Validate the returned model identity and response schema before exposing
   text or segments to Penny. Return `AsrResponse` with the full segment/word
   structure so MinusPod's existing parser remains unchanged.
@@ -352,8 +404,12 @@ Commit: `feat: route Penny transcription through shared ASR`.
   `com.penny.asr`, final port `10311`, `PENNY_SOURCE_REVISION`,
   `PENNY_WHISPER_MODEL_PATH`, `PENNY_ASR_TOKEN`,
   `MINUSPOD_ASR_TOKEN`, `PENNY_ASR_ADMIN_TOKEN`, `HF_HUB_OFFLINE=1`, and a
-  `PATH` containing `/opt/homebrew/bin` for ffmpeg. Write logs under
-  `~/.penny/logs`, not to the SSD log path that causes launchd failure.
+  `PATH` containing `/opt/homebrew/bin` for ffmpeg. Set both `TMPDIR` and
+  `PENNY_ASR_TEMP_DIR` to `/Volumes/2TB_SSD/atlas-whisper/tmp/`; deployment
+  must create that directory with service-only permissions and verify it is
+  writable before bootstrap. Do not add a fallback to the internal disk.
+  Write logs under `~/.penny/logs`, not to the SSD log path that causes launchd
+  failure.
 - [ ] Add `PENNY_ASR_BASE_URL=http://127.0.0.1:10311/v1` and the
   `PENNY_ASR_TOKEN` placeholder to both
   `launchd/com.penny.watcher.plist.template` and
@@ -364,10 +420,11 @@ Commit: `feat: route Penny transcription through shared ASR`.
   residency, durable transcription, and downstream receipts. Document that
   `model-off` keeps the listener but stops all inference, while `off` removes
   the listener too.
-- [ ] Document the memory states: idle listener with no MLX child; one active
-  worker for one request; child exit after work; and separate tiny Wyoming
-  service at `10301`. State that Homelab's MinusPod container still uses its
-  own RAM, but it no longer creates a second Mac model allocation.
+- [ ] Document the memory states: idle listener with no MLX child; one worker
+  reused for serial work and immediate quality retries; child exit after the
+  short idle grace; and separate tiny Wyoming service at `10301`. State that
+  Homelab's MinusPod container still uses its own RAM, but it no longer creates
+  a second Mac model allocation.
 - [ ] Add a static boundary check to `scripts/trust_check.py` or the focused
   test suite: runtime references to `mlx_whisper` are allowed only in
   `asr/worker.py` and the existing model-provisioning code, not in watcher,
@@ -407,15 +464,30 @@ the existing modifications to `1shot/DEBUG.md`, `CONTEXT.md`, and `TODO.md`.
   existing remote API integration already sends multipart FLAC,
   `verbose_json`, segment/word timestamp granularity, and a configured model;
   retain that contract during the endpoint change.
+- [ ] Verify the deployed MinusPod client treats HTTP 503 with
+  `asr_preempted` and bounded `Retry-After` as a retryable chunk result, and
+  that a transport disconnect during preemption also retains the durable audio
+  for retry. If either behavior marks the episode terminal, stop at this gate
+  and repair the client behavior before the endpoint cutover.
 - [ ] Add an opt-in retirement guard to
   `scripts/macwhisper_pipeline.sh`: after argument validation and before any
   SSH or MLX work, exit safely unless
   `ATLAS_LEGACY_WHISPER_ROLLBACK=1` is explicitly set. Document that the
   variable is for bounded rollback only. Keep the helper and queue intact.
-- [ ] Mark `atlas-whisper-pull.timer` and the direct helper as retired in
-  `docs/MAC_MINI_WHISPER.md`, `docs/TRANSCRIPT_SYSTEMS.md`, and
-  `docs/WHISPER_PIPELINE.md`. The systemd unit files remain available for
-  rollback, but the deployed timer must be disabled before final ownership.
+- [ ] Add the same opt-in rollback guard to
+  `scripts/whisper_push_pipeline.sh`, which directly invokes WhisperX on the
+  Mac. Do not let the old push job create a second model owner during or after
+  cutover.
+- [ ] Mark the old queue path as retired in `docs/MAC_MINI_WHISPER.md`,
+  `docs/TRANSCRIPT_SYSTEMS.md`, and `docs/WHISPER_PIPELINE.md`. Audit the
+  deployed state of `atlas-whisper-pull`, `atlas-whisper-push`,
+  `atlas-whisper-sync`, `atlas-whisper-download`,
+  `atlas-whisper-import`/`import-fast`, and `atlas-whisper-cleanup`, plus the
+  Mac `com.atlas.whisperx` LaunchAgent and cron/LaunchAgent watchers. Disable
+  any unit that can invoke, feed, or consume the old Mac transcription queue
+  before final ownership. Keep the unit files, plist, helper, and queue as
+  disabled rollback artifacts; do not delete them or disable the separate
+  `com.wyoming.whisper` service.
 - [ ] Run the Atlas shell and focused checks without touching unrelated dirty
   files:
 
@@ -439,10 +511,12 @@ worker PID/state, and memory evidence. Never include token values or audio.
 
 - [ ] Record the current `com.atlas.minuspod-whisper` launchd state, `:10311`
   health, current active request count, `com.wyoming.whisper`/`:10301`
-  health, `atlas-whisper-pull.timer` state, current Atlas service PID, and
-  current `vmmap`/swap evidence.
+  health, every legacy Atlas Whisper timer/LaunchAgent state, current Atlas
+  service PID, and current `vmmap`/swap and internal/SSD free-space evidence.
 - [ ] Confirm the pinned Penny model receipt exists and matches the approved
-  revision. Confirm ffmpeg is available from the launchd `PATH`.
+  revision. Confirm ffmpeg is available from the launchd `PATH`, and confirm
+  the SSD temp directory exists, is writable by the service, and has adequate
+  free space.
 - [ ] Confirm the current Atlas timer job is either idle or has a durable queue
   position that can be retried. Do not kill a live job without preserving its
   source and retry state.
@@ -454,8 +528,9 @@ worker PID/state, and memory evidence. Never include token values or audio.
   `GET http://127.0.0.1:10312/health` reports the approved identity,
   `worker_count=0`, and `loaded=false` after idle.
 - [ ] Send a synthetic multipart FLAC to `10312` and verify authentication,
-  complete `verbose_json`, segment and word timestamps, one child PID, child
-  exit, and no worker after the idle check.
+  complete `verbose_json`, segment and word timestamps, one child PID reused
+  for two sequential requests, process-group cleanup on termination, and no
+  worker after the idle-grace check.
 - [ ] Persist MinusPod's four serialized settings and verify them from the
   authenticated settings API before changing its endpoint.
 - [ ] Point a controlled Penny client at `10312` and run one real short Voice
@@ -478,16 +553,18 @@ worker PID/state, and memory evidence. Never include token values or audio.
 ### 7.3 Final port and ownership switch
 
 - [ ] Verify the canary has no direct Atlas helper process, no duplicate MLX
-  worker, and no unexpected `10301` large-model allocation.
+  worker, no unexpected `10301` large-model allocation, and no active or
+  enabled legacy Atlas unit that can invoke or feed the old Mac transcription
+  queue.
 - [ ] Disable the deployed legacy timer with `systemctl disable --now
   atlas-whisper-pull.timer`; stop any remaining
   `atlas-whisper-pull.service` only after its durable queue state is recorded.
   Verify the retirement guard prevents accidental direct SSH/MLX execution.
-- [ ] Record the active user launchd domain and unload the old owner with
-  `launchctl bootout <recorded-domain>/com.atlas.minuspod-whisper`; verify its
-  label is no longer loaded and `10311` is free. Keep its plist and the old
-  systemd units disabled as rollback artifacts. If `bootout` reports that the
-  label is already absent, verify the port and continue; do not delete the
+- [ ] Confirm the old owner is in the current user's GUI domain, then unload
+  it with `launchctl bootout gui/$(id -u)/com.atlas.minuspod-whisper`; verify
+  its label is no longer loaded and `10311` is free. Keep its plist and the
+  old systemd units disabled as rollback artifacts. If `bootout` reports that
+  the label is already absent, verify the port and continue; do not delete the
   plist.
 - [ ] Stop the canary service, start `com.penny.asr` on `10311`, and point
   MinusPod back to `http://100.113.216.27:10311/v1`. Do not change the model or
@@ -527,12 +604,16 @@ worker PID/state, and memory evidence. Never include token values or audio.
   MinusPod client no longer contain runtime MLX imports or direct Mac SSH
   transcription calls.
 - [ ] Verify `com.atlas.minuspod-whisper` is not loaded, the
-  `atlas-whisper-pull.timer` is inactive/disabled, and no legacy helper PID is
-  live.
+  legacy Atlas Whisper timers are inactive/disabled, `com.atlas.whisperx` is
+  not loaded, and no legacy helper or WhisperX PID is live. Verify that the
+  pure shared-service client and downstream receipt paths remain enabled.
 - [ ] Verify `com.wyoming.whisper` still serves only the separate tiny model
   on `10300`/`10301` and reports unloaded at idle.
 - [ ] Verify the final ASR health response identifies the approved model
   revision, current client, queue, worker PID, and loaded/unloaded state.
+- [ ] Verify the worker process group and every request temp directory are
+  gone after success, preemption, crash, disconnect, and idle expiry; verify
+  the internal disk was not used for ASR temporary files.
 - [ ] Verify no Penny or MinusPod transcript is marked successful from a
   partial response, and every preempted MinusPod unit has a retry and eventual
   exactly-once durable completion receipt.

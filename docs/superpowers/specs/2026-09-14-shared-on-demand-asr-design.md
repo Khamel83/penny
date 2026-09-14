@@ -137,6 +137,12 @@ The blockers are:
   are admitted. The target is one episode, one chunk/request at a time:
   `transcribe_concurrent_chunks=1`, `whisper_pool_enabled=true`,
   `whisper_pool_max_requests=1`, and `whisper_pool_max_episodes=1`.
+- The shared service must enforce the same safety boundary independently:
+  admit at most one MinusPod request (active or queued) and return a bounded
+  retryable `429`/`503` with `Retry-After` for excess normal requests. The
+  endpoint cutover still requires verification that the deployed MinusPod
+  client actually retries that result; if its settings surface is not
+  authenticated, stop rather than edit its database ad hoc.
 - The separate `com.wyoming.whisper` service is healthy and currently has no
   loaded model, but it is another MLX model owner. It is explicitly excluded
   from the shared large-model service in this phase and must be checked during
@@ -178,8 +184,12 @@ network restriction or an equivalent private-interface policy.
 ### MLX worker
 
 This is a separate spawned process. It loads the pinned local model only when
-the supervisor admits a request. There is exactly one worker slot. When the
-worker exits, macOS can reclaim the MLX and Metal allocations completely.
+the supervisor admits work. There is exactly one worker slot. The worker is
+reused for serial requests while work is active or during a short bounded idle
+grace, so a long MinusPod episode and Penny's immediate quality retry do not
+pay a cold model start for every chunk. After the grace, or immediately after
+preemption, model-off, timeout, or crash, the worker process group exits and
+macOS can reclaim the MLX and Metal allocations completely.
 
 The worker receives bounded audio units and returns a complete response. A
 partial response is never published as a successful transcript.
@@ -222,7 +232,11 @@ Penny is the high-priority client. MinusPod is the normal-priority client.
 - If the current unit is inside a bounded protected completion window and is
   projected to finish within the SLA, the supervisor lets it finish. The
   protected window is finite and visible in status; Penny must never wait
-  indefinitely for a MinusPod job.
+  indefinitely for a MinusPod job. If the window expires, the supervisor
+  sends `SIGTERM` to the owned worker process group, waits a strict bounded
+  interval, escalates to `SIGKILL` for that same group if needed, and bounds
+  `join()` before starting Penny. This also removes ffmpeg descendants rather
+  than leaving an orphaned decoder behind.
 - MinusPod commits a result only after the complete unit succeeds. A terminated
   unit therefore cannot create a false success or a partial duplicate.
 
@@ -247,8 +261,9 @@ The normal active state is:
 - one MLX worker only;
 - one request being executed;
 - later requests waiting in priority order;
-- the worker terminated after an idle grace period, defaulting to a short
-  configurable interval rather than the current five-minute assumption;
+- the same worker reused for serial requests while work is active or during a
+  short configurable idle grace, then terminated after the grace rather than
+  using the current five-minute assumption;
 - explicit unload available immediately after the queue drains.
 
 The operator interface must expose these separate controls:
@@ -285,6 +300,11 @@ the listener is available.
   of importing MLX or requiring a model to be loaded in the watcher process.
 - Add the supervisor, worker, launchd template, configuration, status command,
   and unit/integration tests.
+- Keep all multipart and ffmpeg temporary files on the 2TB SSD through an
+  explicit service `TMPDIR`; fail closed if that directory is unavailable or
+  unwritable, and remove request files after every terminal outcome.
+- Add bounded per-client admission in the supervisor. MinusPod may have only
+  one active-or-queued request even if its producer settings are stale.
 - Keep the approved model identity and local receipt in the service health
   response and in Penny's existing transcript metadata.
 - Reduce the discovery interval enough to make the local one-minute target
@@ -299,13 +319,21 @@ the listener is available.
   one episode, one chunk worker, one admitted request, and one pool slot. Do
   not rely on `transcribe_concurrent_chunks=1` alone; the current disabled
   pool makes the other admission controls pass through.
-- Verify the effective settings through the MinusPod settings surface or its
-  database, and verify runtime logs show `workers=1` and never show more than
-  one simultaneous upload during a long-episode canary.
+- Verify the effective settings through the authenticated MinusPod settings
+  surface, and verify runtime logs show `workers=1` and never show more than
+  one simultaneous upload during a long-episode canary. If authenticated
+  settings access is unavailable, stop at that gate; do not edit the database
+  ad hoc.
 - Remove the direct SSH invocation of
   `.atlas_macwhisper_transcribe.py` from the canonical Atlas path.
 - Retire `atlas-whisper-pull.timer` only after MinusPod/shared-service parity
   and a live transcript canary are proven.
+- Audit and retire the old queue automation as a set: `atlas-whisper-push`,
+  `atlas-whisper-sync`, `atlas-whisper-download`,
+  `atlas-whisper-import`/`import-fast`, `atlas-whisper-cleanup`, and the Mac
+  `com.atlas.whisperx` LaunchAgent. Disable any deployed unit that can invoke,
+  feed, or consume the old Mac transcription queue. Preserve the unit files
+  and plist as disabled rollback artifacts.
 - Keep the old timer, helper, and queue as disabled rollback evidence during
   the observation window.
 - Set MinusPod requests to normal priority and ensure an interrupted bounded
@@ -334,8 +362,9 @@ the listener is available.
    current service remains untouched.
 2. Run a local synthetic FLAC request and verify the full MinusPod contract:
    authentication, multipart decoding, ffmpeg availability, `verbose_json`,
-   segment and word timestamps, complete response, one worker, one model
-   allocation, explicit worker termination, and no model in the idle state.
+   segment and word timestamps, complete response, one worker reused for
+   sequential requests, one model allocation, process-group cleanup, SSD temp
+   use, and no model after the idle grace.
 3. Persist MinusPod's serialized settings (`1` chunk worker, pool enabled,
    `1` request, `1` episode) and verify the effective settings before pointing
    it at the new service.
@@ -347,10 +376,12 @@ the listener is available.
 6. Exercise Penny preemption of a MinusPod canary. Verify the preempted
    request is retryable, the durable audio remains, and the unit later
    completes exactly once.
-7. Drain or safely stop the active old Atlas job, disable
-   `atlas-whisper-pull.timer`, stop the old `10311` owner, and verify that no
-   direct SSH/MLX worker returns. Keep the timer, helper, and launchd plist as
-   disabled rollback artifacts.
+7. Drain or safely stop the active old Atlas job, audit and disable every
+   deployed old queue/transcription unit and the `com.atlas.whisperx`
+   LaunchAgent, disable `atlas-whisper-pull.timer`, stop the old `10311`
+   owner, and verify that no direct SSH/MLX or WhisperX worker returns. Keep
+   the timer, helper, queue, unit files, and launchd plist as disabled rollback
+   artifacts.
 8. Move the new service to port `10311`, install its final launchd label, and
    verify source revision, health, worker count, model state, and memory.
 9. Observe idle, Penny-only, MinusPod-only, simultaneous-request, and
@@ -367,7 +398,8 @@ The change is not complete until all of the following are demonstrated:
 
 - After an idle period, the service listener is small and no MLX worker exists.
 - One request creates one worker; a second request queues and does not create
-  a second worker or model allocation.
+  a second worker or model allocation; sequential requests during the idle
+  grace reuse the same worker PID.
 - A Penny recording detected on the Mac reaches durable transcript state within
   the one-minute target for representative short memos.
 - A Penny request preempts or safely waits behind a MinusPod unit according to
@@ -381,10 +413,16 @@ The change is not complete until all of the following are demonstrated:
 - A preempted MinusPod request receives a retryable result and never a partial
   successful response.
 - `model-off` removes the worker and the physical footprint falls accordingly.
+- Worker preemption removes the entire worker process group, including any
+  decoder descendants, within a bounded termination/join interval.
+- ASR temporary files use the 2TB SSD and are absent after every terminal
+  request outcome; the internal disk is not used for ASR temp storage.
 - `off` preserves both Penny and MinusPod work for later retry.
 - No Penny watcher, webhook, Atlas helper, or MinusPod client loads MLX
   directly after cutover.
-- `atlas-whisper-pull.timer` is inactive and no direct SSH MLX worker is live.
+- All old queue/transcription timers and launch agents are inactive/disabled,
+  `com.atlas.whisperx` is not loaded, and no direct SSH MLX or WhisperX worker
+  is live.
 - `com.wyoming.whisper` remains a separately monitored tiny-model service on
   `10300`/`10301`; it is unloaded at idle and does not own the shared large
   model.
