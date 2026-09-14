@@ -1,9 +1,9 @@
-# Shared on-demand ASR for Penny and Atlas
+# Shared on-demand ASR for Penny and MinusPod
 
 **Date:** 2026-09-14  
 **Status:** Approved direction; implementation plan pending review  
 **Owner:** Penny  
-**Related systems:** Penny Voice Memos, Atlas's MinusPod podcast product
+**Related systems:** Penny Voice Memos; MinusPod, the podcast product inside Atlas
 
 ## Decision in one paragraph
 
@@ -19,12 +19,16 @@ work.
 The existing `com.atlas.minuspod-whisper` service is useful evidence and a
 temporary compatibility reference, but it is not the final ownership boundary.
 The live host also has an old Atlas SSH transcription path and Penny's direct
-MLX path. Both must be retired after parity is proven.
+MLX path. Both must be retired after parity is proven. The service must keep
+MinusPod's current OpenAI-compatible API contract, including multipart FLAC
+uploads, `verbose_json`, segment and word timestamps, complete-response-only
+success, and a retryable response when Penny preempts a MinusPod unit.
 
 ## 1. Why this change is needed
 
 The Mac mini has 16 GiB of unified CPU/GPU memory. The current live system has
-three independent MLX owners:
+three independent MLX-capable transcription paths plus one separate small
+Wyoming service:
 
 1. `com.penny.watcher` loads Penny's pinned `whisper-large-v3-turbo` model and
    keeps the allocation in its long-lived process.
@@ -34,6 +38,11 @@ three independent MLX owners:
    to the Mac and starts `.atlas_macwhisper_transcribe.py`, another independent
    MLX process. This is not a separate Atlas product requirement; it is an old
    competing MinusPod/Atlas podcast path that must be retired.
+4. `com.wyoming.whisper` listens on Wyoming port `10300` and HTTP port
+   `10301` for Home Assistant. It uses the separate `tiny` model and is
+   currently unloaded. It is not part of the shared Penny/MinusPod service in
+   this phase, but it must remain explicitly excluded from the large-model
+   budget and visible in diagnostics.
 
 The current evidence showed approximately 2.6 GiB, 4.3 GiB plus 0.6 GiB, and
 1.8 GiB of physical footprints respectively. The exact footprint changes with
@@ -64,6 +73,10 @@ processes hold separate allocations or when MinusPod is continuously active.
 - Preserve Penny's existing transcript quality, SQLite, archive, routing, and
   downstream receipt behavior.
 - Preserve Atlas's existing durable episode state and retry behavior.
+- Preserve the current MinusPod request and response contract:
+  `POST /v1/audio/transcriptions`, multipart audio with FLAC support,
+  `response_format=verbose_json`, segment timestamps, word timestamps, and
+  complete-response-only success.
 
 ## 3. Non-goals
 
@@ -72,6 +85,9 @@ processes hold separate allocations or when MinusPod is continuously active.
 - Do not add a cloud transcription fallback automatically.
 - Do not rewrite Voice Memos capture, Penny routing, Maya, or MinusPod's feed
   behavior.
+- Do not merge the Home Assistant Wyoming protocol into this first shared
+  service. Keep its separate `tiny` model and ports under explicit monitoring;
+  a future large-model migration requires a separate design decision.
 - Do not delete the old helper, plists, queues, or transcript evidence during
   rollout. Retain disabled rollback artifacts until the observation window is
   complete.
@@ -99,9 +115,38 @@ Penny may import `mlx_whisper` or start a Mac-side model process after cutover.
 The existing port `10311` should be retained to minimize the client change.
 The final launchd label should describe Penny ownership, such as
 `com.penny.asr`. The current Atlas-labelled service remains the rollback
-artifact until the new service has passed live parity.
+artifact until the new service has passed live parity. The Wyoming service on
+`10300`/`10301` stays separate, keeps the `tiny` model, and must never be
+configured to load the shared large model.
 
-## 5. Target flow
+## 5. Current state and cutover blockers
+
+The architecture is compatible with MinusPod, but the live cutover is not
+complete or safe yet. The review snapshot reported a healthy `:10311` service
+with `large-v3-turbo` and 1,074 completed requests. That counter is live
+diagnostic data, not proof that final ownership or memory policy is in place.
+
+The blockers are:
+
+- `com.atlas.minuspod-whisper` still owns the existing MLX service on `10311`.
+- `atlas-whisper-pull.timer` is still enabled and can launch the old direct
+  SSH/MLX helper from `scripts/macwhisper_pipeline.sh`.
+- Penny's watcher and webhook still contain direct `mlx_whisper` paths.
+- MinusPod's current API client defaults to four simultaneous long-episode
+  chunk requests. Its Whisper pool is disabled, so up to four API requests
+  are admitted. The target is one episode, one chunk/request at a time:
+  `transcribe_concurrent_chunks=1`, `whisper_pool_enabled=true`,
+  `whisper_pool_max_requests=1`, and `whisper_pool_max_episodes=1`.
+- The separate `com.wyoming.whisper` service is healthy and currently has no
+  loaded model, but it is another MLX model owner. It is explicitly excluded
+  from the shared large-model service in this phase and must be checked during
+  rollout and idle-state verification.
+
+No runtime or configuration cutover is implied by this specification. The
+implementation must first prove API parity, serialized MinusPod behavior,
+Penny priority, preemption/retry, and the no-worker idle state.
+
+## 6. Target flow
 
 ```text
 Voice Memos
@@ -139,7 +184,30 @@ worker exits, macOS can reclaim the MLX and Metal allocations completely.
 The worker receives bounded audio units and returns a complete response. A
 partial response is never published as a successful transcript.
 
-## 6. Priority and preemption policy
+### Compatibility contract
+
+The shared service must accept the request shape that MinusPod already sends:
+
+- `POST /v1/audio/transcriptions` with a bearer API key;
+- multipart form field `file`, including the FLAC files produced by MinusPod's
+  ffmpeg path;
+- `model=large-v3-turbo`, `response_format=verbose_json`, and the existing
+  language/VAD fields when supplied;
+- `timestamp_granularities[]=segment` and `timestamp_granularities[]=word`.
+
+The successful response must be JSON with `language`, `duration`, `text`, and
+`segments`. Each segment must retain `start`, `end`, and `text`; each word must
+retain `word`, `start`, and `end`. HTTP 200 is allowed only after the complete
+unit is transcribed and validated. A worker termination, timeout, or
+preemption must not return a partial 200 response.
+
+When Penny preempts a MinusPod unit, the service returns HTTP 503 with a
+machine-readable `asr_preempted` error and a retry hint when the request can
+still receive a response. A client disconnect or worker termination that
+prevents that response is also retryable. MinusPod must retain the durable
+audio unit and retry it; it must not commit the unit as successful.
+
+## 7. Priority and preemption policy
 
 Penny is the high-priority client. MinusPod is the normal-priority client.
 
@@ -164,7 +232,7 @@ the underlying MLX call cannot provide reliable progress, the implementation
 must use bounded units and a conservative time limit rather than pretending to
 know that a job is 99% complete.
 
-## 7. Memory and operating modes
+## 8. Memory and operating modes
 
 The normal idle state is:
 
@@ -202,7 +270,7 @@ wants zero ASR footprint, `off` removes even that small process. The large
 model is the memory-sensitive part and must not remain resident merely because
 the listener is available.
 
-## 8. Required code changes
+## 9. Required code changes
 
 ### Penny
 
@@ -227,6 +295,13 @@ the listener is available.
 - Point the MinusPod OpenAI-compatible transcription client at the Penny-owned
   endpoint and use the shared authentication contract. This is the only
   Atlas-side transcription client in the target design.
+- Set and persist the serialized producer policy before the endpoint cutover:
+  one episode, one chunk worker, one admitted request, and one pool slot. Do
+  not rely on `transcribe_concurrent_chunks=1` alone; the current disabled
+  pool makes the other admission controls pass through.
+- Verify the effective settings through the MinusPod settings surface or its
+  database, and verify runtime logs show `workers=1` and never show more than
+  one simultaneous upload during a long-episode canary.
 - Remove the direct SSH invocation of
   `.atlas_macwhisper_transcribe.py` from the canonical Atlas path.
 - Retire `atlas-whisper-pull.timer` only after MinusPod/shared-service parity
@@ -247,32 +322,46 @@ the listener is available.
 - Verify the endpoint is reachable only from loopback and the intended private
   Tailscale path.
 - Preserve the current model directory and verify its receipt before cutover.
+- Keep `com.wyoming.whisper` outside this service boundary. Verify that its
+  `10301` health reports the separate `tiny` model and that the shared
+  `large-v3-turbo` model is never configured there. If that service is later
+  required to use the large model, it must first be migrated under the same
+  supervisor rather than enabled beside it.
 
-## 9. Rollout and rollback
+## 10. Rollout and rollback
 
 1. Build and test the Penny supervisor on an unused local port while the
    current service remains untouched.
-2. Run a local synthetic request and verify one worker, one model allocation,
-   complete response, explicit worker termination, and no model in the idle
-   state.
-3. Switch Penny to the new client and run one real Voice Memo canary. Verify
-   the existing SQLite/archive/routing receipts.
-4. Switch MinusPod to the new endpoint and run one representative podcast
-   chunk. Verify the downstream episode result.
-5. Drain or safely stop the active old Atlas job, disable the old timer, and
-   verify that no direct Atlas MLX process returns.
-6. Move the new service to port `10311`, install its final launchd label, and
+2. Run a local synthetic FLAC request and verify the full MinusPod contract:
+   authentication, multipart decoding, ffmpeg availability, `verbose_json`,
+   segment and word timestamps, complete response, one worker, one model
+   allocation, explicit worker termination, and no model in the idle state.
+3. Persist MinusPod's serialized settings (`1` chunk worker, pool enabled,
+   `1` request, `1` episode) and verify the effective settings before pointing
+   it at the new service.
+4. Switch Penny to the new client and run one real Voice Memo canary. Verify
+   the existing SQLite, archive, routing, and downstream receipts.
+5. Switch MinusPod to the new endpoint on the unused port and run one
+   representative long-episode canary. Verify one request at a time and the
+   downstream episode result.
+6. Exercise Penny preemption of a MinusPod canary. Verify the preempted
+   request is retryable, the durable audio remains, and the unit later
+   completes exactly once.
+7. Drain or safely stop the active old Atlas job, disable
+   `atlas-whisper-pull.timer`, stop the old `10311` owner, and verify that no
+   direct SSH/MLX worker returns. Keep the timer, helper, and launchd plist as
+   disabled rollback artifacts.
+8. Move the new service to port `10311`, install its final launchd label, and
    verify source revision, health, worker count, model state, and memory.
-7. Exercise Penny preemption of a MinusPod canary, then verify MinusPod retry
-   and eventual completion.
-8. Observe idle, Penny-only, MinusPod-only, and simultaneous-request states.
+9. Observe idle, Penny-only, MinusPod-only, simultaneous-request, and
+   `10301` Wyoming states.
 
 Rollback is a controlled client/service cutback: stop new requests, preserve
 durable source media, restore the prior launchd service and client endpoint,
 and verify the old path before resuming work. Do not use blind `kill -9`, delete
 queue files, or delete transcript evidence as a rollback mechanism.
 
-## 10. Acceptance evidence
+## 11. Acceptance evidence
 
 The change is not complete until all of the following are demonstrated:
 
@@ -284,16 +373,26 @@ The change is not complete until all of the following are demonstrated:
 - A Penny request preempts or safely waits behind a MinusPod unit according to
   the finite protected-completion rule.
 - MinusPod resumes a preempted unit without data loss or duplicate success.
+- MinusPod's persisted effective settings are one episode, one chunk worker,
+  one admitted request, and one pool slot; a long-episode log proves no
+  concurrent uploads.
+- The service accepts MinusPod's multipart FLAC request and returns complete
+  `verbose_json` with segment and word timestamps.
+- A preempted MinusPod request receives a retryable result and never a partial
+  successful response.
 - `model-off` removes the worker and the physical footprint falls accordingly.
 - `off` preserves both Penny and MinusPod work for later retry.
 - No Penny watcher, webhook, Atlas helper, or MinusPod client loads MLX
   directly after cutover.
 - `atlas-whisper-pull.timer` is inactive and no direct SSH MLX worker is live.
+- `com.wyoming.whisper` remains a separately monitored tiny-model service on
+  `10300`/`10301`; it is unloaded at idle and does not own the shared large
+  model.
 - The service health response identifies the approved model revision, current
   queue, current client, worker PID, and loaded/unloaded state.
 - A reboot and a long idle period return to the no-worker state.
 
-## 11. Known tradeoff
+## 12. Known tradeoff
 
 Sharing one model means MinusPod and Penny share one physical inference
 resource.
