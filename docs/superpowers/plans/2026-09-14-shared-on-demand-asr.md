@@ -17,6 +17,14 @@ does not import `mlx_whisper`. Penny and MinusPod use bearer tokens that map to
 high and normal priority. The existing `10311` port remains the final port;
 `10312` is the canary port.
 
+The modules are deliberately split at the resource and trust boundaries:
+`worker.py` is the only MLX import boundary, `supervisor.py` owns admission and
+preemption, `server.py` owns HTTP/authentication, `protocol.py` validates the
+compatibility contract, and `client.py` is the reusable caller. Do not merge
+these boundaries into the listener as a simplification; doing so would make it
+easy for long-lived HTTP code to retain MLX state or publish an incomplete
+result.
+
 **Tech Stack:** Python 3.14, Flask/Werkzeug, `requests`, `multiprocessing`
 with the macOS `spawn` context, `mlx-whisper==0.4.3`, ffmpeg, launchd,
 systemd/Docker configuration for MinusPod, and pytest.
@@ -161,8 +169,12 @@ Commit: `test: define shared ASR configuration and contract`.
   priorities.
 - [ ] On a Penny submission while a MinusPod child is active, allow the active
   child to finish only during the configured five-second grace. If it does not
-  finish, terminate that child, resolve its future as `asr_preempted`, and
-  start Penny only after the old PID has been joined.
+  finish, terminate only the supervisor-owned MinusPod child, wait for it to
+  exit, and escalate to `Process.kill()` if the bounded termination wait
+  expires. Verify that the child PID has been joined before starting Penny;
+  never signal a PID obtained from an unrelated process listing. Resolve the
+  MinusPod future as `asr_preempted` only after the child is dead, and publish
+  no result from that child.
 - [ ] When the normal child finishes inside the grace, publish its complete
   response and then start Penny. Record the wait in status so the one-minute
   Penny measurement is explainable.
@@ -174,6 +186,13 @@ Commit: `test: define shared ASR configuration and contract`.
   child safely, resolve all queued futures retryably, and terminate the child
   while leaving the listener alive. Implement `resume_model()` for the
   operator command.
+- [ ] Apply the same targeted termination sequence to `model_off()` and
+  `pause_client("minuspod")`: for Penny preemption, allow the configured grace
+  only while a Penny request is waiting; for an explicit model-off or
+  MinusPod-pause command, stop the active normal child through its owned
+  `Process` handle, escalate only after the bounded termination wait, join it,
+  and resolve the request retryably. A Penny child is never preempted by a
+  MinusPod pause or normal admission change.
 - [ ] Implement `pause_client("minuspod")` and `resume_client("minuspod")`.
   Pausing rejects new normal requests and resolves queued normal requests
   retryably; it never stops a Penny request. Resuming only changes admission
@@ -464,8 +483,12 @@ worker PID/state, and memory evidence. Never include token values or audio.
   atlas-whisper-pull.timer`; stop any remaining
   `atlas-whisper-pull.service` only after its durable queue state is recorded.
   Verify the retirement guard prevents accidental direct SSH/MLX execution.
-- [ ] Stop `com.atlas.minuspod-whisper` and verify `10311` is free. Keep its
-  plist and the old systemd units disabled as rollback artifacts.
+- [ ] Record the active user launchd domain and unload the old owner with
+  `launchctl bootout <recorded-domain>/com.atlas.minuspod-whisper`; verify its
+  label is no longer loaded and `10311` is free. Keep its plist and the old
+  systemd units disabled as rollback artifacts. If `bootout` reports that the
+  label is already absent, verify the port and continue; do not delete the
+  plist.
 - [ ] Stop the canary service, start `com.penny.asr` on `10311`, and point
   MinusPod back to `http://100.113.216.27:10311/v1`. Do not change the model or
   API contract during this port move.
