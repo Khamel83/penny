@@ -92,6 +92,7 @@ POLL_INTERVAL = cfg.voice_memos.poll_interval_seconds
 HEALTH_CHECK_INTERVAL = 300
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
+PROCESS_TITLE = "Penny Watcher"
 # Only process files created within this window. Prevents re-processing old files
 # when VoiceMemos touches their mtimes during sync or restart.
 MAX_FILE_AGE = timedelta(hours=24)
@@ -130,6 +131,16 @@ def _bounded_dependency_issue(issue: object) -> str:
     if detail.isidentifier() and len(detail) <= 100:
         return f"{base}:{detail}"
     return base
+
+
+def _set_process_title() -> None:
+    """Set a human-readable process title without making it a hard dependency."""
+    try:
+        from setproctitle import setproctitle
+    except ImportError:
+        log.warning("Process title helper unavailable; process remains Python")
+        return
+    setproctitle(PROCESS_TITLE)
 
 
 # ===== Dependencies =====
@@ -1610,6 +1621,7 @@ def _process_ingest_pass() -> None:
 
 
 def main() -> None:
+    _set_process_title()
     log.info("=" * 60)
     log.info("Penny iCloud Watcher starting...")
     log.info("=" * 60)

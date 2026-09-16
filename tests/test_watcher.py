@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -57,6 +57,30 @@ class WatcherTests(unittest.TestCase):
         patch.object(transcript_log, "_MIGRATION_SOURCES", []).start()
         transcript_log.init_db()
         self.addCleanup(patch.stopall)
+
+    def test_main_sets_penny_process_title_before_startup(self) -> None:
+        with (
+            patch.object(watcher, "_set_process_title", create=True) as set_title,
+            patch.object(watcher, "init_db"),
+            patch.object(watcher, "check_dependencies", return_value=([], [])),
+            patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
+            patch.object(watcher, "get_last_seen_pk", return_value=0),
+            patch.object(watcher, "_ensure_voicememos_running"),
+            patch.object(watcher, "_process_ingest_pass"),
+            patch.object(watcher, "update_health_check", return_value=True),
+            patch.object(watcher.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+        ):
+            watcher.main()
+
+        set_title.assert_called_once_with()
+
+    def test_set_process_title_uses_visible_penny_label(self) -> None:
+        title_setter = Mock()
+        fake_setproctitle = SimpleNamespace(setproctitle=title_setter)
+        with patch.dict(sys.modules, {"setproctitle": fake_setproctitle}):
+            watcher._set_process_title()
+
+        title_setter.assert_called_once_with("Penny Watcher")
 
     def test_oversized_file_is_recorded_as_skipped_without_slack_enqueue(self) -> None:
         audio_path = Path(self.db_dir) / "oversized.m4a"
