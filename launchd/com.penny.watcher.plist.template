@@ -55,7 +55,15 @@
              authenticate `gh api` calls. com.penny.watcher's PATH above
              does not include ~/.local/bin, so janitor-runner is invoked by
              absolute path — this token is what makes that subprocess's
-             own `gh` calls authenticate once it runs. -->
+             own `gh` calls authenticate once it runs.
+
+             WARNING — unlike the other placeholder credentials in this
+             template, this one is NOT inert until configured. `gh` prefers
+             GH_TOKEN from the environment over the login keychain, so
+             leaving the literal YOUR_GH_TOKEN_HERE placeholder in place
+             actively BREAKS `gh` auth for this daemon — it will not fall
+             back to the keychain. Before deploying, either substitute a
+             real token here, or delete this key/string pair entirely. -->
         <key>GH_TOKEN</key>
         <string>YOUR_GH_TOKEN_HERE</string>
     </dict>
