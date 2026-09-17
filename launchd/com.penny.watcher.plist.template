@@ -51,6 +51,13 @@
         <string>YOUR_MAYA_INGEST_TOKEN_HERE</string>
         <key>MAYA_DELIVERY_TIMEOUT_SECONDS</key>
         <string>10</string>
+        <!-- Required for github_delivery.py's janitor-triage subprocess to
+             authenticate `gh api` calls. com.penny.watcher's PATH above
+             does not include ~/.local/bin, so janitor-runner is invoked by
+             absolute path — this token is what makes that subprocess's
+             own `gh` calls authenticate once it runs. -->
+        <key>GH_TOKEN</key>
+        <string>YOUR_GH_TOKEN_HERE</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
