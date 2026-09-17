@@ -1001,5 +1001,10 @@ class DetectContentTypeTests(unittest.TestCase):
         self.assertNotIn(sentinel, repr(log_mock.mock_calls))
 
 
+class ClassifierCategoriesTests(unittest.TestCase):
+    def test_project_is_a_valid_category(self):
+        self.assertIn("project", classifier.CATEGORIES)
+
+
 if __name__ == "__main__":
     unittest.main()

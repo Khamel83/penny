@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox"]
+CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox", "project"]
 
 
 def _safe_exception_class(exc: BaseException) -> str:
@@ -49,6 +49,7 @@ Categories (pick exactly one per item):
 - health: medical/dental appointments, medications, exercise, wellness, self-care
 - work: professional tasks, meetings, deadlines, career-related items
 - kids: anything related to children (school, activities, supplies, appointments)
+- project: a software/code task, bug, or idea for one of the user's own software projects or repositories — something that belongs in a GitHub issue, not a personal to-do
 - inbox: anything actionable that doesn't clearly fit the above categories
 
 Rules:
