@@ -30,6 +30,7 @@ from archive import (
 )
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
+from github_delivery import process_pending_github_deliveries
 from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
 from transcript_quality import (
@@ -1282,6 +1283,15 @@ def _process_maya_outbox() -> None:
         log.error("Maya outbox processing failed (class=%s)", type(e).__name__)
 
 
+def _process_github_outbox() -> None:
+    try:
+        delivered = process_pending_github_deliveries(limit=1)
+        if delivered:
+            log.info("Processed %s GitHub triage delivery(ies)", delivered)
+    except Exception as e:
+        log.error("GitHub outbox processing failed (class=%s)", type(e).__name__)
+
+
 def _process_archive_outbox() -> None:
     """Drain a bounded archive batch without coupling it to routing delivery."""
     for row in get_pending_archive_deliveries(limit=cfg.archive.delivery_batch_limit):
@@ -1609,6 +1619,7 @@ def _process_ingest_pass() -> None:
         _process_archive_outbox,
         _process_slack_outbox,
         _process_maya_outbox,
+        _process_github_outbox,
     )
     for operation in operations:
         try:
