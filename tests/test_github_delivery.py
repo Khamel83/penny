@@ -8,6 +8,7 @@ from github_delivery import (
     _run_janitor_triage,
     process_pending_github_deliveries,
 )
+from slack_delivery import SlackAPIError
 
 
 class RunJanitorTriageTestCase(unittest.TestCase):
@@ -112,3 +113,39 @@ class ProcessPendingGithubDeliveriesTestCase(unittest.TestCase):
         with patch("github_delivery.claim_next_github_delivery", return_value=None):
             count = process_pending_github_deliveries(limit=20)
         self.assertEqual(count, 0)
+
+    def test_slack_reply_failure_does_not_propagate_and_ledger_write_stands(self):
+        """A Slack post failure after a terminal ledger write must be swallowed:
+        the item is already correctly marked sent, and this failure must not
+        abort the rest of the drain pass (process_pending_github_deliveries
+        must not raise)."""
+        claimed = {
+            "id": 1, "transcript_row_id": 42, "idempotency_key": "key123",
+            "transcript_text": "fix the widget bug", "github_claim_token": "tok",
+        }
+        with (
+            patch("github_delivery.claim_next_github_delivery", side_effect=[claimed, None]),
+            patch(
+                "github_delivery._run_janitor_triage",
+                return_value={"status": "filed", "repo": "Khamel83/x", "issue_url": "https://x/1"},
+            ),
+            patch("github_delivery.mark_github_delivery_sent") as mark_sent,
+            patch(
+                "github_delivery._original_slack_thread",
+                return_value=("C123", "1700000000.000100"),
+            ),
+            patch(
+                "github_delivery._post_to_slack",
+                side_effect=SlackAPIError("internal_error"),
+            ) as post_to_slack,
+        ):
+            count = process_pending_github_deliveries(limit=20)
+        # The whole pass must complete without raising, and the item still
+        # counts as reaching a terminal state this pass.
+        self.assertEqual(count, 1)
+        # The ledger write must have happened, with the correct credentials,
+        # before the (failed) reply attempt.
+        mark_sent.assert_called_once_with(
+            1, "Khamel83/x", "https://x/1", claim_token="tok", claim_owner=unittest.mock.ANY,
+        )
+        post_to_slack.assert_called_once()

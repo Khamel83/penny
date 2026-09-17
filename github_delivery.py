@@ -98,9 +98,21 @@ def _reply_in_slack_thread(transcript_row_id: int, idempotency_key: str, text: s
         return
     channel_id, provider_ts = thread
     message = SlackTranscriptPost(text=text, blocks=())
-    _post_to_slack(
-        channel_id, message, f"github-triage-{idempotency_key}", thread_ts=provider_ts,
-    )
+    try:
+        _post_to_slack(
+            channel_id, message, f"github-triage-{idempotency_key}", thread_ts=provider_ts,
+        )
+    except Exception as exc:
+        # The ledger row for this item is already committed terminal
+        # (sent/no_match) by the time we get here — that write must stand.
+        # A failure to post the confirmation reply is unfortunate but must
+        # not abort the rest of this drain pass or re-raise past a caller
+        # that assumes ledger-terminal items are fully handled.
+        log.error(
+            "Failed to post GitHub-triage Slack thread reply (row=%s): %s",
+            transcript_row_id,
+            exc,
+        )
 
 
 def process_pending_github_deliveries(limit: int = 20) -> int:
