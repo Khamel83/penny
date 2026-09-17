@@ -91,6 +91,10 @@ HEALTH_FILE = Path("~/.penny/health.txt").expanduser()
 
 POLL_INTERVAL = cfg.voice_memos.poll_interval_seconds
 HEALTH_CHECK_INTERVAL = 300
+# The GitHub triage outbox drains on its own schedule, not on every ingest
+# pass — one triage subprocess can occupy the loop for up to 105s.
+GITHUB_OUTBOX_MIN_INTERVAL_SECONDS = 300
+_last_github_outbox_attempt: float = 0.0
 MAX_FILE_SIZE = cfg.voice_memos.max_file_size_mb * 1024 * 1024
 FILE_SCAN_PROCESS_LIMIT = cfg.voice_memos.startup_process_limit
 PROCESS_TITLE = "Penny Watcher"
@@ -1284,6 +1288,17 @@ def _process_maya_outbox() -> None:
 
 
 def _process_github_outbox() -> None:
+    # A single `janitor triage` subprocess can take up to 105s, which would
+    # stall this single-threaded ingest loop (Slack/Maya delivery,
+    # transcription, voice-memo ingest) for nearly two poll cycles. Rate-limit
+    # the drain to its own interval instead of attempting it every pass.
+    global _last_github_outbox_attempt
+    now = time.time()
+    if now - _last_github_outbox_attempt < GITHUB_OUTBOX_MIN_INTERVAL_SECONDS:
+        return
+    # Stamp before the attempt, not after: a slow or hung drain must not be
+    # immediately retried once it eventually returns.
+    _last_github_outbox_attempt = now
     try:
         delivered = process_pending_github_deliveries(limit=1)
         if delivered:

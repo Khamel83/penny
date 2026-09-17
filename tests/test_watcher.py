@@ -2614,5 +2614,74 @@ class WatcherTests(unittest.TestCase):
         self.assertIn("|maya_health_error:1|", health)
 
 
+class GithubOutboxRateLimitTestCase(unittest.TestCase):
+    """A single `janitor triage` subprocess can occupy the single-threaded
+    ingest loop for up to 105s, so the drain runs on its own interval rather
+    than on every ~60s ingest pass."""
+
+    def setUp(self) -> None:
+        patch.object(watcher, "_last_github_outbox_attempt", 0.0).start()
+        self.addCleanup(patch.stopall)
+
+    def test_first_call_attempts_drain_then_second_call_is_rate_limited(self) -> None:
+        clock = [1_000_000.0]
+        with (
+            patch.object(watcher.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                watcher, "process_pending_github_deliveries", return_value=0
+            ) as process_mock,
+        ):
+            watcher._process_github_outbox()
+            self.assertEqual(process_mock.call_count, 1)
+            process_mock.assert_called_once_with(limit=1)
+
+            # Immediately again, and again just under the interval: no-op.
+            watcher._process_github_outbox()
+            clock[0] += watcher.GITHUB_OUTBOX_MIN_INTERVAL_SECONDS - 1
+            watcher._process_github_outbox()
+            self.assertEqual(process_mock.call_count, 1)
+
+            # Past the interval: attempted again.
+            clock[0] += 2
+            watcher._process_github_outbox()
+            self.assertEqual(process_mock.call_count, 2)
+
+    def test_timestamp_is_stamped_before_the_attempt_not_after(self) -> None:
+        """A slow drain must not earn an immediate back-to-back retry once it
+        finally returns."""
+        clock = [1_000_000.0]
+
+        def slow_drain(limit: int) -> int:
+            clock[0] += 105.0  # the subprocess timeout ceiling
+            return 0
+
+        with (
+            patch.object(watcher.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                watcher, "process_pending_github_deliveries", side_effect=slow_drain
+            ) as process_mock,
+        ):
+            watcher._process_github_outbox()
+            watcher._process_github_outbox()
+
+        self.assertEqual(process_mock.call_count, 1)
+
+    def test_drain_failure_still_counts_as_an_attempt(self) -> None:
+        clock = [1_000_000.0]
+        with (
+            patch.object(watcher.time, "time", side_effect=lambda: clock[0]),
+            patch.object(
+                watcher,
+                "process_pending_github_deliveries",
+                side_effect=RuntimeError("boom"),
+            ) as process_mock,
+            patch.object(watcher.log, "error"),
+        ):
+            watcher._process_github_outbox()
+            watcher._process_github_outbox()
+
+        self.assertEqual(process_mock.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
