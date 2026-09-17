@@ -28,6 +28,7 @@ from transcript_log import (
     get_transcript,
     mark_failed,
     mark_routed,
+    queue_github_delivery,
     update_transcript_progress,
     update_transcript_stages,
 )
@@ -774,6 +775,9 @@ def classify_and_route(
             ):
                 raise RoutingError("receipt_persistence_failed")
             routed_count += 1
+
+        if any(str(entry.get("category", "")).strip().lower() == "project" for entry in items):
+            queue_github_delivery(row_id, idempotency_key=f"penny-row-{row_id}")
 
         effect_row_id = _require_effect_row(row_id)
         if not mark_routed(effect_row_id, result, f"{routed_count} reminder(s)"):

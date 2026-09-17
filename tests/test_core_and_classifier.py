@@ -194,6 +194,34 @@ class CorePipelineTests(unittest.TestCase):
             core.classify_and_route("buy milk", source="iCloud", row_id=44)
         ensure_mock.assert_called_once()
 
+    def test_project_item_queues_github_delivery(self) -> None:
+        receipt = AppleEffectReceipt("e" * 64, "reminder", "rem-id", "succeeded", actual_target="Project", transcript_id=46)
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [
+                {"item": "fix the widget sync bug", "category": "project"},
+            ]}),
+            patch.object(core, "ensure_reminder", return_value=receipt),
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "queue_github_delivery") as queue_github,
+        ):
+            core.classify_and_route("fix the widget sync bug", source="iCloud", row_id=46)
+        queue_github.assert_called_once_with(46, idempotency_key="penny-row-46")
+
+    def test_non_project_item_does_not_queue_github_delivery(self) -> None:
+        receipt = AppleEffectReceipt("f" * 64, "reminder", "rem-id", "succeeded", actual_target="Groceries", transcript_id=47)
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [{"item": "buy milk", "category": "groceries"}]}),
+            patch.object(core, "ensure_reminder", return_value=receipt),
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "queue_github_delivery") as queue_github,
+        ):
+            core.classify_and_route("buy milk", source="iCloud", row_id=47)
+        queue_github.assert_not_called()
+
     def test_effect_errors_redact_item_text(self) -> None:
         with (
             patch.object(core, "detect_content_type", return_value="action_items"),
