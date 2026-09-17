@@ -49,7 +49,11 @@ def _ready_probes(tmp_path: Path):
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
         "maya": {"configured": False, "query_ok": 1, "pending_count": 0, "dead_letter_count": 0},
         "slack": {"configured": True, "query_ok": 1, "failed_count": 0, "pending_count": 0},
-        "github_triage": {"gh_binary_present": True, "gh_auth_token_present": True},
+        "github_triage": {
+            "gh_binary_present": True,
+            "gh_auth_token_present": True,
+            "launchd_gh_token_configured": True,
+        },
         "backup": {"verified": True, "age_seconds": 2, "timestamp_valid": True},
         "services": {
             "watcher_ok": True,
@@ -389,6 +393,60 @@ def test_github_triage_probe_does_not_hit_network(monkeypatch):
     assert "auth" in command
     assert "token" in command
     assert "status" not in command
+
+
+def test_github_triage_probe_resolves_gh_by_absolute_path(monkeypatch):
+    # The probe must invoke the resolved absolute path, not the bare "gh"
+    # name — the same PATH-independence JANITOR_RUNNER was chosen for.
+    import doctor
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="token123\n", stderr="")
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/opt/homebrew/bin/gh")
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_launchd_environment_keys", lambda *a, **k: set())
+
+    doctor._default_probe_github_triage()
+
+    assert calls[0][0] == "/opt/homebrew/bin/gh"
+
+
+def test_github_triage_degraded_when_launchd_environment_lacks_gh_token():
+    # gh/token presence is measured in Doctor's own operator shell; the daemon
+    # runs under launchd. Without GH_TOKEN there, every triage subprocess the
+    # daemon spawns would fail, so "ready" would be a lie.
+    import doctor
+
+    status, reason = doctor._infer_status(
+        "github_triage",
+        {
+            "gh_binary_present": True,
+            "gh_auth_token_present": True,
+            "launchd_gh_token_configured": False,
+        },
+    )
+
+    assert status == "degraded"
+    assert "launchd" in reason
+
+
+def test_github_triage_ready_only_when_launchd_token_is_configured():
+    import doctor
+
+    status, reason = doctor._infer_status(
+        "github_triage",
+        {
+            "gh_binary_present": True,
+            "gh_auth_token_present": True,
+            "launchd_gh_token_configured": True,
+        },
+    )
+
+    assert (status, reason) == ("ready", "ok")
 
 
 def test_github_triage_probe_degraded_when_gh_binary_missing(monkeypatch):

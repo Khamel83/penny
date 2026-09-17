@@ -559,7 +559,7 @@ def _default_probe_github_triage(_config: Any = None, *, now: datetime | None = 
         return {"gh_binary_present": False, "gh_auth_token_present": False}
     try:
         result = subprocess.run(
-            ["gh", "auth", "token", "-h", "github.com"],
+            [gh_path, "auth", "token", "-h", "github.com"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1018,6 +1018,12 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         return "ready", "ok"
     if name == "github_triage":
         if values.get("gh_binary_present", False) and values.get("gh_auth_token_present", False):
+            # gh_auth_token_present is measured in Doctor's own (operator
+            # shell) environment. The daemon runs from launchd with a
+            # different environment, so a missing GH_TOKEN there means every
+            # triage subprocess would fail even though this shell is fine.
+            if not values.get("launchd_gh_token_configured", False):
+                return "degraded", "launchd_gh_token_missing"
             return "ready", "ok"
         return "degraded", "disabled"
     if name == "backup":
