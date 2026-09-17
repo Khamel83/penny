@@ -49,6 +49,7 @@ def _ready_probes(tmp_path: Path):
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
         "maya": {"configured": False, "query_ok": 1, "pending_count": 0, "dead_letter_count": 0},
         "slack": {"configured": True, "query_ok": 1, "failed_count": 0, "pending_count": 0},
+        "github_triage": {"gh_binary_present": True, "gh_auth_token_present": True},
         "backup": {"verified": True, "age_seconds": 2, "timestamp_valid": True},
         "services": {
             "watcher_ok": True,
@@ -344,6 +345,60 @@ def test_secret_templates_and_empty_environment_values_are_not_configured(monkey
     )
     assert ingress["secret_configured"] is False
     assert ingress["callback_secret_configured"] is False
+
+
+def test_github_triage_probe_ready_when_gh_binary_and_token_present(monkeypatch):
+    import doctor
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/opt/homebrew/bin/gh")
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a[0] if a else k.get("args"), returncode=0, stdout="token123\n", stderr=""
+        ),
+    )
+    monkeypatch.setattr(doctor, "_launchd_environment_keys", lambda *a, **k: set())
+
+    data = doctor._default_probe_github_triage()
+
+    assert data.get("gh_binary_present") is True
+    assert data.get("gh_auth_token_present") is True
+
+
+def test_github_triage_probe_does_not_hit_network(monkeypatch):
+    # gh auth token (local keychain/hosts-file read) must be used, never
+    # gh auth status (which calls api.github.com) — Doctor is a metadata
+    # boundary that never contacts a provider.
+    import doctor
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="token123\n", stderr="")
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/opt/homebrew/bin/gh")
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_launchd_environment_keys", lambda *a, **k: set())
+
+    doctor._default_probe_github_triage()
+
+    assert calls, "gh subprocess was never invoked"
+    command = calls[0]
+    assert "auth" in command
+    assert "token" in command
+    assert "status" not in command
+
+
+def test_github_triage_probe_degraded_when_gh_binary_missing(monkeypatch):
+    import doctor
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+
+    data = doctor._default_probe_github_triage()
+
+    assert data.get("gh_binary_present") is False
 
 
 def test_loaded_webhook_environment_controls_bind_and_callback_presence(monkeypatch):

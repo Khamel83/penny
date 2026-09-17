@@ -13,6 +13,7 @@ import json
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -130,6 +131,9 @@ _SAFE_DETAIL_KEYS = frozenset(
         "timestamp_valid",
         "latest_set_present",
         "database_metadata_bound",
+        "gh_binary_present",
+        "gh_auth_token_present",
+        "launchd_gh_token_configured",
     }
 )
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -540,6 +544,32 @@ def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **
         "pending_count": health.get("pending_count", 0),
         "failed_count": health.get("failed_count", 0),
         "slack_failed_count": health.get("quality_failure_failed_count", 0),
+    }
+
+
+def _default_probe_github_triage(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
+    """Local-only readiness check: gh binary present, auth token reachable
+    from local keychain/hosts (no network call — Doctor never contacts a
+    provider), and com.penny.watcher's launchd environment carries whatever
+    credential gh needs.
+    """
+    del now
+    gh_path = shutil.which("gh")
+    if gh_path is None:
+        return {"gh_binary_present": False, "gh_auth_token_present": False}
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token", "-h", "github.com"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {"gh_binary_present": True, "gh_auth_token_present": False}
+    token_present = result.returncode == 0 and bool(result.stdout.strip())
+    launchd_keys = _launchd_environment_keys("com.penny.watcher", ("GH_TOKEN",))
+    return {
+        "gh_binary_present": True,
+        "gh_auth_token_present": token_present,
+        "launchd_gh_token_configured": "GH_TOKEN" in launchd_keys,
     }
 
 
@@ -986,6 +1016,10 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         if int(values.get("pending_count", 0) or 0) > 0:
             return "degraded", "backlog"
         return "ready", "ok"
+    if name == "github_triage":
+        if values.get("gh_binary_present", False) and values.get("gh_auth_token_present", False):
+            return "ready", "ok"
+        return "degraded", "disabled"
     if name == "backup":
         if not values.get("verified", False):
             return "unready", _safe_reason(values.get("reason"), "backup_unverified")
@@ -1031,11 +1065,12 @@ _PROBE_NAMES = (
     "apple_effects",
     "maya",
     "slack",
+    "github_triage",
     "backup",
     "services",
     "ingress",
 )
-_OPTIONAL_COMPONENTS = frozenset({"maya"})
+_OPTIONAL_COMPONENTS = frozenset({"maya", "github_triage"})
 
 
 def run_doctor(
@@ -1062,6 +1097,7 @@ def run_doctor(
         "apple_effects": _default_probe_apple_effects,
         "maya": _default_probe_maya,
         "slack": _default_probe_slack,
+        "github_triage": _default_probe_github_triage,
         "backup": _default_probe_backup,
         "services": _default_probe_services,
         "ingress": _default_probe_ingress,
