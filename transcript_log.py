@@ -44,6 +44,8 @@ MAYA_MAX_AGE_DAYS = 7
 MAYA_DELIVERY_MAX_ATTEMPTS = MAYA_MAX_ATTEMPTS
 MAYA_DELIVERY_MAX_AGE_DAYS = MAYA_MAX_AGE_DAYS
 MAYA_CLAIM_LEASE_SECONDS = 120
+GITHUB_CLAIM_LEASE_SECONDS = 180
+GITHUB_MAX_ATTEMPTS = 5
 MAYA_DEAD_LETTER_REASONS = frozenset(
     {
         "attempt_cap",
@@ -287,6 +289,36 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_slack_deliveries_due "
             "ON slack_deliveries(status, next_attempt_at)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS github_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transcript_row_id INTEGER NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                transcript_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                last_error TEXT,
+                repo TEXT,
+                issue_url TEXT,
+                github_claim_token TEXT,
+                github_claim_owner TEXT,
+                github_claimed_at TEXT,
+                github_claim_expires_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                UNIQUE(transcript_row_id),
+                UNIQUE(idempotency_key),
+                FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_github_deliveries_due "
+            "ON github_deliveries(status, next_attempt_at)"
         )
         conn.execute(
             """
@@ -2503,6 +2535,336 @@ def claim_next_slack_delivery(
             "Failed to claim Slack delivery: %s",
             _safe_exception_class(e),
         )
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def queue_github_delivery(transcript_id: int, idempotency_key: str) -> None:
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT transcript FROM transcripts WHERE id = ?",
+            (transcript_id,),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute(
+            """INSERT OR IGNORE INTO github_deliveries (
+                   transcript_row_id, idempotency_key, transcript_text
+               ) VALUES (?, ?, ?)""",
+            (transcript_id, idempotency_key, str(row["transcript"])),
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to queue GitHub delivery transcript=%s: %s", transcript_id, e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def claim_next_github_delivery(
+    claim_owner: str,
+    *,
+    lease_seconds: int = GITHUB_CLAIM_LEASE_SECONDS,
+) -> dict[str, Any] | None:
+    """Atomically lease one due GitHub-delivery row, including an expired prior lease."""
+    owner = str(claim_owner).strip()
+    if not owner:
+        raise ValueError("GitHub claim owner is required")
+    lease = max(GITHUB_CLAIM_LEASE_SECONDS, min(int(lease_seconds), 3600))
+    claim_token = secrets.token_hex(16)
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT deliveries.id
+            FROM github_deliveries AS deliveries
+            LEFT JOIN transcripts
+              ON transcripts.id = deliveries.transcript_row_id
+            WHERE transcripts.quality_status = 'passed'
+              AND (
+                    (
+                        deliveries.status = 'pending'
+                        AND (
+                            deliveries.next_attempt_at IS NULL
+                            OR deliveries.next_attempt_at <= datetime('now')
+                        )
+                    )
+                    OR (
+                        deliveries.status = 'delivering'
+                        AND (
+                            deliveries.github_claim_expires_at IS NULL
+                            OR julianday(deliveries.github_claim_expires_at) IS NULL
+                            OR julianday(deliveries.github_claim_expires_at)
+                               <= julianday('now')
+                        )
+                    )
+                  )
+            ORDER BY deliveries.created_at ASC, deliveries.id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        delivery_id = int(row["id"])
+        cursor = conn.execute(
+            """
+            UPDATE github_deliveries
+            SET status = 'delivering',
+                github_claim_token = ?,
+                github_claim_owner = ?,
+                github_claimed_at = datetime('now'),
+                github_claim_expires_at = datetime('now', '+' || ? || ' seconds'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND (
+                    (
+                        status = 'pending'
+                        AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+                    )
+                    OR (
+                        status = 'delivering'
+                        AND (
+                            github_claim_expires_at IS NULL
+                            OR julianday(github_claim_expires_at) IS NULL
+                            OR julianday(github_claim_expires_at) <= julianday('now')
+                        )
+                    )
+                  )
+            """,
+            (claim_token, owner, lease, delivery_id),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        claimed = conn.execute(
+            """
+            SELECT id, transcript_row_id, idempotency_key, transcript_text, status,
+                   attempt_count, next_attempt_at, last_error, repo, issue_url,
+                   github_claim_token, github_claim_owner, github_claimed_at,
+                   github_claim_expires_at, created_at, updated_at, completed_at
+            FROM github_deliveries
+            WHERE id = ?
+            """,
+            (delivery_id,),
+        ).fetchone()
+        conn.commit()
+        return dict(claimed) if claimed is not None else None
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error("Failed to claim GitHub delivery: %s", _safe_exception_class(e))
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def _validate_github_claim_arguments(claim_token: str | None, claim_owner: str | None) -> None:
+    if (claim_token is None) != (claim_owner is None):
+        raise ValueError("GitHub claim token and owner must be provided together")
+    if claim_token is not None and (
+        not str(claim_token).strip() or not str(claim_owner).strip()
+    ):
+        raise ValueError("GitHub claim token and owner must be nonempty")
+
+
+def _github_claim_matches(row, claim_token: str | None, claim_owner: str | None) -> bool:
+    return (
+        claim_token is not None
+        and claim_owner is not None
+        and row["github_claim_token"] == claim_token
+        and row["github_claim_owner"] == claim_owner
+    )
+
+
+def mark_github_delivery_sent(
+    delivery_id: int,
+    repo: str,
+    issue_url: str,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
+    _validate_github_claim_arguments(claim_token, claim_owner)
+    conn = None
+    try:
+        conn = _get_conn()
+        current = conn.execute(
+            "SELECT status, issue_url, github_claim_token, github_claim_owner "
+            "FROM github_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("GitHub delivery row does not exist")
+        if current["status"] == "sent":
+            if current["issue_url"] == issue_url:
+                return
+            raise ValueError("GitHub sent receipt conflicts with terminal state")
+        if current["status"] == "delivering" and not _github_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("GitHub claim owner mismatch")
+        cursor = conn.execute(
+            """UPDATE github_deliveries
+               SET status = 'sent',
+                   repo = ?,
+                   issue_url = ?,
+                   last_error = NULL,
+                   next_attempt_at = NULL,
+                   github_claim_token = NULL,
+                   github_claim_owner = NULL,
+                   github_claimed_at = NULL,
+                   github_claim_expires_at = NULL,
+                   completed_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE id = ?
+                 AND status IN ('pending', 'delivering')
+                 AND (
+                       status != 'delivering'
+                       OR (github_claim_token = ? AND github_claim_owner = ?)
+                     )""",
+            (repo, issue_url, delivery_id, claim_token, claim_owner),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            raise ValueError("GitHub sent receipt conflicts with terminal state")
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error("Failed to mark GitHub delivery sent id=%s: %s", delivery_id, _safe_exception_class(e))
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_github_delivery_no_match(
+    delivery_id: int,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
+    _validate_github_claim_arguments(claim_token, claim_owner)
+    conn = None
+    try:
+        conn = _get_conn()
+        current = conn.execute(
+            "SELECT status, github_claim_token, github_claim_owner "
+            "FROM github_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("GitHub delivery row does not exist")
+        if current["status"] == "delivering" and not _github_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("GitHub claim owner mismatch")
+        cursor = conn.execute(
+            """UPDATE github_deliveries
+               SET status = 'terminal_no_match',
+                   last_error = NULL,
+                   next_attempt_at = NULL,
+                   github_claim_token = NULL,
+                   github_claim_owner = NULL,
+                   github_claimed_at = NULL,
+                   github_claim_expires_at = NULL,
+                   completed_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE id = ?
+                 AND status IN ('pending', 'delivering')
+                 AND (
+                       status != 'delivering'
+                       OR (github_claim_token = ? AND github_claim_owner = ?)
+                     )""",
+            (delivery_id, claim_token, claim_owner),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            raise ValueError("GitHub no-match receipt conflicts with terminal state")
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error("Failed to mark GitHub delivery no_match id=%s: %s", delivery_id, _safe_exception_class(e))
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_github_delivery_failed(
+    delivery_id: int,
+    error_message: str,
+    retry_after_seconds: int = 60,
+    *,
+    claim_token: str | None = None,
+    claim_owner: str | None = None,
+) -> None:
+    _validate_github_claim_arguments(claim_token, claim_owner)
+    conn = None
+    try:
+        conn = _get_conn()
+        safe_error = _safe_delivery_error(error_message)
+        delay = max(0, min(int(retry_after_seconds), 3600))
+        current = conn.execute(
+            "SELECT status, attempt_count, github_claim_token, github_claim_owner "
+            "FROM github_deliveries WHERE id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise LookupError("GitHub delivery row does not exist")
+        if current["status"] == "delivering" and not _github_claim_matches(
+            current, claim_token, claim_owner
+        ):
+            raise ValueError("GitHub claim owner mismatch")
+        cursor = conn.execute(
+            """UPDATE github_deliveries
+               SET status = CASE
+                       WHEN COALESCE(attempt_count, 0) + 1 >= ? THEN 'failed'
+                       ELSE 'pending'
+                   END,
+                   attempt_count = COALESCE(attempt_count, 0) + 1,
+                   last_error = ?,
+                   next_attempt_at = CASE
+                       WHEN COALESCE(attempt_count, 0) + 1 >= ? THEN NULL
+                       ELSE datetime('now', '+' || ? || ' seconds')
+                   END,
+                   github_claim_token = NULL,
+                   github_claim_owner = NULL,
+                   github_claimed_at = NULL,
+                   github_claim_expires_at = NULL,
+                   completed_at = CASE
+                       WHEN COALESCE(attempt_count, 0) + 1 >= ? THEN datetime('now')
+                       ELSE NULL
+                   END,
+                   updated_at = datetime('now')
+               WHERE id = ?
+                 AND status IN ('pending', 'delivering')
+                 AND (
+                       status != 'delivering'
+                       OR (github_claim_token = ? AND github_claim_owner = ?)
+                     )""",
+            (
+                GITHUB_MAX_ATTEMPTS, safe_error, GITHUB_MAX_ATTEMPTS, delay,
+                GITHUB_MAX_ATTEMPTS, delivery_id, claim_token, claim_owner,
+            ),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            raise ValueError("GitHub failure receipt conflicts with terminal state")
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error("Failed to mark GitHub delivery failed id=%s: %s", delivery_id, _safe_exception_class(e))
         raise
     finally:
         if conn:
