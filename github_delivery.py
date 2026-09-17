@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
-import socket
+import os
 import subprocess
+import uuid
 
 from transcript_log import (
     claim_next_github_delivery,
@@ -30,7 +31,7 @@ TRANSCRIPT_CHAR_CAP = 4000
 
 
 def _claim_owner() -> str:
-    return f"{socket.gethostname()}-{id(process_pending_github_deliveries)}"
+    return f"github-worker:{os.getpid()}:{uuid.uuid4()}"
 
 
 def _run_janitor_triage(text: str, idempotency_key: str) -> dict:
@@ -58,6 +59,19 @@ def _run_janitor_triage(text: str, idempotency_key: str) -> dict:
         return {"status": "error", "reason": "triage_output_not_json"}
     if not isinstance(parsed, dict) or "status" not in parsed:
         return {"status": "error", "reason": "triage_output_missing_status"}
+    if parsed.get("status") == "filed":
+        # A "filed" result without a repo/issue_url is a contract violation we
+        # cannot verify against (the CLI lives in a sibling repo). Downgrade it
+        # to an ordinary retryable failure rather than letting the drain loop
+        # subscript missing keys — that would raise before any mark_* call and
+        # leave the row wedged at status='delivering', attempt_count=0, where it
+        # would be re-claimed first on every future pass and starve the stream.
+        repo = parsed.get("repo")
+        issue_url = parsed.get("issue_url")
+        if not (isinstance(repo, str) and repo.strip()) or not (
+            isinstance(issue_url, str) and issue_url.strip()
+        ):
+            return {"status": "error", "reason": "triage_filed_missing_fields"}
     return parsed
 
 
@@ -89,25 +103,26 @@ def _original_slack_thread(transcript_row_id: int) -> tuple[str, str] | None:
 
 
 def _reply_in_slack_thread(transcript_row_id: int, idempotency_key: str, text: str) -> None:
-    thread = _original_slack_thread(transcript_row_id)
-    if thread is None:
-        log.warning(
-            "No original Slack message to thread a GitHub-triage reply under (row=%s)",
-            transcript_row_id,
-        )
-        return
-    channel_id, provider_ts = thread
-    message = SlackTranscriptPost(text=text, blocks=())
+    # The ledger row for this item is already committed terminal
+    # (sent/no_match) by the time we get here — that write must stand. A
+    # failure anywhere in this function (the thread lookup opens its own DB
+    # connection, and the post talks to Slack) is unfortunate but must not
+    # abort the rest of this drain pass or re-raise past a caller that
+    # assumes ledger-terminal items are fully handled.
     try:
+        thread = _original_slack_thread(transcript_row_id)
+        if thread is None:
+            log.warning(
+                "No original Slack message to thread a GitHub-triage reply under (row=%s)",
+                transcript_row_id,
+            )
+            return
+        channel_id, provider_ts = thread
+        message = SlackTranscriptPost(text=text, blocks=())
         _post_to_slack(
             channel_id, message, f"github-triage-{idempotency_key}", thread_ts=provider_ts,
         )
     except Exception as exc:
-        # The ledger row for this item is already committed terminal
-        # (sent/no_match) by the time we get here — that write must stand.
-        # A failure to post the confirmation reply is unfortunate but must
-        # not abort the rest of this drain pass or re-raise past a caller
-        # that assumes ledger-terminal items are fully handled.
         log.error(
             "Failed to post GitHub-triage Slack thread reply (row=%s): %s",
             transcript_row_id,
@@ -122,37 +137,54 @@ def process_pending_github_deliveries(limit: int = 20) -> int:
         claimed = claim_next_github_delivery(owner)
         if claimed is None:
             break
-        delivery_id = claimed["id"]
-        transcript_row_id = claimed["transcript_row_id"]
-        idempotency_key = claimed["idempotency_key"]
-        claim_token = claimed["github_claim_token"]
+        # Defense in depth: no unanticipated failure on a single row may
+        # escape this loop. An exception raised between the claim and the
+        # mark_* call leaves the row at status='delivering' until its lease
+        # expires, after which it is re-claimed FIRST on every subsequent pass
+        # (claims are ordered by created_at ASC) — head-of-line blocking that
+        # would starve the whole stream forever. Log it and move on instead.
+        delivery_id = None
+        try:
+            delivery_id = claimed["id"]
+            transcript_row_id = claimed["transcript_row_id"]
+            idempotency_key = claimed["idempotency_key"]
+            claim_token = claimed["github_claim_token"]
 
-        result = _run_janitor_triage(claimed["transcript_text"], idempotency_key)
-        outcome = _classify_triage_outcome(result)
+            result = _run_janitor_triage(claimed["transcript_text"], idempotency_key)
+            outcome = _classify_triage_outcome(result)
 
-        if outcome == "sent":
-            mark_github_delivery_sent(
-                delivery_id, result["repo"], result["issue_url"],
-                claim_token=claim_token, claim_owner=owner,
+            if outcome == "sent":
+                mark_github_delivery_sent(
+                    delivery_id, result["repo"], result["issue_url"],
+                    claim_token=claim_token, claim_owner=owner,
+                )
+                _reply_in_slack_thread(
+                    transcript_row_id, idempotency_key,
+                    f"Filed as a GitHub issue: {result['issue_url']}",
+                )
+            elif outcome == "no_match":
+                mark_github_delivery_no_match(
+                    delivery_id, claim_token=claim_token, claim_owner=owner
+                )
+                _reply_in_slack_thread(
+                    transcript_row_id, idempotency_key,
+                    "No confident repo match — not filed anywhere. File manually if needed.",
+                )
+            else:
+                reason = result.get("reason", "unknown")
+                mark_github_delivery_failed(
+                    delivery_id, reason, retry_after_seconds=60,
+                    claim_token=claim_token, claim_owner=owner,
+                )
+                # No Slack reply on a retryable failure — it may still succeed
+                # on the next attempt, and a reply here would be premature noise.
+        except Exception as exc:
+            log.error(
+                "GitHub delivery row failed unexpectedly (id=%s): %s",
+                delivery_id,
+                exc,
             )
-            _reply_in_slack_thread(
-                transcript_row_id, idempotency_key,
-                f"Filed as a GitHub issue: {result['issue_url']}",
-            )
-        elif outcome == "no_match":
-            mark_github_delivery_no_match(delivery_id, claim_token=claim_token, claim_owner=owner)
-            _reply_in_slack_thread(
-                transcript_row_id, idempotency_key,
-                "No confident repo match — not filed anywhere. File manually if needed.",
-            )
-        else:
-            reason = result.get("reason", "unknown")
-            mark_github_delivery_failed(
-                delivery_id, reason, retry_after_seconds=60,
-                claim_token=claim_token, claim_owner=owner,
-            )
-            # No Slack reply on a retryable failure — it may still succeed
-            # on the next attempt, and a reply here would be premature noise.
+            continue
 
         processed += 1
     return processed
