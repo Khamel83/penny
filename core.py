@@ -743,6 +743,12 @@ def classify_and_route(
             category = str(entry.get("category", "inbox")).strip().lower()
             if not item_text:
                 continue
+            if category == "project":
+                # A project item belongs in a GitHub issue, not a personal
+                # to-do (see the classifier's own system prompt). It is queued
+                # for the GitHub delivery stream just below; creating an Inbox
+                # reminder for it too would double-handle the note.
+                continue
             target_list = _target_reminders_list(category)
             reminder_key = f"{target_list}|{item_text}"
             if reminder_key in created_reminders:

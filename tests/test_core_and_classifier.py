@@ -209,6 +209,43 @@ class CorePipelineTests(unittest.TestCase):
             core.classify_and_route("fix the widget sync bug", source="iCloud", row_id=46)
         queue_github.assert_called_once_with(46, idempotency_key="penny-row-46")
 
+    def test_project_item_creates_no_reminder_but_still_queues_github_delivery(self) -> None:
+        """A project item belongs in a GitHub issue, not a personal to-do:
+        it must not also land as an Inbox reminder."""
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [
+                {"item": "fix the widget sync bug", "category": "project"},
+            ]}),
+            patch.object(core, "ensure_reminder") as ensure_mock,
+            patch.object(core, "update_transcript_progress", return_value=True) as progress_mock,
+            patch.object(core, "mark_routed", return_value=True) as routed_mock,
+            patch.object(core, "queue_github_delivery") as queue_github,
+        ):
+            core.classify_and_route("fix the widget sync bug", source="iCloud", row_id=48)
+        ensure_mock.assert_not_called()
+        progress_mock.assert_not_called()
+        queue_github.assert_called_once_with(48, idempotency_key="penny-row-48")
+        self.assertEqual(routed_mock.call_args.args[2], "0 reminder(s)")
+
+    def test_mixed_project_and_groceries_creates_only_the_groceries_reminder(self) -> None:
+        receipt = AppleEffectReceipt("a" * 64, "reminder", "rem-id", "succeeded", actual_target="Groceries", transcript_id=49)
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value={"items": [
+                {"item": "fix the widget sync bug", "category": "project"},
+                {"item": "buy milk", "category": "groceries"},
+            ]}),
+            patch.object(core, "ensure_reminder", return_value=receipt) as ensure_mock,
+            patch.object(core, "update_transcript_progress", return_value=True),
+            patch.object(core, "mark_routed", return_value=True),
+            patch.object(core, "queue_github_delivery") as queue_github,
+        ):
+            core.classify_and_route("mixed note", source="iCloud", row_id=49)
+        ensure_mock.assert_called_once()
+        self.assertEqual(ensure_mock.call_args.args[1], "buy milk")
+        queue_github.assert_called_once_with(49, idempotency_key="penny-row-49")
+
     def test_non_project_item_does_not_queue_github_delivery(self) -> None:
         receipt = AppleEffectReceipt("f" * 64, "reminder", "rem-id", "succeeded", actual_target="Groceries", transcript_id=47)
         with (
