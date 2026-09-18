@@ -37,14 +37,20 @@ override this active shared-Whisper cutover queue.
 <!-- janitor:begin:todo -->
 ## TODO
 
-_No published TODO.md content was available at commit 8372fb65 (all managed and unmanaged content removed), so these items are inferred from commit subjects only and are not confirmed open work._
-
 - [ ] Confirm whether the Voice Memos sync daemon health scoping (`1e01fd4`), readiness exposure (`c8c5e9d`), missing-daemon recovery (`058adce`), and post-quality-policy recovery (`d194e9c`) fully cover remaining recovery paths.
 - [ ] Verify reentrancy/race safety for quality review promotion (`1c1fe32`) and Phase A source and receipt handling (`0b92686`, `0bafa88`).
 - [ ] Validate that Apple effect reconciliation is fail-closed in all paths (`d8298ac`) while the narrow natural no-emphasis allowance (`5f9609e`) does not weaken it.
 - [ ] Confirm watcher operational log redaction (`a4e00a3`) and fresh source health evidence requirements (`b22adcc`) are complete across watchers.
 - [ ] Check whether the three ai-review workflow updates (`e03f646`, `b8b6521`, `eb27440`) are cumulative, and whether the workflow is in its intended final state.
 - [ ] Follow up on the foundational agent tooling standardization (`1627376`) to identify any remaining documentation or tooling gaps.
-
-Uncertainty: without TODO.md contents, diffs, or issue data, none of the above can be confirmed as an outstanding, owned, or assigned task.
+- [x] Define shared Whisper protocol and deploy killable service supervisor (`525456f`, `33a4843`).
+- [x] Filter shared Whisper worker options and isolate tiny Wyoming from owner guard and Doctor blocker (`d0afcfc`, `cea41ff`, `8e53c10`).
+- [x] Record shared Whisper live cutover state and separate source and receipt revisions (`7025c53`, `d7d9a0d`, `7cbf7ae`).
+- [x] Implement `github_deliveries` ledger table, claim/mark functions, and lease recovery test coverage (`183d884`, `1715f5b`).
+- [x] Route project notes to GitHub delivery outbox with Slack thread-reply signal and Doctor triage probe (`73c75c7`, `6ddec6c`, `db78378`, `2201ea3`, `7c57e9f`, `1cd2526`, `fc4bc18`).
+- [x] Rate-limit and drain GitHub delivery outbox in watcher ingest pass (`b0cf690`, `fbb6700`, `9c0ee29`).
+- [ ] Exercise live Penny-preemption contention against the shared Whisper service when a real Penny capture arrives.
+- [ ] Validate runtime `GH_TOKEN` substitution in launchd watcher configuration to avoid breaking `gh auth` (`81811a8`, `5444181`).
+- [ ] Exercise shared Whisper rollback in an approved maintenance window without disturbing the healthy production owner.
+- [ ] Monitor observation and completion of remaining backlog items in the shared Whisper cutover queue.
 <!-- janitor:end:todo -->
