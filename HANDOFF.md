@@ -1,5 +1,29 @@
 # Penny handoff
 
+## Active synchronized shared-Whisper cutover — 2026-09-17
+
+This is the Penny side of the Atlas handover plan:
+`/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
+
+- Source worktree: `feat/shared-whisper-preemption`.
+- Source SHA: `33a4843bd4c34b99059cd8a51f0a8fd930201a3d`.
+- Source implementation: `shared_whisper/{protocol,client,server,supervisor,worker}.py`;
+  `transcript_quality.py` calls the shared client and no longer owns MLX.
+- Focused verification: `176 passed, 7 subtests passed`.
+- Pending runtime work: local merge, plist render/backup, old-owner removal,
+  `com.penny.shared-whisper` bootstrap, authenticated MagicDNS verification,
+  canary, and rollback proof.
+- Current live owner remains `com.atlas.minuspod-whisper` until the cutover
+  handover completes. The tiny Wyoming service is outside this change.
+- No token, audio, transcript, model file, or private content belongs in this
+  handoff. Runtime status must be re-read before each claim.
+
+The shared service is designed to keep one killable `large-v3-turbo` worker,
+use a literal 30-second Atlas grace window, discard partial Atlas output, and
+allow Penny to retry through its existing quality path. Source/test evidence
+does not imply launchd registration, live authentication, durable completion,
+or downstream delivery.
+
 This is the assistant-facing operating contract for Penny Phase A. It describes
 the repository contract, not a claim that a particular Mac is currently
 deployed. Confirm the exact source revision and runtime state before reporting

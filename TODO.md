@@ -1,3 +1,29 @@
+## Active synchronized task: Atlas/MinusPod shared-Whisper cutover
+
+This Penny queue is synchronized with the Atlas execution authority at
+`/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
+The user authorized the live cutover. The Penny source is isolated on branch
+`feat/shared-whisper-preemption` at
+`33a4843bd4c34b99059cd8a51f0a8fd930201a3d`.
+
+- [x] Shared protocol, authenticated server, one-worker supervisor, worker
+  isolation, Penny client, launchd template, and Doctor probe implemented.
+- [x] Penny focused suite: `176 passed, 7 subtests passed`.
+- [ ] Merge the validated source into local Penny `main` without pushing.
+- [ ] Render and back up the `com.penny.shared-whisper` plist with the
+  internal token supplied only through the local runtime configuration.
+- [ ] Capture source/runtime/process/memory evidence, then replace the old
+  `com.atlas.minuspod-whisper` owner on port 10311 at the final safe moment.
+- [ ] Verify authenticated MagicDNS health, one worker at most, pinned model
+  identity, SSD temp state, and unchanged `com.wyoming.whisper`.
+- [ ] Keep Penny's quality retry path and Atlas's whole-chunk retry path
+  separate from process liveness; record durable and downstream receipts.
+- [ ] Keep rollback ready and synchronize this TODO/HANDOFF with Atlas after
+  every bounded task.
+
+The stale Phase A items below are historical generated signals. They do not
+override this active shared-Whisper cutover queue.
+
 <!-- janitor:begin:todo -->
 ## TODO
 
