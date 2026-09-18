@@ -3,6 +3,7 @@ from shared_whisper.worker import (
     MacMemoryGuard,
     build_result,
     parse_free_percent,
+    prepare_transcription_options,
 )
 
 
@@ -81,3 +82,18 @@ def test_memory_guard_fails_closed_when_process_probe_raises():
     )
 
     assert guard.has_existing_large_owner() is True
+
+
+def test_worker_maps_openai_form_fields_to_supported_mlx_options():
+    assert prepare_transcription_options(
+        {
+            "language": "en",
+            "vad_filter": False,
+            "timestamp_granularities": ["segment", "word"],
+            "condition_on_previous_text": False,
+        }
+    ) == {
+        "language": "en",
+        "condition_on_previous_text": False,
+        "word_timestamps": True,
+    }

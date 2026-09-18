@@ -66,6 +66,24 @@ def parse_free_percent(output: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def prepare_transcription_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep OpenAI form fields from reaching MLX as unsupported kwargs."""
+
+    supported = {
+        key: options[key]
+        for key in (
+            "language",
+            "task",
+            "temperature",
+            "condition_on_previous_text",
+            "initial_prompt",
+        )
+        if key in options
+    }
+    supported["word_timestamps"] = True
+    return supported
+
+
 class MacMemoryGuard:
     """Fail-closed checks that prevent a second large model from loading."""
 
@@ -195,7 +213,7 @@ def _worker_main(
             response = mlx_whisper.transcribe(
                 str(request["audio_path"]),
                 path_or_hf_repo=model_path,
-                **dict(request.get("options") or {}),
+                **prepare_transcription_options(request.get("options") or {}),
             )
             result = build_result(
                 request_id=str(request["request_id"]),
