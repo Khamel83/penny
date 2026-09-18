@@ -6,7 +6,8 @@ This is the Penny side of the Atlas handover plan:
 `/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
 
 - Source checkout: local `main`.
-- Source SHA: `8e53c102065db2ebb9ce7ee7f56c562a4ee63180`.
+- Application source SHA: `8e53c102065db2ebb9ce7ee7f56c562a4ee63180`.
+- Synchronized documentation commit: `d7d9a0d2c0818832b4ad193bcf8b953f1cffc1c3`.
 - Source implementation: `shared_whisper/{protocol,client,server,supervisor,worker}.py`;
   `transcript_quality.py` calls the shared client and no longer owns MLX.
 - Full verification: `602 passed, 2 skipped, 50 subtests passed`.
