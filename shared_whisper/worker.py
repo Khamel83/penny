@@ -16,11 +16,21 @@ from .protocol import WhisperResult, WhisperUnavailable
 
 _FREE_PERCENT_RE = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 _LARGE_OWNER_MARKERS = (
-    "agent-cli-server-whisper",
     "agent-cli-whisper-mlx",
     "mlx_whisper",
-    "Penny Shared Whisper Worker",
+    "penny shared whisper worker",
 )
+
+
+def _is_large_owner_line(line: str) -> bool:
+    """Classify only large Whisper owners, not the protected tiny service."""
+
+    normalized = line.casefold()
+    if any(marker in normalized for marker in _LARGE_OWNER_MARKERS):
+        return True
+    if "agent-cli-server-whisper" not in normalized:
+        return False
+    return "--model large-v3-turbo" in normalized or "--model large-v3" in normalized
 
 
 def build_result(
@@ -77,7 +87,7 @@ class MacMemoryGuard:
             return True
         if output is None:
             return True
-        return any(marker in output for marker in _LARGE_OWNER_MARKERS)
+        return any(_is_large_owner_line(line) for line in output.splitlines())
 
     def pressure_high(self) -> bool:
         try:

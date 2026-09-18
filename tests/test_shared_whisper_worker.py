@@ -47,6 +47,19 @@ def test_memory_guard_detects_existing_large_owner_and_high_pressure():
     assert guard.pressure_high() is True
 
 
+def test_memory_guard_ignores_unchanged_tiny_wyoming_owner():
+    guard = MacMemoryGuard(
+        process_reader=lambda: (
+            "82401 agent-cli-server-whisper --backend mlx "
+            "--wyoming-port 10300 --port 10301 --model tiny"
+        ),
+        pressure_reader=lambda: "System-wide memory free percentage: 35%",
+        min_free_percent=12,
+    )
+
+    assert guard.has_existing_large_owner() is False
+
+
 def test_memory_guard_fails_closed_when_pressure_probe_is_unreadable():
     guard = MacMemoryGuard(
         process_reader=lambda: "",
