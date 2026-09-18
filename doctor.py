@@ -547,6 +547,17 @@ def _shared_whisper_memory_pressure_ok() -> bool:
     return int(match.group(1)) >= threshold
 
 
+def _shared_whisper_is_old_large_owner(line: str) -> bool:
+    """Detect retired large owners without flagging tiny Wyoming."""
+
+    normalized = line.casefold()
+    if "agent-cli-whisper-mlx" in normalized or "mlx_whisper" in normalized:
+        return True
+    if "agent-cli-server-whisper" not in normalized:
+        return False
+    return "--model large-v3-turbo" in normalized or "--model large-v3" in normalized
+
+
 def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     """Probe local shared-Whisper metadata without reading audio or secrets."""
 
@@ -596,7 +607,6 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
             "memory_pressure_ok": False,
         }
     lines = snapshot.splitlines()
-    old_markers = ("agent-cli-server-whisper", "agent-cli-whisper-mlx", "mlx_whisper")
     legacy_markers = ("com.wyoming.whisper", "--wyoming-port 10300", "--port 10301")
     worker_lines = [line for line in lines if "Penny Shared Whisper Worker" in line]
     return {
@@ -604,7 +614,7 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
         "model_verified": model_verified,
         "worker_count": worker_count,
         "old_large_owner_present": any(
-            marker in line for line in lines for marker in old_markers
+            _shared_whisper_is_old_large_owner(line) for line in lines
         ),
         "legacy_tiny_present": any(
             marker in line for line in lines for marker in legacy_markers

@@ -152,6 +152,39 @@ def test_shared_whisper_probe_marks_duplicate_owner_unready(tmp_path):
     assert reason == "duplicate_owner"
 
 
+def test_shared_whisper_probe_does_not_count_tiny_wyoming_as_large_owner(monkeypatch, tmp_path):
+    import doctor
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return (
+                '{"service":"penny-shared-whisper",'
+                '"model_id":"repo@revision",'
+                '"model_revision":"revision", "worker_count":0}'
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(doctor, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        doctor,
+        "_shared_whisper_process_snapshot",
+        lambda: "824 agent-cli-server-whisper --wyoming-port 10300 --port 10301 --model tiny",
+    )
+    monkeypatch.setattr(doctor, "_shared_whisper_memory_pressure_ok", lambda: True)
+
+    probe = doctor._default_probe_shared_whisper(_config(tmp_path))
+
+    assert probe["old_large_owner_present"] is False
+    assert probe["legacy_tiny_present"] is True
+
+
 def test_shared_whisper_probe_reports_host_memory_pressure(monkeypatch, tmp_path):
     import doctor
 
