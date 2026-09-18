@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import ast
 import json
 import os
 import sqlite3
@@ -39,6 +40,18 @@ import maya_delivery  # noqa: E402
 from archive import StagedAudio  # noqa: E402
 from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
+
+
+def test_watcher_does_not_import_the_model_owner():
+    tree = ast.parse((ROOT / "watcher.py").read_text(encoding="utf-8"))
+
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "mlx_whisper" not in imported_names
 
 
 def _inserted(row_id: int) -> TranscriptInsertResult:

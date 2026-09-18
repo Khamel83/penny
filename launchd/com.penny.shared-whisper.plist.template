@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.penny.shared-whisper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/macmini/penny/venv/bin/python3</string>
+        <string>-m</string>
+        <string>shared_whisper.server</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HF_HUB_OFFLINE</key>
+        <string>1</string>
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
+        <key>PENNY_WHISPER_MODEL_PATH</key>
+        <string>/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb</string>
+        <key>PENNY_SHARED_WHISPER_HOST</key>
+        <string>0.0.0.0</string>
+        <key>PENNY_SHARED_WHISPER_PORT</key>
+        <string>10311</string>
+        <key>PENNY_SHARED_WHISPER_TOKEN</key>
+        <string>YOUR_SHARED_WHISPER_TOKEN_HERE</string>
+        <key>PENNY_SHARED_WHISPER_IDLE_TTL_SECONDS</key>
+        <string>300</string>
+        <key>PENNY_SHARED_WHISPER_MIN_FREE_PERCENT</key>
+        <string>12</string>
+        <key>TMPDIR</key>
+        <string>/Volumes/2TB_SSD/penny-whisper-tmp</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/macmini/.penny/logs/shared-whisper.system.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macmini/.penny/logs/shared-whisper.system.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/macmini/penny</string>
+</dict>
+</plist>

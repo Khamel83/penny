@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import stat
@@ -489,34 +488,33 @@ def transcribe_with_quality(
     path: Path,
     *,
     model: str | Path | None = None,
+    client=None,
 ) -> TranscriptionResult:
-    """Transcribe at most twice using a verified local model.
-
-    Validation and the offline guard deliberately run before importing MLX so
-    a missing or invalid asset cannot trigger Hugging Face repository lookup.
-    """
-    if model is None:
+    """Transcribe at most twice through the single shared Whisper owner."""
+    if client is None:
         from config import get_config
+        from shared_whisper.client import SharedWhisperClient
 
-        model = get_config().voice_memos.whisper_model_path
-
-    if os.environ.get("HF_HUB_OFFLINE") != "1":
-        raise _model_error("HF_HUB_OFFLINE_must_equal_1")
-    model_path = resolve_whisper_model(model)
-
-    import mlx_whisper
+        cfg = get_config()
+        client = SharedWhisperClient(
+            base_url=cfg.shared_whisper.url,
+            auth_token=cfg.shared_whisper.auth_token,
+            model_id=WHISPER_MODEL_ID,
+            model_revision=WHISPER_MODEL_REVISION,
+            timeout=cfg.shared_whisper.timeout_seconds,
+        )
 
     selected_text = ""
     failure_reasons: list[str] = []
     for attempts, options in enumerate(
         (PRIMARY_TRANSCRIBE_OPTIONS, FALLBACK_TRANSCRIBE_OPTIONS), start=1
     ):
-        response = mlx_whisper.transcribe(
-            str(path),
-            path_or_hf_repo=str(model_path),
-            **options,
+        response = client.transcribe(path, **options)
+        selected_text = (
+            response.text
+            if hasattr(response, "text")
+            else str(response.get("text", ""))
         )
-        selected_text = str(response.get("text", ""))
         quality = evaluate_transcript(selected_text)
         if quality.passed:
             return TranscriptionResult(selected_text, quality, attempts)

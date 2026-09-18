@@ -36,6 +36,8 @@ class ConfigTests(unittest.TestCase):
         os.environ["TELEGRAM_BOT_TOKEN"] = "test-bot"
         os.environ["TELEGRAM_CHAT_ID"] = "12345"
         os.environ["PENNY_INGEST_TOKEN"] = "ingest-test-token"
+        os.environ["PENNY_SHARED_WHISPER_URL"] = "http://127.0.0.1:10311/v1"
+        os.environ["PENNY_SHARED_WHISPER_TOKEN"] = "shared-whisper-test-token"
         os.environ[
             "GOOGLE_CREDENTIALS_FILE"
         ] = "/tmp/penny_test_home/.penny/google_credentials.json"
@@ -51,6 +53,8 @@ class ConfigTests(unittest.TestCase):
         os.environ.pop("MAYA_MAX_ATTEMPTS", None)
         os.environ.pop("MAYA_MAX_AGE_DAYS", None)
         os.environ.pop("PENNY_INGEST_TOKEN", None)
+        os.environ.pop("PENNY_SHARED_WHISPER_URL", None)
+        os.environ.pop("PENNY_SHARED_WHISPER_TOKEN", None)
         os.environ.pop("PENNY_WEBHOOK_HOST", None)
 
     def test_get_config_returns_config_with_expected_fields(self):
@@ -77,6 +81,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.webhook.ingest_token, "ingest-test-token")
         self.assertEqual(cfg.webhook.max_request_bytes, 51 * 1024 * 1024)
         self.assertEqual(cfg.openrouter_api_key, "test-key")
+        self.assertEqual(cfg.shared_whisper.url, "http://127.0.0.1:10311/v1")
+        self.assertEqual(cfg.shared_whisper.auth_token, "shared-whisper-test-token")
 
     def test_webhook_host_can_be_overridden_for_lan_deployment(self):
         os.environ["PENNY_WEBHOOK_HOST"] = "0.0.0.0"

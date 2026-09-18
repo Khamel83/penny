@@ -4,14 +4,10 @@ import json
 import hashlib
 import os
 import re
-import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
-
 
 def _config(tmp_path: Path, *, token: str = "ingest-secret", host: str = "127.0.0.1"):
     return SimpleNamespace(
@@ -23,11 +19,15 @@ def _config(tmp_path: Path, *, token: str = "ingest-secret", host: str = "127.0.
             whisper_model_repository="repo",
             whisper_model_revision="revision",
         ),
+        shared_whisper=SimpleNamespace(
+            url="http://127.0.0.1:10311/v1",
+            auth_token="shared-secret",
+            timeout_seconds=2.0,
+        ),
     )
 
 
 def _ready_probes(tmp_path: Path):
-    now = datetime.now(timezone.utc).replace(microsecond=0)
     return {
         "sqlite": {"query_ok": 1, "integrity_ok": 1, "foreign_keys_ok": 1, "schema_ok": 1},
         "voice_memos": {
@@ -46,6 +46,14 @@ def _ready_probes(tmp_path: Path):
         },
         "archive": {"health_error": 0, "failed_count": 0, "invalid_count": 0, "rebuild_needed_count": 0, "pending_count": 0},
         "transcription": {"verified": True, "offline": True},
+        "shared_whisper": {
+            "service_ok": True,
+            "model_verified": True,
+            "worker_count": 0,
+            "old_large_owner_present": False,
+            "legacy_tiny_present": True,
+            "memory_pressure_ok": True,
+        },
         "apple_effects": {"query_ok": 1, "uncertain_count": 0, "quarantined_count": 0, "stale_in_flight_count": 0},
         "maya": {"configured": False, "query_ok": 1, "pending_count": 0, "dead_letter_count": 0},
         "slack": {"configured": True, "query_ok": 1, "failed_count": 0, "pending_count": 0},
@@ -82,6 +90,97 @@ def test_doctor_marks_source_terminal_failure_unready(tmp_path: Path):
     report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
     assert report.overall == "unready"
     assert report.components["voice_memos"].reason == "terminal_failure"
+
+
+def test_shared_whisper_probe_is_secret_free_and_drops_worker_pid(monkeypatch, tmp_path):
+    import doctor
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "service": "penny-shared-whisper",
+                    "model_id": "repo@revision",
+                    "model_revision": "revision",
+                    "worker_pid": 12345,
+                    "worker_count": 1,
+                }
+            ).encode()
+
+    monkeypatch.setattr(doctor, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        doctor,
+        "_shared_whisper_process_snapshot",
+        lambda: "123 Penny Shared Whisper Worker\n824 com.wyoming.whisper --port 10301",
+    )
+    monkeypatch.setattr(doctor, "_shared_whisper_memory_pressure_ok", lambda: True)
+
+    probe = doctor._default_probe_shared_whisper(_config(tmp_path))
+
+    assert probe["service_ok"] is True
+    assert probe["model_verified"] is True
+    assert probe["worker_count"] == 1
+    assert probe["old_large_owner_present"] is False
+    assert probe["legacy_tiny_present"] is True
+    assert "worker_pid" not in probe
+    assert "shared-secret" not in repr(probe)
+
+
+def test_shared_whisper_probe_marks_duplicate_owner_unready(tmp_path):
+    from doctor import _infer_status
+
+    state, reason = _infer_status(
+        "shared_whisper",
+        {
+            "service_ok": True,
+            "model_verified": True,
+            "worker_count": 1,
+            "old_large_owner_present": True,
+            "memory_pressure_ok": True,
+        },
+    )
+
+    assert state == "unready"
+    assert reason == "duplicate_owner"
+
+
+def test_shared_whisper_probe_reports_host_memory_pressure(monkeypatch, tmp_path):
+    import doctor
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "service": "penny-shared-whisper",
+                    "model_id": "repo@revision",
+                    "model_revision": "revision",
+                    "worker_count": 0,
+                }
+            ).encode()
+
+    monkeypatch.setattr(doctor, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(doctor, "_shared_whisper_process_snapshot", lambda: "")
+    monkeypatch.setattr(doctor, "_shared_whisper_memory_pressure_ok", lambda: False)
+
+    probe = doctor._default_probe_shared_whisper(_config(tmp_path))
+
+    assert probe["memory_pressure_ok"] is False
 
 
 def test_doctor_marks_linked_source_completion_gap_unready(tmp_path: Path):

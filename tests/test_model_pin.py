@@ -5,7 +5,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -22,6 +21,7 @@ from transcript_quality import (
     transcribe_with_quality,
     verify_pinned_model,
 )
+from shared_whisper.protocol import WhisperResult
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from pin_whisper_model import ModelProvisionError, provision_pinned_model  # noqa: E402
@@ -170,29 +170,49 @@ def test_resolve_whisper_model_rejects_repository_ids_and_relative_paths(tmp_pat
         resolve_whisper_model("models/whisper", tmp_path)
 
 
-def test_transcribe_passes_verified_local_path_and_never_repository_id(
+def test_transcribe_uses_shared_client_with_legacy_model_argument(
     monkeypatch, tmp_path: Path
 ):
     model = _fake_model(tmp_path)
-    call = Mock(return_value={"text": "buy milk"})
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setitem(sys.modules, "mlx_whisper", SimpleNamespace(transcribe=call))
+    audio = tmp_path / "audio.m4a"
+    audio.write_bytes(b"audio")
+    call = Mock(
+        return_value=WhisperResult(
+            text="buy milk",
+            segments=[{"start": 0.0, "end": 1.0, "text": "buy milk"}],
+            model_id=WHISPER_MODEL_ID,
+            model_revision=WHISPER_MODEL_REVISION,
+            request_id="request-1",
+        )
+    )
 
     result = transcribe_with_quality(
-        tmp_path / "audio.m4a", model=str(model)
+        audio, model=str(model), client=Mock(transcribe=call)
     )
 
     assert result.text == "buy milk"
-    assert call.call_args.kwargs["path_or_hf_repo"] == str(model)
-    assert "/" in call.call_args.kwargs["path_or_hf_repo"]
+    assert call.call_args.args[0] == audio
+    assert call.call_args.kwargs["condition_on_previous_text"] is False
 
 
-def test_transcribe_requires_offline_runtime(monkeypatch, tmp_path: Path):
-    model = _fake_model(tmp_path)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+def test_transcribe_does_not_require_local_model_load(tmp_path: Path):
+    audio = tmp_path / "audio.m4a"
+    audio.write_bytes(b"audio")
+    client = Mock(
+        transcribe=Mock(
+            return_value=WhisperResult(
+                text="buy milk",
+                segments=[{"start": 0.0, "end": 1.0, "text": "buy milk"}],
+                model_id=WHISPER_MODEL_ID,
+                model_revision=WHISPER_MODEL_REVISION,
+                request_id="request-1",
+            )
+        )
+    )
 
-    with pytest.raises(ModelUnavailableError):
-        transcribe_with_quality(tmp_path / "audio.m4a", model=str(model))
+    result = transcribe_with_quality(audio, client=client)
+
+    assert result.quality.passed is True
 
 
 def _fake_snapshot(tmp_path: Path) -> Path:

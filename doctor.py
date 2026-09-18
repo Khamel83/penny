@@ -18,10 +18,11 @@ import sqlite3
 import stat
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import transcript_log
 
@@ -72,6 +73,8 @@ _SAFE_REASON_VALUES = frozenset(
         "timestamp_invalid",
         "uncertain_effect",
         "unknown",
+        "duplicate_owner",
+        "memory_pressure_high",
     }
 )
 _SAFE_DETAIL_KEYS = frozenset(
@@ -134,6 +137,12 @@ _SAFE_DETAIL_KEYS = frozenset(
         "gh_binary_present",
         "gh_auth_token_present",
         "launchd_gh_token_configured",
+        "service_ok",
+        "model_verified",
+        "worker_count",
+        "old_large_owner_present",
+        "legacy_tiny_present",
+        "memory_pressure_ok",
     }
 )
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -491,6 +500,117 @@ def _default_probe_transcription(config: Any, *, now: datetime | None = None, **
     except (ModelUnavailableError, OSError, ValueError, TypeError):
         return {"verified": 0, "offline": 1, "reason": "model_unavailable"}
     return {"verified": 1, "offline": 1}
+
+
+def _shared_whisper_process_snapshot() -> str | None:
+    """Read only command metadata used to detect duplicate model owners."""
+
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout if completed.returncode == 0 else None
+
+
+def _shared_whisper_memory_pressure_ok() -> bool:
+    """Return whether macOS reports enough free memory for one worker."""
+
+    try:
+        completed = subprocess.run(
+            ["memory_pressure", "-Q"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    match = re.search(
+        r"System-wide memory free percentage:\s*(\d+)%",
+        completed.stdout,
+    )
+    if match is None:
+        return False
+    try:
+        threshold = int(os.environ.get("PENNY_SHARED_WHISPER_MIN_FREE_PERCENT", "12"))
+    except ValueError:
+        threshold = 12
+    threshold = max(1, min(50, threshold))
+    return int(match.group(1)) >= threshold
+
+
+def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
+    """Probe local shared-Whisper metadata without reading audio or secrets."""
+
+    del now
+    shared = getattr(config, "shared_whisper", None) if config is not None else None
+    voice = getattr(config, "voice_memos", None) if config is not None else None
+    service_url = str(getattr(shared, "url", "") or "").rstrip("/")
+    if not service_url:
+        return {"service_ok": False, "memory_pressure_ok": False, "reason": "configuration_missing"}
+
+    health_url = service_url[:-3] if service_url.endswith("/v1") else service_url
+    health_url = f"{health_url}/health"
+    expected_model = (
+        f"{getattr(voice, 'whisper_model_repository', '')}"
+        f"@{getattr(voice, 'whisper_model_revision', '')}"
+    )
+    service_ok = False
+    model_verified = False
+    worker_count = 0
+    try:
+        request = Request(health_url, headers={"Accept": "application/json"})
+        with urlopen(request, timeout=2.0) as response:
+            if int(getattr(response, "status", 0)) == 200:
+                payload = json.loads(response.read().decode("utf-8"))
+                service_ok = (
+                    isinstance(payload, dict)
+                    and payload.get("service") == "penny-shared-whisper"
+                )
+                model_verified = bool(
+                    service_ok
+                    and payload.get("model_id") == expected_model
+                    and payload.get("model_revision")
+                    == getattr(voice, "whisper_model_revision", "")
+                )
+                worker_count = max(0, int(payload.get("worker_count", 0) or 0))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+
+    snapshot = _shared_whisper_process_snapshot()
+    if snapshot is None:
+        return {
+            "service_ok": service_ok,
+            "model_verified": model_verified,
+            "worker_count": worker_count,
+            "old_large_owner_present": True,
+            "legacy_tiny_present": False,
+            "memory_pressure_ok": False,
+        }
+    lines = snapshot.splitlines()
+    old_markers = ("agent-cli-server-whisper", "agent-cli-whisper-mlx", "mlx_whisper")
+    legacy_markers = ("com.wyoming.whisper", "--wyoming-port 10300", "--port 10301")
+    worker_lines = [line for line in lines if "Penny Shared Whisper Worker" in line]
+    return {
+        "service_ok": service_ok,
+        "model_verified": model_verified,
+        "worker_count": worker_count,
+        "old_large_owner_present": any(
+            marker in line for line in lines for marker in old_markers
+        ),
+        "legacy_tiny_present": any(
+            marker in line for line in lines for marker in legacy_markers
+        ),
+        "memory_pressure_ok": len(worker_lines) <= 1 and _shared_whisper_memory_pressure_ok(),
+    }
 
 
 def _default_probe_apple_effects(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -978,6 +1098,18 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         if not values.get("verified", 0):
             return "unready", "model_unavailable"
         return "ready", "ok"
+    if name == "shared_whisper":
+        if not values.get("service_ok", False):
+            return "unready", "source_unavailable"
+        if not values.get("model_verified", False):
+            return "unready", "model_unavailable"
+        if int(values.get("worker_count", 0) or 0) > 1:
+            return "unready", "duplicate_owner"
+        if values.get("old_large_owner_present", False):
+            return "unready", "duplicate_owner"
+        if not values.get("memory_pressure_ok", False):
+            return "unready", "memory_pressure_high"
+        return "ready", "ok"
     if name == "apple_effects":
         if not values.get("query_ok", 1) or values.get("health_error", 0):
             return "unready", "database_unavailable"
@@ -1068,6 +1200,7 @@ _PROBE_NAMES = (
     "voice_memos",
     "archive",
     "transcription",
+    "shared_whisper",
     "apple_effects",
     "maya",
     "slack",
@@ -1100,6 +1233,7 @@ def run_doctor(
         "voice_memos": _default_probe_voice_memos,
         "archive": _default_probe_archive,
         "transcription": _default_probe_transcription,
+        "shared_whisper": _default_probe_shared_whisper,
         "apple_effects": _default_probe_apple_effects,
         "maya": _default_probe_maya,
         "slack": _default_probe_slack,

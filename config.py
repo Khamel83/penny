@@ -66,6 +66,13 @@ class VoiceMemosConfig:
 
 
 @dataclass
+class SharedWhisperConfig:
+    url: str
+    auth_token: str
+    timeout_seconds: float = 90.0
+
+
+@dataclass
 class WebhookConfig:
     port: int
     host: str
@@ -105,6 +112,7 @@ class Config:
     google_tasks: GoogleTasksConfig
     apple_reminders: AppleRemindersConfig
     voice_memos: VoiceMemosConfig
+    shared_whisper: SharedWhisperConfig
     webhook: WebhookConfig
     logging: LoggingConfig
     notifications: NotificationsConfig
@@ -266,6 +274,23 @@ def get_config() -> Config:
     if not model_path.is_absolute():
         raise ValueError("PENNY_WHISPER_MODEL_PATH must be an absolute path")
 
+    shared_whisper_section = raw.get("shared_whisper", {})
+    shared_whisper_url = os.environ.get(
+        "PENNY_SHARED_WHISPER_URL",
+        str(shared_whisper_section.get("url", "http://127.0.0.1:10311/v1")),
+    ).strip()
+    if not shared_whisper_url.startswith(("http://", "https://")):
+        raise ValueError("PENNY_SHARED_WHISPER_URL must be an HTTP(S) URL")
+    raw_shared_timeout = os.environ.get(
+        "PENNY_SHARED_WHISPER_TIMEOUT_SECONDS",
+        str(shared_whisper_section.get("timeout_seconds", 90.0)),
+    )
+    try:
+        shared_timeout = float(raw_shared_timeout)
+    except (TypeError, ValueError):
+        shared_timeout = 90.0
+    shared_timeout = max(5.0, min(shared_timeout, 300.0))
+
     _config = Config(
         llm=LLMConfig(
             model=raw["llm"]["model"],
@@ -286,6 +311,11 @@ def get_config() -> Config:
             whisper_model_path=model_path,
             poll_interval_seconds=voice_memos_section["poll_interval_seconds"],
             startup_process_limit=voice_memos_section["startup_process_limit"],
+        ),
+        shared_whisper=SharedWhisperConfig(
+            url=shared_whisper_url,
+            auth_token=os.environ.get("PENNY_SHARED_WHISPER_TOKEN", ""),
+            timeout_seconds=shared_timeout,
         ),
         webhook=WebhookConfig(
             port=raw["webhook"]["port"],

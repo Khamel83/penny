@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import logging
 import math
 import mimetypes
 import os
@@ -25,7 +24,7 @@ from archive import (
     preserve_invalid_local_mirror,
     sha256_file,
     stage_audio,
-    validate_archive,
+    validate_archive,  # noqa: F401  (kept as a public watcher module helper)
     validate_local_mirror_receipt,
 )
 from config import get_config
@@ -114,7 +113,7 @@ _DEPENDENCY_ISSUE_CODES = frozenset(
     {
         "ffmpeg_not_working",
         "ffmpeg_unavailable",
-        "mlx_whisper_unavailable",
+        "shared_whisper_client_unavailable",
         "offline_mode_required",
         "whisper_model_unavailable",
         "requests_unavailable",
@@ -164,9 +163,9 @@ def check_dependencies() -> tuple[List[str], List[str]]:
         errors.append(f"ffmpeg_unavailable:{type(e).__name__}")
 
     try:
-        import mlx_whisper  # noqa: F401
+        from shared_whisper.client import SharedWhisperClient  # noqa: F401
     except ImportError:
-        errors.append("mlx_whisper_unavailable")
+        errors.append("shared_whisper_client_unavailable")
 
     if os.environ.get("HF_HUB_OFFLINE") != "1":
         errors.append("offline_mode_required")
