@@ -5,18 +5,39 @@
 This is the Penny side of the Atlas handover plan:
 `/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
 
-- Source worktree: `feat/shared-whisper-preemption`.
-- Source SHA: `33a4843bd4c34b99059cd8a51f0a8fd930201a3d`.
+- Source checkout: local `main`.
+- Source SHA: `8e53c102065db2ebb9ce7ee7f56c562a4ee63180`.
 - Source implementation: `shared_whisper/{protocol,client,server,supervisor,worker}.py`;
   `transcript_quality.py` calls the shared client and no longer owns MLX.
-- Focused verification: `176 passed, 7 subtests passed`.
-- Pending runtime work: local merge, plist render/backup, old-owner removal,
+- Full verification: `602 passed, 2 skipped, 50 subtests passed`.
+- Runtime completed: plist render/backup, old-owner removal,
   `com.penny.shared-whisper` bootstrap, authenticated MagicDNS verification,
-  canary, and rollback proof.
-- Current live owner remains `com.atlas.minuspod-whisper` until the cutover
-  handover completes. The tiny Wyoming service is outside this change.
+  one-worker/memory checks, and Homelab shared-client deployment.
+- Current live owner is `com.penny.shared-whisper` on 10311. The tiny Wyoming
+  service remains on 10300/10301 and is outside this change.
+- The tracked non-private canary returned HTTP 200 with nonempty validated
+  metadata, one segment, and the pinned model identity; transcript text was not
+  retained. It left one idle worker within the configured TTL and no second
+  large owner.
+- One post-cutover Atlas episode completed durably at
+  `2026-09-18T03:52:05Z` after six chunks in each transcription pass. The
+  post-cutover receipt has zero `Whisper API unreachable` rows and zero generic
+  `Failed to transcribe audio` rows. The queue then continued naturally;
+  current state is 27 completed, 38 pending, 1 processing, and 9 terminal
+  failures.
+- Read-only Penny Doctor at 2026-09-18T03:57:15Z reports the shared-Whisper
+  component `ready` with `service_ok=true`, `model_verified=true`,
+  `old_large_owner_present=false`, `legacy_tiny_present=true`,
+  `memory_pressure_ok=true`, and zero loaded workers after the final idle-only
+  restart. Overall Doctor remains `unready`
+  for independent pre-existing reasons: one Voice Memos terminal failure,
+  shell transcription offline mode not set, watcher freshness, one Apple
+  quarantine, and Maya dead letters. Those are not attributed to this
+  cutover.
 - No token, audio, transcript, model file, or private content belongs in this
-  handoff. Runtime status must be re-read before each claim.
+  handoff. The synchronized Atlas receipt is
+  `thoughts/shared/receipts/2026-09-18-shared-whisper-live-cutover.md`.
+  Runtime status must be re-read before each claim.
 
 The shared service is designed to keep one killable `large-v3-turbo` worker,
 use a literal 30-second Atlas grace window, discard partial Atlas output, and
