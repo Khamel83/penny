@@ -46,16 +46,11 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-### GitHub Delivery Outbox & Triage
-- Added `project` category to voice-note classification and suppressed Apple Reminder creation for project-classified items (`73c75c7`, `fc4bc18`).
-- Created `github_deliveries` ledger table with claim/mark functions, expired-lease recovery, and tests (`183d884`, `1715f5b`).
-- Implemented `github_delivery` outbox stream with Slack thread-reply signal, handling malformed triage responses and swallowing Slack posting failures (`db78378`, `2201ea3`, `9c0ee29`).
-- Integrated queueing and rate-limited draining of the GitHub delivery outbox into watcher ingest passes (`6ddec6c`, `b0cf690`, `fbb6700`).
-- Added local-only `github-triage` readiness probe to Doctor using the launchd `GH_TOKEN` signal (`7c57e9f`, `1cd2526`).
-
-### Documentation & Operational Infrastructure
-- Added implementation plan for the `github_delivery` outbox stream (`702aa70`).
-- Updated watcher launchd template with `GH_TOKEN` placeholder and documented warnings regarding missing substitutions breaking `gh auth` (`5444181`, `81811a8`).
-- Hardened plans for shared ASR lifecycle, preemption, retirement, and cutover (`9605ded`, `77e10ec`).
-- Labeled Penny watcher process and updated branch/worktree inventory (`bb4b6a3`, `4bc0282`).
+- Source commit `c79935d879ce80ca64afba82b05e712bd5f3546b` merged remote-tracking branch 'origin/main'.
+- Source commit `65960d881294f9cfb36c7f64d15d207ab30c3b70` recorded shared Whisper timestamp repair following `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`, which disabled shared-Whisper word timestamps by default while preserving explicit `word_timestamps=true`.
+- Active Atlas/MinusPod shared-Whisper cutover is synchronized with the Atlas execution authority (`/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`) and locally integrated on `main` at `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`.
+- Shared service verified on port 10311 with MagicDNS health, single-worker isolation, pinned model identity, 33.3M idle physical memory footprint, and HTTP 200 canary verification.
+- Atlas overlay `91ce1f08` deployed in Homelab image `2.96.24` (failing closed on chunk failures); post-cutover MinusPod episode durable finalization observed at `2026-09-18T03:52:05Z`.
+- Focused shared-Whisper suite passed (`16 passed`, Ruff clean); Penny full suite retains a pre-existing malformed RFC3339 contract test failure (`TranscriptContractTests.test_checked_maya_schema_uses_full_json_schema_and_format_validation`; 602 passed, 2 skipped, 1 failed).
+- Backlog queue at 2026-09-18T19:31 PDT had 55 completed, 22 pending, 1 processing; rollback artifacts retained ready while production owner remains undisturbed.
 <!-- janitor:end:recent -->
