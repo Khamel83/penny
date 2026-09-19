@@ -6,11 +6,13 @@ This is the Penny side of the Atlas handover plan:
 `/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
 
 - Source checkout: local `main`.
-- Application source SHA: `8e53c102065db2ebb9ce7ee7f56c562a4ee63180`.
+- Application source SHA: `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`.
 - Synchronized documentation commit: `d7d9a0d2c0818832b4ad193bcf8b953f1cffc1c3`.
 - Source implementation: `shared_whisper/{protocol,client,server,supervisor,worker}.py`;
   `transcript_quality.py` calls the shared client and no longer owns MLX.
-- Full verification: `602 passed, 2 skipped, 50 subtests passed`.
+- Focused shared-Whisper verification: `16 passed`; Ruff and compileall passed.
+  The full Penny suite is `602 passed, 2 skipped, 1 failed`; the remaining
+  failure is the unrelated malformed RFC3339 timestamp contract test.
 - Runtime completed: plist render/backup, old-owner removal,
   `com.penny.shared-whisper` bootstrap, authenticated MagicDNS verification,
   one-worker/memory checks, and Homelab shared-client deployment.
@@ -24,8 +26,18 @@ This is the Penny side of the Atlas handover plan:
   `2026-09-18T03:52:05Z` after six chunks in each transcription pass. The
   post-cutover receipt has zero `Whisper API unreachable` rows and zero generic
   `Failed to transcribe audio` rows. The queue then continued naturally;
-  current state is 27 completed, 38 pending, 1 processing, and 9 terminal
-  failures.
+-  current queue state at the last read was 55 completed, 22 pending, and 1
+  processing, with 2 historical terminal failures. The episode active during
+  the Penny restart completed durably; it was not published with a missing
+  Whisper chunk and has 2 review markers.
+- Shared-Whisper word timestamps are now disabled by default; an explicit
+  request still enables them. After restart the live Penny health response was
+  authenticated and idle with `worker_count=1`, `worker_pid` present, and the
+  supervisor's physical footprint was 33.3M with no loaded model workers.
+- Atlas commit `91ce1f08` makes shared-mode chunk transcription fail closed
+  (`max_failed_chunks=0`) and fixes the shared-worker assignment so it cannot
+  be overwritten by the stock pool assignment. Homelab image `2.96.24` is
+  deployed and the container source was checked for the exact patch.
 - Read-only Penny Doctor at 2026-09-18T03:57:15Z reports the shared-Whisper
   component `ready` with `service_ok=true`, `model_verified=true`,
   `old_large_owner_present=false`, `legacy_tiny_present=true`,
