@@ -95,5 +95,11 @@ def test_worker_maps_openai_form_fields_to_supported_mlx_options():
     ) == {
         "language": "en",
         "condition_on_previous_text": False,
+        "word_timestamps": False,
+    }
+
+
+def test_worker_preserves_an_explicit_word_timestamp_request():
+    assert prepare_transcription_options({"word_timestamps": True}) == {
         "word_timestamps": True,
     }

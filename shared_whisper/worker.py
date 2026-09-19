@@ -80,7 +80,10 @@ def prepare_transcription_options(options: Mapping[str, Any]) -> dict[str, Any]:
         )
         if key in options
     }
-    supported["word_timestamps"] = True
+    word_timestamps = options.get("word_timestamps", False)
+    if isinstance(word_timestamps, str):
+        word_timestamps = word_timestamps.casefold() in {"1", "true", "yes", "on"}
+    supported["word_timestamps"] = bool(word_timestamps)
     return supported
 
 
