@@ -46,17 +46,16 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-## Recent Changes
+### GitHub Delivery Outbox & Triage
+- Added `project` category to voice-note classification and suppressed Apple Reminder creation for project-classified items (`73c75c7`, `fc4bc18`).
+- Created `github_deliveries` ledger table with claim/mark functions, expired-lease recovery, and tests (`183d884`, `1715f5b`).
+- Implemented `github_delivery` outbox stream with Slack thread-reply signal, handling malformed triage responses and swallowing Slack posting failures (`db78378`, `2201ea3`, `9c0ee29`).
+- Integrated queueing and rate-limited draining of the GitHub delivery outbox into watcher ingest passes (`6ddec6c`, `b0cf690`, `fbb6700`).
+- Added local-only `github-triage` readiness probe to Doctor using the launchd `GH_TOKEN` signal (`7c57e9f`, `1cd2526`).
 
-_Derived solely from commit subjects; the published CONTEXT.md contained no non-generated content at commit 8372fb65, so no prior documentation claims could be verified._
-
-- **Agent tooling standardization:** documentation commit `1627376` — "docs: standardize foundational agent tooling (#23)".
-- **CI ai-review workflow:** three sequential updates (`e03f646`, `b8b6521`, `eb27440`).
-- **Voice Memos sync daemon health:** scoped health to the user (`1e01fd4`), isolated health fixtures in tests (`df7780f`), exposed daemon readiness (`c8c5e9d`), recovered a missing sync daemon (`058adce`), and documented the repair procedure (`aaffd0d`).
-- **Voice Memos follow-ups:** recovery after a quality policy update (`d194e9c`) and isolation of a watermark leak check in tests (`0b22334`).
-- **Apple effect reconciliation:** now fails closed (`d8298ac`); natural "no emphasis" narrowly allowed (`5f9609e`).
-- **Quality review:** promotion races blocked (`1c1fe32`).
-- **Phase A hardening:** backup readiness probe invoked consistently (`0bafa88`), source completion made recoverable (`c844b2f`), watcher operational logs redacted (`a4e00a3`), fresh source health evidence required (`b22adcc`), final Phase A recovery edges hardened (`97cea0b`), and Phase A source/receipt races closed (`0b92686`).
-
-Unverified: the commit list gives subjects only — no diffs, dates, or issue references were supplied, so scope and completeness of each change cannot be confirmed from this evidence alone.
+### Documentation & Operational Infrastructure
+- Added implementation plan for the `github_delivery` outbox stream (`702aa70`).
+- Updated watcher launchd template with `GH_TOKEN` placeholder and documented warnings regarding missing substitutions breaking `gh auth` (`5444181`, `81811a8`).
+- Hardened plans for shared ASR lifecycle, preemption, retirement, and cutover (`9605ded`, `77e10ec`).
+- Labeled Penny watcher process and updated branch/worktree inventory (`bb4b6a3`, `4bc0282`).
 <!-- janitor:end:recent -->
