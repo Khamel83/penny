@@ -8,6 +8,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
 from copy import deepcopy
@@ -187,6 +188,7 @@ def _slack_section_text(payload: dict[str, object]) -> str:
 class TranscriptContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         transcript_log.init_db()

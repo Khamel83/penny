@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import shutil
 import tempfile
 import threading
 import unittest
@@ -46,6 +47,7 @@ class _SlackResponse:
 class SlackDeliveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         transcript_log.init_db()

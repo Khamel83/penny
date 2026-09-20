@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ import transcript_log
 class AppleEffectOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "transcripts.db"
         self.db_patch = patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path)
         self.db_patch.start()
