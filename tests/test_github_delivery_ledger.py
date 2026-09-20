@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ import transcript_log as tl
 class GithubDeliveryLedgerTestCase(unittest.TestCase):
     def setUp(self):
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(tl, "TRANSCRIPT_DB_PATH", self.db_path).start()
         patch.object(

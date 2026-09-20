@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import shutil
 import tempfile
 import threading
 import unittest
@@ -65,6 +66,7 @@ def _render_log_calls(*log_mocks: object) -> str:
 class WatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         patch.object(transcript_log, "_MIGRATION_SOURCES", []).start()

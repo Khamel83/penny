@@ -9,6 +9,7 @@ import multiprocessing
 import os
 import sqlite3
 import sys
+import shutil
 import tempfile
 import threading
 import unittest
@@ -53,6 +54,7 @@ def _init_db_in_process(
 class TranscriptLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)
         self.db_path = Path(self.db_dir) / "test_transcripts.db"
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         patch.object(
