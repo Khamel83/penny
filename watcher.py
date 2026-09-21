@@ -443,24 +443,34 @@ def set_last_seen_pk(pk: int) -> None:
 
 
 def get_new_recordings() -> List[Dict[str, Any]]:
+    return _query_recordings("WHERE Z_PK > ?", (get_last_seen_pk(),))
+
+
+def get_all_recordings() -> List[Dict[str, Any]]:
+    """Read every current Voice Memo source row ordered by Z_PK."""
+    return _query_recordings("", ())
+
+
+def _query_recordings(
+    where_clause: str, parameters: tuple[Any, ...]
+) -> List[Dict[str, Any]]:
     if not CLOUDRECORDINGS_DB.exists():
         log.warning("VoiceMemos sync database unavailable")
         return []
 
-    last_pk = get_last_seen_pk()
     conn = None
     try:
         conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT Z_PK, ZCUSTOMLABEL, ZDATE, ZDURATION, ZPATH
             FROM ZCLOUDRECORDING
-            WHERE Z_PK > ?
+            {where_clause}
             ORDER BY Z_PK ASC
             """,
-            (last_pk,),
+            parameters,
         )
         return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
@@ -750,6 +760,7 @@ def _process_audio_file(
     recording_pk: int | None = None,
     recorded_at: str | None = None,
     source_root: Path | None = None,
+    local_only: bool = False,
 ) -> bool:
     stage_options = {"source_root": source_root} if source_root is not None else {}
     staged = stage_audio(audio_path, cfg.archive.object_root, **stage_options)
@@ -825,6 +836,11 @@ def _process_audio_file(
             file_seen_at=datetime.now().isoformat(),
             quality_status="skipped_too_large",
             enqueue_slack=False,
+            enqueue_quality_failure=False,
+            routing_suppressed=local_only,
+            routing_suppression_reason=(
+                "historical_local_only" if local_only else None
+            ),
             archive_staged=staged,
             archive_metadata=metadata("skipped_too_large"),
         )
@@ -885,7 +901,11 @@ def _process_audio_file(
                 **link_options,
             ):
                 return False
-        if already_routed or existing.get("quality_status") != "passed":
+        if (
+            already_routed
+            or existing.get("quality_status") != "passed"
+            or local_only
+        ):
             return True
 
         classify_and_route(
@@ -932,6 +952,11 @@ def _process_audio_file(
             quality_status="needs_review",
             quality_detail=quality_detail,
             enqueue_slack=False,
+            enqueue_quality_failure=not local_only,
+            routing_suppressed=local_only,
+            routing_suppression_reason=(
+                "historical_local_only" if local_only else None
+            ),
             archive_staged=staged,
             archive_metadata=metadata(
                 "needs_review",
@@ -982,7 +1007,13 @@ def _process_audio_file(
         file_seen_at=file_seen_at,
         transcription_started_at=transcription_started_at,
         transcription_completed_at=transcription_completed_at,
-        maya_delivery_eligible=recorded_at is not None,
+        maya_delivery_eligible=recorded_at is not None and not local_only,
+        enqueue_slack=not local_only,
+        enqueue_quality_failure=not local_only,
+        routing_suppressed=local_only,
+        routing_suppression_reason=(
+            "historical_local_only" if local_only else None
+        ),
         archive_staged=staged,
         archive_metadata=metadata(
             "passed",
@@ -1024,6 +1055,8 @@ def _process_audio_file(
             return True
         if existing.get("quality_status") != "passed":
             return True
+        if local_only:
+            return True
         transcript = str(existing["transcript"])
     else:
         row_id = int(result.row_id)
@@ -1035,6 +1068,9 @@ def _process_audio_file(
                 audio_path=str(audio_path),
             ):
                 return False
+
+        if local_only:
+            return True
 
     classify_and_route(
         transcript,
@@ -1050,7 +1086,10 @@ def _process_audio_file(
 
 
 def process_recording(
-    recording: Dict[str, Any], *, already_upserted: bool = False
+    recording: Dict[str, Any],
+    *,
+    already_upserted: bool = False,
+    local_only: bool = False,
 ) -> bool:
     pk = int(recording["Z_PK"])
     duration_seconds, duration_invalid = _recording_duration_or_invalid(recording)
@@ -1094,6 +1133,7 @@ def process_recording(
                 and audio_path.is_relative_to(roots[0])
                 else None
             ),
+            local_only=local_only,
         )
         if not processed:
             mark_voice_memo_retryable(pk, "transcription_failed")

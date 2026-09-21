@@ -1639,6 +1639,179 @@ class WatcherTests(unittest.TestCase):
         self.assertNotIn(exception_text, failed_rendered)
         self.assertIn("RuntimeError", failed_rendered)
 
+    def test_get_all_recordings_ignores_incremental_watermark(self) -> None:
+        source_db = Path(self.db_dir) / "source.sqlite"
+        conn = sqlite3.connect(source_db)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE ZCLOUDRECORDING (
+                    Z_PK INTEGER PRIMARY KEY,
+                    ZCUSTOMLABEL TEXT,
+                    ZDATE REAL,
+                    ZDURATION REAL,
+                    ZPATH TEXT
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO ZCLOUDRECORDING VALUES (?, ?, ?, ?, ?)",
+                [
+                    (10, "old one", 1.0, 1.0, "10.m4a"),
+                    (11, "old two", 2.0, 2.0, "11.m4a"),
+                    (12, "current", 3.0, 3.0, "12.m4a"),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", source_db),
+            patch.object(watcher, "get_last_seen_pk", return_value=12),
+        ):
+            recordings = watcher.get_all_recordings()
+
+        self.assertEqual([row["Z_PK"] for row in recordings], [10, 11, 12])
+
+    def test_local_only_processing_suppresses_route_and_slack(self) -> None:
+        voice_root = Path(self.db_dir) / "voice"
+        voice_root.mkdir()
+        audio_path = voice_root / "historical.m4a"
+        audio_path.write_bytes(b"historical audio")
+        object_root = Path(self.db_dir) / "objects"
+        recording = {
+            "Z_PK": 819,
+            "ZCUSTOMLABEL": "historical",
+            "ZDATE": 10.0,
+            "ZDURATION": 1.0,
+            "ZPATH": audio_path.name,
+        }
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                return_value=TranscriptionResult(
+                    "historical transcript", QualityResult(True), 1
+                ),
+            ),
+            patch.object(watcher, "classify_and_route") as route,
+        ):
+            self.assertTrue(watcher.process_recording(recording, local_only=True))
+
+        conn = transcript_log._get_conn()
+        try:
+            transcript = conn.execute(
+                "SELECT routing_suppressed FROM transcripts"
+            ).fetchone()
+            source = conn.execute(
+                """
+                SELECT status, transcript_row_id
+                FROM voice_memo_ingest
+                WHERE recording_pk = 819
+                """
+            ).fetchone()
+            slack_count = conn.execute(
+                "SELECT COUNT(*) FROM slack_deliveries"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        route.assert_not_called()
+        self.assertEqual(transcript["routing_suppressed"], 1)
+        self.assertEqual(source["status"], "transcribed")
+        self.assertIsNotNone(source["transcript_row_id"])
+        self.assertEqual(slack_count, 0)
+
+    def test_local_only_missing_source_remains_visible_for_retry(self) -> None:
+        recording = {
+            "Z_PK": 820,
+            "ZCUSTOMLABEL": "missing historical",
+            "ZDATE": 10.0,
+            "ZDURATION": 1.0,
+            "ZPATH": "missing.m4a",
+        }
+
+        with patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)):
+            self.assertFalse(watcher.process_recording(recording, local_only=True))
+
+        conn = transcript_log._get_conn()
+        try:
+            source = conn.execute(
+                """
+                SELECT status, retryable, transcript_row_id
+                FROM voice_memo_ingest
+                WHERE recording_pk = 820
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn(source["status"], {"awaiting_file", "failed"})
+        self.assertEqual(source["retryable"], 1)
+        self.assertIsNone(source["transcript_row_id"])
+
+    def test_local_only_duplicate_hash_links_without_new_transcript_or_slack(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-duplicate"
+        voice_root.mkdir()
+        audio_path = voice_root / "duplicate.m4a"
+        audio_path.write_bytes(b"duplicate audio")
+        object_root = Path(self.db_dir) / "objects-duplicate"
+        content_hash = watcher.get_file_hash(audio_path, source_root=voice_root)
+        transcript_log.insert_transcript(
+            content_hash=content_hash,
+            source="iCloud",
+            transcript="already retained",
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=False,
+            routing_suppressed=True,
+            routing_suppression_reason="historical_local_only",
+        )
+        recording = {
+            "Z_PK": 821,
+            "ZCUSTOMLABEL": "duplicate historical",
+            "ZDATE": 10.0,
+            "ZDURATION": 1.0,
+            "ZPATH": audio_path.name,
+        }
+
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(watcher.cfg.archive, "object_root", object_root),
+            patch.object(watcher, "classify_and_route") as route,
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+        ):
+            self.assertTrue(watcher.process_recording(recording, local_only=True))
+
+        conn = transcript_log._get_conn()
+        try:
+            transcript_count = conn.execute(
+                "SELECT COUNT(*) FROM transcripts"
+            ).fetchone()[0]
+            slack_count = conn.execute(
+                "SELECT COUNT(*) FROM slack_deliveries"
+            ).fetchone()[0]
+            source = conn.execute(
+                """
+                SELECT status, transcript_row_id
+                FROM voice_memo_ingest
+                WHERE recording_pk = 821
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        route.assert_not_called()
+        transcribe.assert_not_called()
+        self.assertEqual(transcript_count, 1)
+        self.assertEqual(slack_count, 0)
+        self.assertEqual(source["status"], "transcribed")
+        self.assertIsNotNone(source["transcript_row_id"])
+
     def test_source_health_probes_log_only_exit_and_error_classes(self) -> None:
         db_path = Path(self.db_dir) / "PRIVATE_HEALTH_DB_PATH_SENTINEL.sqlite"
         db_path.touch()
