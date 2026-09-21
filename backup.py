@@ -26,6 +26,8 @@ from typing import Any, Callable, Iterable
 
 from archive import CHUNK_SIZE, fsync_directory, sha256_file
 
+ESCAPED_BACKSLASH = "\\\\"  # two backslash characters. A backslash cannot appear inside an f-string expression before Python 3.12.
+
 
 BACKUP_SCHEMA_VERSION = 1
 BACKUP_RETENTION_DAYS = 90
@@ -386,7 +388,7 @@ def _catalog_files(
     ]
     files.extend(
         {
-            "path": f"objects/{relative.replace('\\\\', '/')}",
+            "path": f"objects/{relative.replace(ESCAPED_BACKSLASH, '/')}",
             "size": int(size),
             "sha256": digest,
         }
@@ -459,7 +461,7 @@ def create_backup_set(
             "database": database,
             "objects": [
                 {
-                    "path": f"objects/{relative.replace('\\\\', '/')}",
+                    "path": f"objects/{relative.replace(ESCAPED_BACKSLASH, '/')}",
                     "size": size,
                     "sha256": digest,
                 }
