@@ -110,8 +110,9 @@ gap proves current source coverage only; each row still needs a linked
 transcript or an explicit unavailable, retryable, needs-review, or terminal
 state. `--limit 0` removes the batch limit after the dry run is understood.
 
-The historical pass is local-only: it does not call transcription providers,
-send Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub effects, or run outbox
+The historical pass is local-only: it uses Penny's offline local transcription
+backend, does not call external/cloud providers, does not send
+Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub effects, and does not run outbox
 workers. It may create Penny-owned local staging/archive work for the canonical
 ledger row. Any external delivery requires a separate, explicit operator
 action and its own receipt.

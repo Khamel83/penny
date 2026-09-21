@@ -86,9 +86,10 @@ records an exact bounded report of source rows, ledger rows, unmatched source
 ranges, transcript states, archive states, and downstream-effect counts. A
 successful backfill batch does not prove that every audio file is available or
 that every transcript passed quality review. Missing files remain explicit
-retryable or terminal ledger state. The pass does not call providers or run
-Slack, Maya, Apple, Notes, Reminders, Hermes, or GitHub outboxes; any later
-external delivery is a separate operation with a separate receipt.
+retryable or terminal ledger state. The pass uses Penny's offline local
+transcription backend; it does not call external/cloud providers or run Slack,
+Maya, Apple, Notes, Reminders, Hermes, or GitHub outboxes. Any later external
+delivery is a separate operation with a separate receipt.
 
 ## Backups and restore
 

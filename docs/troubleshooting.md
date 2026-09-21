@@ -55,10 +55,11 @@ empty. A zero exact gap means every current source row has a ledger row, not
 that every row has usable audio or a passed transcript. Inspect the separate
 linked, retryable, terminal, quality, and archive counters for those outcomes.
 
-The pass is local-only. It does not call transcription providers, send
-historical content to Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub, or run
-outbox workers. Do not infer downstream delivery from a successful backfill;
-perform and verify any external delivery as a separate operator action.
+The pass is local-only. It uses Penny's offline local transcription backend; it
+does not call external/cloud providers, send historical content to
+Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub, or run outbox workers. Do not
+infer downstream delivery from a successful backfill; perform and verify any
+external delivery as a separate operator action.
 
 ## Capture is pending or retrying
 
