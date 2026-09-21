@@ -113,6 +113,7 @@ class BackfillVoiceMemoTests(unittest.TestCase):
         self.assertEqual(report["initial_unindexed_ranges"], ["10-11"])
         self.assertEqual(report["unindexed_ranges"], [])
         self.assertEqual(report["processed_count"], 2)
+        self.assertEqual(report["archive_counts"]["health_error"], 0)
         self.assertEqual(report["downstream_effect_count"], 0)
         route.assert_not_called()
 
@@ -189,9 +190,58 @@ class BackfillVoiceMemoTests(unittest.TestCase):
         ):
             self.assertNotIn(private_value, rendered)
 
+    def test_coverage_reads_legacy_ledger_before_suppression_migration(self) -> None:
+        legacy_db = Path(self.db_dir) / "legacy.db"
+        conn = sqlite3.connect(legacy_db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE voice_memo_ingest (
+                    recording_pk INTEGER PRIMARY KEY,
+                    transcript_row_id INTEGER,
+                    retryable INTEGER NOT NULL DEFAULT 0,
+                    terminal_at TEXT
+                );
+                CREATE TABLE transcripts (id INTEGER PRIMARY KEY);
+                INSERT INTO voice_memo_ingest
+                    (recording_pk, transcript_row_id, retryable, terminal_at)
+                VALUES (10, 1, 0, NULL), (11, NULL, 1, NULL),
+                       (12, NULL, 0, '2026-01-01T00:00:00Z');
+                INSERT INTO transcripts (id) VALUES (1);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with patch.object(transcript_log, "TRANSCRIPT_DB_PATH", legacy_db):
+            coverage = transcript_log.get_voice_memo_coverage()
+
+        self.assertEqual(
+            coverage,
+            {
+                "ledger_count": 3,
+                "linked_count": 1,
+                "unlinked_count": 2,
+                "retryable_count": 1,
+                "terminal_count": 1,
+                "local_only_count": 0,
+            },
+        )
+
     def test_compact_ranges(self) -> None:
         self.assertEqual(compact_ranges([1, 2, 3, 8]), ["1-3", "8"])
         self.assertEqual(compact_ranges([]), [])
+
+    def test_operator_documentation_describes_safe_backfill(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+
+        self.assertIn("scripts/backfill_voice_memos.py", readme)
+        self.assertIn("--dry-run", readme)
+        self.assertRegex(
+            readme,
+            r"(?is)backfill_voice_memos.*?(?:does not|never).*?(?:send|deliver)",
+        )
 
 
 if __name__ == "__main__":

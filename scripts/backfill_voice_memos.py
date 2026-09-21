@@ -154,6 +154,7 @@ def run_backfill(
 
     coverage = transcript_log.get_voice_memo_coverage()
     final_ledger_pks = transcript_log.get_voice_memo_recording_pks()
+    archive_counts = transcript_log.get_archive_delivery_health()
     report: dict[str, Any] = {
         "source_records": len(source_rows),
         "ledger_records": coverage["ledger_count"],
@@ -169,6 +170,7 @@ def run_backfill(
         "processed_count": processed_count,
         "failed_count": failed_count,
         "status_counts": _state_counts(),
+        "archive_counts": archive_counts,
         "downstream_effect_count": _downstream_effect_count(),
         "dry_run": dry_run,
     }

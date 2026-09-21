@@ -6447,8 +6447,19 @@ def get_voice_memo_coverage() -> dict[str, int]:
     conn = None
     try:
         conn = _get_conn()
+        transcript_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()
+        }
+        local_only_expression = (
+            "COUNT(DISTINCT CASE "
+            "WHEN transcripts.routing_suppressed = 1 "
+            "THEN voice_memo_ingest.recording_pk END)"
+            if "routing_suppressed" in transcript_columns
+            else "0"
+        )
         row = conn.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS ledger_count,
                 SUM(CASE WHEN transcript_row_id IS NOT NULL THEN 1 ELSE 0 END)
@@ -6459,10 +6470,7 @@ def get_voice_memo_coverage() -> dict[str, int]:
                     AS retryable_count,
                 SUM(CASE WHEN terminal_at IS NOT NULL THEN 1 ELSE 0 END)
                     AS terminal_count,
-                COUNT(DISTINCT CASE
-                    WHEN transcripts.routing_suppressed = 1
-                    THEN voice_memo_ingest.recording_pk
-                END) AS local_only_count
+                {local_only_expression} AS local_only_count
             FROM voice_memo_ingest
             LEFT JOIN transcripts
               ON transcripts.id = voice_memo_ingest.transcript_row_id
