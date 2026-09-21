@@ -1240,6 +1240,24 @@ def _ensure_voice_memo_columns(conn: sqlite3.Connection) -> None:
         column="terminal_at",
         sql="ALTER TABLE voice_memo_ingest ADD COLUMN terminal_at TEXT",
     )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="routing_suppressed",
+        sql=(
+            "ALTER TABLE voice_memo_ingest "
+            "ADD COLUMN routing_suppressed INTEGER NOT NULL DEFAULT 0"
+        ),
+    )
+    _add_column_if_missing(
+        conn,
+        table="voice_memo_ingest",
+        column="routing_suppression_reason",
+        sql=(
+            "ALTER TABLE voice_memo_ingest "
+            "ADD COLUMN routing_suppression_reason TEXT"
+        ),
+    )
 
 
 def _read_legacy_voice_memo_cursor() -> int:
@@ -6058,6 +6076,35 @@ def mark_voice_memo_file_seen(recording_pk: int, audio_path: str) -> None:
             conn.close()
 
 
+def mark_voice_memo_routing_suppressed(
+    recording_pk: int, reason: str = "historical_local_only"
+) -> bool:
+    """Persist source-level routing suppression for local-only processing."""
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """UPDATE voice_memo_ingest
+               SET routing_suppressed = 1,
+                   routing_suppression_reason = ?,
+                   updated_at = datetime('now')
+               WHERE recording_pk = ?""",
+            (reason, recording_pk),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception as e:
+        log.error(
+            "Failed to persist Voice Memo routing suppression pk=%s: %s",
+            recording_pk,
+            _safe_exception_class(e),
+        )
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
 def link_voice_memo_transcript(
     recording_pk: int,
     *,
@@ -6451,12 +6498,26 @@ def get_voice_memo_coverage() -> dict[str, int]:
             str(row[1])
             for row in conn.execute("PRAGMA table_info(transcripts)").fetchall()
         }
-        local_only_expression = (
-            "COUNT(DISTINCT CASE "
-            "WHEN transcripts.routing_suppressed = 1 "
-            "THEN voice_memo_ingest.recording_pk END)"
+        voice_memo_columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(voice_memo_ingest)"
+            ).fetchall()
+        }
+        source_suppressed = (
+            "voice_memo_ingest.routing_suppressed = 1"
+            if "routing_suppressed" in voice_memo_columns
+            else "0"
+        )
+        transcript_suppressed = (
+            "transcripts.routing_suppressed = 1"
             if "routing_suppressed" in transcript_columns
             else "0"
+        )
+        local_only_expression = (
+            "COUNT(DISTINCT CASE WHEN "
+            f"{source_suppressed} OR {transcript_suppressed} "
+            "THEN voice_memo_ingest.recording_pk END)"
         )
         row = conn.execute(
             f"""

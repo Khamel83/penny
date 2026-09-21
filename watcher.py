@@ -57,6 +57,7 @@ from transcript_log import (
     get_pending,
     link_voice_memo_transcript,
     mark_voice_memo_file_seen,
+    mark_voice_memo_routing_suppressed,
     mark_voice_memo_routed,
     mark_voice_memo_routed_for_transcript,
     mark_voice_memo_retryable,
@@ -898,7 +899,8 @@ def _process_audio_file(
             mark_voice_memo_file_seen(recording_pk, str(audio_path))
             link_options: dict[str, Any] = {}
             if terminal_state == "routed":
-                link_options["routed"] = True
+                if not local_only:
+                    link_options["routed"] = True
             elif terminal_state is not None:
                 link_options["terminal_state"] = terminal_state
             if not link_voice_memo_transcript(
@@ -1048,7 +1050,8 @@ def _process_audio_file(
         if recording_pk is not None:
             link_options = {}
             if terminal_state == "routed":
-                link_options["routed"] = True
+                if not local_only:
+                    link_options["routed"] = True
             elif terminal_state is not None:
                 link_options["terminal_state"] = terminal_state
             if not link_voice_memo_transcript(
@@ -1115,6 +1118,8 @@ def process_recording(
         recorded_at=recorded_at,
         duration_seconds=duration_seconds,
     ):
+        return False
+    if local_only and not mark_voice_memo_routing_suppressed(pk):
         return False
     log.info("Processing Voice Memo (PK=%s)", pk)
 
@@ -1600,7 +1605,14 @@ def _retry_waiting_for_files(limit: int) -> None:
                 "ZDURATION": row.get("duration_seconds"),
                 "recorded_at": row.get("recorded_at"),
             }
-        process_recording(recording, already_upserted=True)
+        if row.get("routing_suppressed"):
+            process_recording(
+                recording,
+                already_upserted=True,
+                local_only=True,
+            )
+        else:
+            process_recording(recording, already_upserted=True)
 
 
 def _retry_voice_memo_recordings(limit: int) -> None:
@@ -1647,7 +1659,14 @@ def _retry_voice_memo_recordings(limit: int) -> None:
                 duration_seconds=duration_seconds,
             ):
                 continue
-        process_recording(recording, already_upserted=True)
+        if row.get("routing_suppressed"):
+            process_recording(
+                recording,
+                already_upserted=True,
+                local_only=True,
+            )
+        else:
+            process_recording(recording, already_upserted=True)
 
 
 def _retry_pending_routes(limit: int) -> None:

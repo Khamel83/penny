@@ -1765,11 +1765,9 @@ class WatcherTests(unittest.TestCase):
             content_hash=content_hash,
             source="iCloud",
             transcript="already retained",
-            ingest_state="transcribed",
+            ingest_state="routed",
             quality_status="passed",
             enqueue_slack=False,
-            routing_suppressed=True,
-            routing_suppression_reason="historical_local_only",
         )
         recording = {
             "Z_PK": 821,
@@ -1797,7 +1795,8 @@ class WatcherTests(unittest.TestCase):
             ).fetchone()[0]
             source = conn.execute(
                 """
-                SELECT status, transcript_row_id
+                SELECT status, transcript_row_id,
+                       routing_suppressed, routing_suppression_reason
                 FROM voice_memo_ingest
                 WHERE recording_pk = 821
                 """
@@ -1811,6 +1810,10 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(slack_count, 0)
         self.assertEqual(source["status"], "transcribed")
         self.assertIsNotNone(source["transcript_row_id"])
+        self.assertEqual(source["routing_suppressed"], 1)
+        self.assertEqual(
+            source["routing_suppression_reason"], "historical_local_only"
+        )
 
     def test_source_health_probes_log_only_exit_and_error_classes(self) -> None:
         db_path = Path(self.db_dir) / "PRIVATE_HEALTH_DB_PATH_SENTINEL.sqlite"
