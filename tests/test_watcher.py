@@ -1765,7 +1765,7 @@ class WatcherTests(unittest.TestCase):
             content_hash=content_hash,
             source="iCloud",
             transcript="already retained",
-            ingest_state="routed",
+            ingest_state="pending",
             quality_status="passed",
             enqueue_slack=False,
         )
@@ -1814,6 +1814,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(
             source["routing_suppression_reason"], "historical_local_only"
         )
+        self.assertEqual(transcript_log.get_pending(), [])
 
     def test_source_health_probes_log_only_exit_and_error_classes(self) -> None:
         db_path = Path(self.db_dir) / "PRIVATE_HEALTH_DB_PATH_SENTINEL.sqlite"

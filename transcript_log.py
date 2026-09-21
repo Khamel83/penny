@@ -5328,6 +5328,19 @@ def get_pending(limit: int = 20) -> list[dict]:
                WHERE status IN ('pending', 'failed')
                  AND COALESCE(ingest_state, '') != 'needs_review'
                  AND COALESCE(routing_suppressed, 0) = 0
+                 AND (
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM voice_memo_ingest
+                           WHERE voice_memo_ingest.transcript_row_id = transcripts.id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM voice_memo_ingest
+                           WHERE voice_memo_ingest.transcript_row_id = transcripts.id
+                             AND COALESCE(voice_memo_ingest.routing_suppressed, 0) = 0
+                       )
+                     )
                ORDER BY created_at ASC
                LIMIT ?""",
             (limit,),
@@ -6203,7 +6216,8 @@ def mark_voice_memo_routed_for_transcript(transcript_row_id: int) -> bool:
                SET status = 'routed', routed_at = datetime('now'), error_message = NULL,
                    retryable = 0, next_attempt_at = NULL, terminal_at = datetime('now'),
                    updated_at = datetime('now')
-               WHERE transcript_row_id = ?""",
+               WHERE transcript_row_id = ?
+                 AND COALESCE(routing_suppressed, 0) = 0""",
             (transcript_row_id,),
         )
         conn.commit()
@@ -6235,6 +6249,7 @@ def reconcile_linked_voice_memo_terminal_states(limit: int = 100) -> int:
               ON transcripts.id = voice_memo_ingest.transcript_row_id
             WHERE voice_memo_ingest.status = 'transcribed'
               AND voice_memo_ingest.terminal_at IS NULL
+              AND COALESCE(voice_memo_ingest.routing_suppressed, 0) = 0
               AND (
                     transcripts.status IN ('routed', 'processed')
                     OR transcripts.quality_status != 'passed'
