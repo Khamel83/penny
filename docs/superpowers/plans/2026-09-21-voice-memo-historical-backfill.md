@@ -188,7 +188,8 @@ Use a temporary source database and temporary Penny database. Add tests proving:
 def test_backfill_processes_records_below_watermark_without_downstream_effects():
     report = run_backfill(limit=None, dry_run=False)
     assert report["source_records"] == 3
-    assert report["unindexed_ranges"] == ["10-11"]
+    assert report["initial_unindexed_ranges"] == ["10-11"]
+    assert report["unindexed_ranges"] == []
     assert report["processed_count"] == 2
     assert report["downstream_effect_count"] == 0
 ```
@@ -214,7 +215,7 @@ Implement `run_backfill()` as follows:
 3. Read the existing ledger PK set and select ascending candidates that are not represented or are unlinked retryable rows; do not reopen terminal rows unless a later explicit replay feature is added.
 4. For each selected row, durably upsert metadata, then call `watcher.process_recording(row, already_upserted=True, local_only=True)`.
 5. Do not modify the watermark, invoke outbox workers, or call any provider.
-6. Read metadata-only ledger coverage and build exact unmatched source ranges from source PKs minus ledger PKs.
+6. Read metadata-only ledger coverage and build exact unmatched source ranges from source PKs minus ledger PKs. Report both `initial_unindexed_ranges` (the selected pre-batch gap) and `unindexed_ranges` (the authoritative post-run gap).
 7. Print one stable JSON object with counts and bounded state names. Exit `0` when the command completed its selected batch, `1` for source/database failure, and `2` for invalid arguments.
 
 The default batch limit is `50`; `--limit 0` means no limit. `--dry-run` performs source and ledger reads only. The command must not print logger output containing private source fields; configure its result output as the only operator-facing summary.

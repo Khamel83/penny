@@ -38,6 +38,28 @@ If Voice Memos remains unavailable, use the supported Share/Finder export path.
 It must enter the same authenticated ingest and persistence pipeline; it must
 not bypass provenance, archive publication, policy, or receipts.
 
+## Historical source coverage has a gap
+
+The recurring watcher uses a discovery cursor for normal operation. A cursor
+can be healthy while older Apple rows remain absent from Penny's ledger. Use
+the historical command from the repository environment:
+
+```bash
+venv/bin/python scripts/backfill_voice_memos.py --dry-run
+venv/bin/python scripts/backfill_voice_memos.py --limit 50
+```
+
+The JSON report is metadata-only. Review `initial_unindexed_ranges` before a
+batch and `unindexed_ranges` after it; repeat bounded runs until the latter is
+empty. A zero exact gap means every current source row has a ledger row, not
+that every row has usable audio or a passed transcript. Inspect the separate
+linked, retryable, terminal, quality, and archive counters for those outcomes.
+
+The pass is local-only. It does not call transcription providers, send
+historical content to Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub, or run
+outbox workers. Do not infer downstream delivery from a successful backfill;
+perform and verify any external delivery as a separate operator action.
+
 ## Capture is pending or retrying
 
 Inspect the Doctor reason and bounded age/counter fields. A changing source file

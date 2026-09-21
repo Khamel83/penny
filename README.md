@@ -92,6 +92,30 @@ When investigating a capture, distinguish these evidence streams: local receipt,
 durable archive, local routing, Apple receipt, independent Slack, independent
 Maya v2, and backup verification. One stream never proves another.
 
+### Historical Voice Memo recovery
+
+Use `scripts/backfill_voice_memos.py` when the recurring watcher has already
+advanced its discovery cursor and older Apple Voice Memos rows still need a
+Penny ledger state. The command enumerates the complete current source, so it
+does not depend on the watcher watermark:
+
+```bash
+venv/bin/python scripts/backfill_voice_memos.py --dry-run
+venv/bin/python scripts/backfill_voice_memos.py --limit 50
+```
+
+Review the metadata-only JSON report before each bounded run. Repeat the
+bounded command until `unindexed_ranges` is empty. A zero exact source/ledger
+gap proves current source coverage only; each row still needs a linked
+transcript or an explicit unavailable, retryable, needs-review, or terminal
+state. `--limit 0` removes the batch limit after the dry run is understood.
+
+The historical pass is local-only: it does not call transcription providers,
+send Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub effects, or run outbox
+workers. It may create Penny-owned local staging/archive work for the canonical
+ledger row. Any external delivery requires a separate, explicit operator
+action and its own receipt.
+
 ## Runtime configuration
 
 Non-secret policy lives in `config.toml`. Secrets are runtime-only and dedicated

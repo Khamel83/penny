@@ -79,6 +79,17 @@ leases/claims prevent two workers from sending the same row. A validated,
 identity-matching receipt is required for `sent`; uncertain transport remains
 reconcilable. Terminal rows are dead letters, not infinite retries.
 
+Historical Voice Memo recovery is a separate local-only operation. The
+backfill enumerates all current Apple source rows instead of trusting the
+recurring watcher watermark, persists source metadata before processing, and
+records an exact bounded report of source rows, ledger rows, unmatched source
+ranges, transcript states, archive states, and downstream-effect counts. A
+successful backfill batch does not prove that every audio file is available or
+that every transcript passed quality review. Missing files remain explicit
+retryable or terminal ledger state. The pass does not call providers or run
+Slack, Maya, Apple, Notes, Reminders, Hermes, or GitHub outboxes; any later
+external delivery is a separate operation with a separate receipt.
+
 ## Backups and restore
 
 The scheduled backup creates an immutable, versioned set containing a
