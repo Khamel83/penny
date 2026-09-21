@@ -48,6 +48,7 @@ from transcript_log import (
     get_slack_delivery_health,
     get_transcript_by_hash,
     get_voice_memo_health,
+    get_voice_memo_coverage,
     get_voice_memo_recordings_waiting_for_file,
     get_voice_memo_recordings_for_retry,
     init_db,
@@ -345,6 +346,10 @@ def update_health_check() -> bool:
     maya_health = get_maya_delivery_health()
     archive_health = get_archive_delivery_health()
     cloud_health = _cloud_recording_snapshot()
+    voice_memo_coverage = get_voice_memo_coverage()
+    source_record_count = int(cloud_health.get("record_count", 0) or 0)
+    ledger_record_count = int(voice_memo_coverage.get("ledger_count", 0) or 0)
+    coverage_gap = max(0, source_record_count - ledger_record_count)
     slack_health_error = int(slack_health.get("health_error", 0))
     maya_health_error = int(maya_health.get("health_error", 0))
     maya_configured = int(
@@ -369,6 +374,9 @@ def update_health_check() -> bool:
     HEALTH_FILE.write_text(
         (
             f"{now}|db_records:{cloud_health['record_count']}|"
+            f"voice_memo_source_records:{source_record_count}|"
+            f"voice_memo_ledger_records:{ledger_record_count}|"
+            f"voice_memo_coverage_gap:{coverage_gap}|"
             f"watcher_ok:{watcher_ok}|voicememos:{vm}|"
             f"voicememos_responsive:{vm_responsive}|"
             f"voicememod_running:{voicememod_running}|"

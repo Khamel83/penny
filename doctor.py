@@ -67,6 +67,7 @@ _SAFE_REASON_VALUES = frozenset(
         "retryable_failure",
         "schema_failure",
         "secret_missing",
+        "source_coverage_gap",
         "source_stale",
         "source_unavailable",
         "terminal_failure",
@@ -119,6 +120,9 @@ _SAFE_DETAIL_KEYS = frozenset(
         "tasks_ok",
         "voicememos_responsive",
         "voice_db_ok",
+        "voice_memo_source_records",
+        "voice_memo_ledger_records",
+        "voice_memo_coverage_gap",
         "offline",
         "integrity_check_ok",
         "foreign_key_check_ok",
@@ -454,6 +458,15 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
         watcher_path, "voicememod_running"
     )
     data["voice_db_ok"] = _health_flag(watcher_path, "voice_db_ok")
+    data["voice_memo_source_records"] = _health_int(
+        watcher_path, "voice_memo_source_records"
+    )
+    data["voice_memo_ledger_records"] = _health_int(
+        watcher_path, "voice_memo_ledger_records"
+    )
+    data["voice_memo_coverage_gap"] = _health_int(
+        watcher_path, "voice_memo_coverage_gap"
+    )
     file_age, file_valid = _health_file_age(watcher_path, now=current)
     text_age, text_valid = _health_text_age(watcher_path, now=current)
     source_age = text_age if text_valid else file_age
@@ -744,6 +757,22 @@ def _health_flag(path: Path, key: str) -> bool:
     )
 
 
+def _health_int(path: Path, key: str) -> int:
+    text = _read_health_text(path, 1024)
+    if text is None:
+        return 0
+    prefix = f"{key}:"
+    for token in text.replace("\r", "\n").replace("\n", "|").split("|"):
+        value = token.strip()
+        if not value.startswith(prefix):
+            continue
+        try:
+            return max(0, int(value[len(prefix) :]))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _health_text_age(path: Path, *, now: datetime) -> tuple[int | None, bool]:
     text = _read_health_text(path, 128)
     if text is None:
@@ -880,6 +909,15 @@ def _default_probe_services(_config: Any = None, *, now: datetime | None = None,
             watcher_path, "voicememos_responsive"
         ),
         "voice_db_ok": _health_flag(watcher_path, "voice_db_ok"),
+        "voice_memo_source_records": _health_int(
+            watcher_path, "voice_memo_source_records"
+        ),
+        "voice_memo_ledger_records": _health_int(
+            watcher_path, "voice_memo_ledger_records"
+        ),
+        "voice_memo_coverage_gap": _health_int(
+            watcher_path, "voice_memo_coverage_gap"
+        ),
     }
 
 
@@ -1085,6 +1123,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"
+        if int(values.get("voice_memo_coverage_gap", 0) or 0) > 0:
+            return "unready", "source_coverage_gap"
         if int(values.get("terminal_failure_count", 0) or 0) > 0:
             return "unready", "terminal_failure"
         if int(values.get("completion_pending_count", 0) or 0) > 0:
@@ -1185,6 +1225,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"
+        if int(values.get("voice_memo_coverage_gap", 0) or 0) > 0:
+            return "unready", "source_coverage_gap"
         if not values.get("watcher_ok", False) or not values.get("launchd_ok", False):
             return "unready", "launchd_unavailable"
         if int(values.get("age_seconds", 0) or 0) > _DEFAULT_HEALTH_MAX_AGE_SECONDS:

@@ -2704,6 +2704,84 @@ class WatcherTests(unittest.TestCase):
         self.assertIn("|voice_memo_source_watermark:123|", health)
         self.assertNotIn(secret, health)
 
+    def test_health_check_reports_source_coverage_counters(self) -> None:
+        health_path = Path(self.db_dir) / "coverage-health.txt"
+        with (
+            patch.object(watcher, "HEALTH_FILE", health_path),
+            patch.object(watcher, "_voicememos_running", return_value=True),
+            patch.object(watcher, "_voicememos_responsive", return_value=True),
+            patch.object(watcher, "_voicememos_sync_daemon_running", return_value=True),
+            patch.object(watcher, "_transcripts_pending", return_value=0),
+            patch.object(
+                watcher,
+                "_cloud_recording_snapshot",
+                return_value={
+                    "db_ok": True,
+                    "record_count": 315,
+                    "latest_pk": 433,
+                    "latest_date": None,
+                    "wal_exists": True,
+                    "wal_age_seconds": 3,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_health",
+                return_value={
+                    "latest_recording_pk": 433,
+                    "awaiting_file_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_voice_memo_coverage",
+                return_value={"ledger_count": 143},
+            ),
+            patch.object(
+                watcher,
+                "get_slack_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "sent_count": 0,
+                    "failed_count": 0,
+                    "health_error": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_maya_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "due_count": 0,
+                    "failed_count": 0,
+                    "oldest_due_age_seconds": 0,
+                    "quality_needs_review_count": 0,
+                    "health_error": 0,
+                },
+            ),
+            patch.object(
+                watcher,
+                "get_archive_delivery_health",
+                return_value={
+                    "pending_count": 0,
+                    "failed_count": 0,
+                    "invalid_count": 0,
+                    "rebuild_needed_count": 0,
+                    "backfill_failed_count": 0,
+                    "health_error": 0,
+                },
+            ),
+        ):
+            watcher.update_health_check()
+
+        health = health_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "|voice_memo_source_records:315|voice_memo_ledger_records:143|"
+            "voice_memo_coverage_gap:172|",
+            health,
+        )
+
     def test_health_check_fails_for_terminal_voice_memo_failure(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
         with (

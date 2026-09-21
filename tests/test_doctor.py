@@ -92,6 +92,43 @@ def test_doctor_marks_source_terminal_failure_unready(tmp_path: Path):
     assert report.components["voice_memos"].reason == "terminal_failure"
 
 
+def test_doctor_reports_source_coverage_gap_without_private_content(tmp_path: Path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["voice_memos"] = {
+        **probes["voice_memos"],
+        "voice_memo_source_records": 315,
+        "voice_memo_ledger_records": 143,
+        "voice_memo_coverage_gap": 172,
+    }
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+
+    voice = report.components["voice_memos"]
+    assert voice.reason == "source_coverage_gap"
+    assert voice.details["voice_memo_source_records"] == 315
+    assert voice.details["voice_memo_ledger_records"] == 143
+    assert voice.details["voice_memo_coverage_gap"] == 172
+    rendered = json.dumps(voice.details, sort_keys=True)
+    assert "transcript" not in rendered
+    assert "/Users/" not in rendered
+
+
+def test_doctor_does_not_add_coverage_reason_when_gap_is_zero(tmp_path: Path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["voice_memos"] = {
+        **probes["voice_memos"],
+        "voice_memo_source_records": 315,
+        "voice_memo_ledger_records": 315,
+        "voice_memo_coverage_gap": 0,
+    }
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+
+    assert report.components["voice_memos"].reason == "ok"
+
+
 def test_shared_whisper_probe_is_secret_free_and_drops_worker_pid(monkeypatch, tmp_path):
     import doctor
 
