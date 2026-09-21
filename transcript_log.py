@@ -170,6 +170,8 @@ def init_db() -> None:
                 ingest_state    TEXT,
                 routing_result  TEXT,
                 routing_progress TEXT,
+                routing_suppressed INTEGER NOT NULL DEFAULT 0,
+                routing_suppression_reason TEXT,
                 error_message   TEXT,
                 recorded_at     TEXT,
                 discovered_at   TEXT,
@@ -1086,6 +1088,13 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "duration_seconds": "ALTER TABLE transcripts ADD COLUMN duration_seconds REAL",
         "ingest_state": "ALTER TABLE transcripts ADD COLUMN ingest_state TEXT",
         "routing_progress": "ALTER TABLE transcripts ADD COLUMN routing_progress TEXT",
+        "routing_suppressed": (
+            "ALTER TABLE transcripts ADD COLUMN routing_suppressed "
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "routing_suppression_reason": (
+            "ALTER TABLE transcripts ADD COLUMN routing_suppression_reason TEXT"
+        ),
         "recorded_at": "ALTER TABLE transcripts ADD COLUMN recorded_at TEXT",
         "discovered_at": "ALTER TABLE transcripts ADD COLUMN discovered_at TEXT",
         "file_seen_at": "ALTER TABLE transcripts ADD COLUMN file_seen_at TEXT",
@@ -1753,8 +1762,13 @@ def _queue_quality_failure_delivery(
     content_hash: str,
     quality_status: str,
     quality_detail: str | None,
+    enqueue_quality_failure: bool,
 ) -> None:
-    if quality_status != "needs_review" or not quality_detail:
+    if (
+        not enqueue_quality_failure
+        or quality_status != "needs_review"
+        or not quality_detail
+    ):
         return
     safe_detail = _safe_quality_receipt_detail(quality_detail)
     message_text = (
@@ -1865,6 +1879,9 @@ def _insert_transcript_transaction(
     quality_detail: str | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
+    enqueue_quality_failure: bool = True,
+    routing_suppressed: bool = False,
+    routing_suppression_reason: str | None = None,
     archive_staged: Any | None = None,
     archive_metadata: dict[str, Any] | None = None,
     archive_unavailable_reason: str | None = None,
@@ -1895,9 +1912,10 @@ def _insert_transcript_transaction(
                    duration_seconds, ingest_state, discovered_at, file_seen_at,
                    transcription_started_at, transcription_completed_at, error_message,
                    recorded_at, quality_status, quality_detail, transcript_sha256,
+                   routing_suppressed, routing_suppression_reason,
                    maya_delivery_status, maya_delivery_eligible
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 content_hash,
                 source,
@@ -1914,6 +1932,8 @@ def _insert_transcript_transaction(
                 quality_status,
                 quality_detail,
                 transcript_sha256,
+                int(routing_suppressed),
+                routing_suppression_reason,
                 maya_delivery_status,
                 1 if maya_eligible else 0,
             ),
@@ -1948,6 +1968,7 @@ def _insert_transcript_transaction(
                 content_hash=content_hash,
                 quality_status=quality_status,
                 quality_detail=quality_detail,
+                enqueue_quality_failure=enqueue_quality_failure,
             )
             conn.commit()
             log.debug(
@@ -2009,6 +2030,9 @@ def insert_transcript(
     quality_detail: str | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
+    enqueue_quality_failure: bool = True,
+    routing_suppressed: bool = False,
+    routing_suppression_reason: str | None = None,
     archive_staged: Any | None = None,
     archive_metadata: dict[str, Any] | None = None,
     archive_unavailable_reason: str | None = None,
@@ -2031,6 +2055,9 @@ def insert_transcript(
         quality_detail=quality_detail,
         maya_delivery_eligible=maya_delivery_eligible,
         enqueue_slack=enqueue_slack,
+        enqueue_quality_failure=enqueue_quality_failure,
+        routing_suppressed=routing_suppressed,
+        routing_suppression_reason=routing_suppression_reason,
         archive_staged=archive_staged,
         archive_metadata=archive_metadata,
         archive_unavailable_reason=archive_unavailable_reason,
@@ -5282,6 +5309,7 @@ def get_pending(limit: int = 20) -> list[dict]:
                FROM transcripts
                WHERE status IN ('pending', 'failed')
                  AND COALESCE(ingest_state, '') != 'needs_review'
+                 AND COALESCE(routing_suppressed, 0) = 0
                ORDER BY created_at ASC
                LIMIT ?""",
             (limit,),
@@ -6381,6 +6409,75 @@ def advance_source_watermark(source: str, discovered_id: int) -> bool:
     except Exception as e:
         log.error("Failed to advance source watermark source=%s: %s", source, e)
         return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_voice_memo_recording_pks() -> set[int]:
+    """Return all source primary keys represented in the local ledger."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT recording_pk FROM voice_memo_ingest ORDER BY recording_pk"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+    except Exception as e:
+        log.error(
+            "Failed to fetch Voice Memo source coverage: %s",
+            _safe_exception_class(e),
+        )
+        return set()
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_voice_memo_coverage() -> dict[str, int]:
+    """Return bounded ledger counts without reading labels, paths, or bodies."""
+    coverage = {
+        "ledger_count": 0,
+        "linked_count": 0,
+        "unlinked_count": 0,
+        "retryable_count": 0,
+        "terminal_count": 0,
+        "local_only_count": 0,
+    }
+    conn = None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS ledger_count,
+                SUM(CASE WHEN transcript_row_id IS NOT NULL THEN 1 ELSE 0 END)
+                    AS linked_count,
+                SUM(CASE WHEN transcript_row_id IS NULL THEN 1 ELSE 0 END)
+                    AS unlinked_count,
+                SUM(CASE WHEN retryable = 1 THEN 1 ELSE 0 END)
+                    AS retryable_count,
+                SUM(CASE WHEN terminal_at IS NOT NULL THEN 1 ELSE 0 END)
+                    AS terminal_count,
+                COUNT(DISTINCT CASE
+                    WHEN transcripts.routing_suppressed = 1
+                    THEN voice_memo_ingest.recording_pk
+                END) AS local_only_count
+            FROM voice_memo_ingest
+            LEFT JOIN transcripts
+              ON transcripts.id = voice_memo_ingest.transcript_row_id
+            """
+        ).fetchone()
+        if row is not None:
+            for key in coverage:
+                coverage[key] = int(row[key] or 0)
+        return coverage
+    except Exception as e:
+        log.error(
+            "Failed to fetch Voice Memo coverage counts: %s",
+            _safe_exception_class(e),
+        )
+        return coverage
     finally:
         if conn:
             conn.close()

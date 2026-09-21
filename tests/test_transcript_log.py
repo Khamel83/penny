@@ -3680,6 +3680,74 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["latest_recording_pk"], 101)
         self.assertEqual(health["awaiting_file_count"], 0)
 
+    def test_local_only_transcript_is_not_returned_as_pending(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="local-only-hash",
+            source="iCloud",
+            transcript="historical text",
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=False,
+            routing_suppressed=True,
+            routing_suppression_reason="historical_local_only",
+        )
+
+        self.assertIsNotNone(row_id)
+        self.assertEqual(transcript_log.get_pending(), [])
+        self.assertEqual(transcript_log.get_pending_slack_deliveries(), [])
+        row = transcript_log.get_transcript(int(row_id))
+        self.assertEqual(row["routing_suppressed"], 1)
+        self.assertEqual(
+            row["routing_suppression_reason"], "historical_local_only"
+        )
+
+    def test_voice_memo_coverage_counts_source_rows_and_states(self) -> None:
+        transcript_log.upsert_voice_memo_recording(
+            201,
+            label="linked",
+            raw_path="201.m4a",
+            duration_seconds=1.0,
+        )
+        transcript_log.upsert_voice_memo_recording(
+            202,
+            label="unlinked",
+            raw_path="202.m4a",
+            duration_seconds=1.0,
+        )
+        row_id = transcript_log.insert_transcript(
+            content_hash="coverage-linked-hash",
+            source="iCloud",
+            transcript="linked text",
+            ingest_state="transcribed",
+            quality_status="passed",
+            enqueue_slack=False,
+            routing_suppressed=True,
+            routing_suppression_reason="historical_local_only",
+        )
+        self.assertTrue(
+            transcript_log.link_voice_memo_transcript(
+                201,
+                transcript_row_id=int(row_id),
+                content_hash="coverage-linked-hash",
+                audio_path="201.m4a",
+            )
+        )
+
+        self.assertEqual(
+            transcript_log.get_voice_memo_recording_pks(), {201, 202}
+        )
+        self.assertEqual(
+            transcript_log.get_voice_memo_coverage(),
+            {
+                "ledger_count": 2,
+                "linked_count": 1,
+                "unlinked_count": 1,
+                "retryable_count": 1,
+                "terminal_count": 0,
+                "local_only_count": 1,
+            },
+        )
+
     def test_voice_memo_link_can_atomically_persist_terminal_state(self) -> None:
         transcript_log.upsert_voice_memo_recording(
             111,

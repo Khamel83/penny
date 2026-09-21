@@ -77,7 +77,7 @@ Expected: failure because the migration columns, keyword arguments, and coverage
 
 - [ ] **Step 3: Implement the additive schema and query changes**
 
-Add the two columns to the initial `transcripts` table and `_ensure_transcript_columns`. Thread the values through `_insert_transcript_transaction`, `insert_transcript_result`, and the compatibility `insert_transcript` wrapper. Gate `_queue_quality_failure_delivery` behind the same `enqueue_slack` policy so local-only quality failures cannot create a Slack warning. Change `get_pending` to include only rows where `COALESCE(routing_suppressed, 0) = 0`.
+Add the two columns to the initial `transcripts` table and `_ensure_transcript_columns`. Thread the values through `_insert_transcript_transaction`, `insert_transcript_result`, and the compatibility `insert_transcript` wrapper. Add a separate `enqueue_quality_failure` flag, defaulting to `True` so the existing `enqueue_slack=False` contract remains unchanged; set it to `False` only for local-only historical processing. Change `get_pending` to include only rows where `COALESCE(routing_suppressed, 0) = 0`.
 
 Add metadata-only queries with these exact shapes:
 
@@ -377,4 +377,3 @@ git log -1 --oneline
 ```
 
 Report the exact branch SHA, test/trust results, source-to-ledger coverage, transcript/quality outcomes, archive receipt state, runtime state, and downstream state independently. Do not claim complete delivery unless a provider receipt and downstream effect are separately proven.
-
