@@ -46,11 +46,14 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-- Source commit `c79935d879ce80ca64afba82b05e712bd5f3546b` merged remote-tracking branch 'origin/main'.
-- Source commit `65960d881294f9cfb36c7f64d15d207ab30c3b70` recorded shared Whisper timestamp repair following `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`, which disabled shared-Whisper word timestamps by default while preserving explicit `word_timestamps=true`.
-- Active Atlas/MinusPod shared-Whisper cutover is synchronized with the Atlas execution authority (`/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`) and locally integrated on `main` at `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`.
-- Shared service verified on port 10311 with MagicDNS health, single-worker isolation, pinned model identity, 33.3M idle physical memory footprint, and HTTP 200 canary verification.
-- Atlas overlay `91ce1f08` deployed in Homelab image `2.96.24` (failing closed on chunk failures); post-cutover MinusPod episode durable finalization observed at `2026-09-18T03:52:05Z`.
-- Focused shared-Whisper suite passed (`16 passed`, Ruff clean); Penny full suite retains a pre-existing malformed RFC3339 contract test failure (`TranscriptContractTests.test_checked_maya_schema_uses_full_json_schema_and_format_validation`; 602 passed, 2 skipped, 1 failed).
-- Backlog queue at 2026-09-18T19:31 PDT had 55 completed, 22 pending, 1 processing; rollback artifacts retained ready while production owner remains undisturbed.
+- `649e7b6` launchd: give the shared Whisper service the same file limit as the other services (#48)
+- `c7ac3ac` backup.py: fix backslash-inside-f-string syntax error for pre-3.12 compatibility (#47)
+- `7d31513` Tests: remove temp folders created by tests (#45)
+- `65960d8` docs: record shared Whisper timestamp repair
+- `f6e531d` fix: disable shared Whisper word timestamps by default (word_timestamps=true still supported)
+- `8e53c10` fix: keep tiny Wyoming out of Whisper doctor blocker
+- `cea41ff` fix: filter shared Whisper worker options
+- `d0afcfc` fix: ignore tiny Wyoming in Whisper owner guard
+- `33a4843` feat: add shared killable Whisper service
+- `525456f` feat: define shared Whisper protocol
 <!-- janitor:end:recent -->
