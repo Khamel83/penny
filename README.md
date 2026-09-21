@@ -101,6 +101,8 @@ by boundary. The relevant names are `PENNY_INGEST_TOKEN` for upload/ingest,
 `PENNY_SLACK_BOT_TOKEN` for the Slack outbox, and
 `MAYA_INGEST_TOKEN`/`MAYA_TRANSCRIPT_URL` for Maya v2. The callback/Hermes
 Values must never be committed, printed, or copied into Doctor output.
+The watcher and `com.penny.shared-whisper` launchd services must receive the
+same runtime-only `PENNY_SHARED_WHISPER_TOKEN`.
 Tracked/runtime webhook
 templates must converge to loopback or an explicitly protected non-loopback
 policy, and Doctor fails readiness for an unprotected bind.

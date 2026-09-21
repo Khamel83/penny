@@ -22,6 +22,9 @@
         <string>1</string>
         <key>PENNY_WHISPER_MODEL_PATH</key>
         <string>/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb</string>
+        <!-- Must match PENNY_SHARED_WHISPER_TOKEN in com.penny.shared-whisper. -->
+        <key>PENNY_SHARED_WHISPER_TOKEN</key>
+        <string>YOUR_SHARED_WHISPER_TOKEN_HERE</string>
         <key>PENNY_TRANSCRIPT_DB</key>
         <string>/Users/macmini/.penny/transcripts.db</string>
         <key>PENNY_ARCHIVE_OBJECT_ROOT</key>

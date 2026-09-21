@@ -159,6 +159,15 @@ class ReliabilityContractTests(unittest.TestCase):
         environment = config["EnvironmentVariables"]
         self.assertEqual(environment["PENNY_SLACK_CHANNEL_ID"], "C0BKS0QT7FU")
 
+    def test_watcher_template_declares_shared_whisper_token(self) -> None:
+        template_path = ROOT / "launchd" / "com.penny.watcher.plist.template"
+        config = plistlib.loads(template_path.read_bytes())
+        environment = config["EnvironmentVariables"]
+        self.assertEqual(
+            environment["PENNY_SHARED_WHISPER_TOKEN"],
+            "YOUR_SHARED_WHISPER_TOKEN_HERE",
+        )
+
     def test_runtime_verification_uses_copy_paste_safe_secret_predicates(self) -> None:
         reliability = (ROOT / "docs" / "reliability.md").read_text(encoding="utf-8")
         self.assertIn("Penny Archive", reliability)
