@@ -21,6 +21,31 @@ from scripts.backfill_voice_memos import compact_ranges, run_backfill  # noqa: E
 
 
 class BackfillVoiceMemoTests(unittest.TestCase):
+    def test_linked_migration_placeholder_is_recovered_in_place(self) -> None:
+        audio = self.voice_root / '10.m4a'
+        content_hash = watcher.get_file_hash(audio)
+        row_id = transcript_log.insert_transcript(
+            content_hash=content_hash, source='iCloud',
+            transcript='(migrated — original transcript not preserved)',
+            quality_status='pending', quality_detail=None,
+            enqueue_slack=False,
+        )
+        transcript_log.upsert_voice_memo_recording(10, raw_path='10.m4a', label='old', duration_seconds=1)
+        transcript_log.link_voice_memo_transcript(
+            10, transcript_row_id=row_id, content_hash=content_hash,
+            audio_path=str(audio), routed=True,
+        )
+        with patch.object(watcher, 'transcribe_with_quality', return_value=
+                          TranscriptionResult('Recovered actual words.', QualityResult(True), 1)) as transcribe:
+            report = run_backfill(limit=1)
+            self.assertEqual(transcript_log.get_transcript(row_id)['transcript'], 'Recovered actual words.')
+            transcribe.assert_called_once()
+        self.assertEqual(report['downstream_effect_count'], 0)
+        self.assertEqual(transcript_log.get_transcript(row_id)['routing_suppressed'], 1)
+        with patch.object(watcher, 'transcribe_with_quality') as transcribe:
+            watcher.process_recording(watcher.get_recordings_by_pk([10])[10], local_only=True)
+            transcribe.assert_not_called()
+
     def setUp(self) -> None:
         self.db_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.db_dir, ignore_errors=True)

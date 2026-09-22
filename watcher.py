@@ -886,6 +886,25 @@ def _process_audio_file(
         return True
 
     existing = get_transcript_by_hash(file_hash)
+    if existing is not None and existing.get('transcript') == '(migrated — original transcript not preserved)' and local_only:
+        from transcript_log import recover_migrated_transcript
+
+        transcription = transcribe_with_quality(staged.path, model=cfg.voice_memos.whisper_model_path)
+        quality = 'passed' if transcription.quality.passed else 'needs_review'
+        row_id = int(existing['id'])
+        if not recover_migrated_transcript(
+            row_id, text=transcription.text, quality_status=quality,
+            quality_detail=transcription.quality_detail, staged=staged,
+            metadata=metadata(quality, backend='mlx-whisper', model=cfg.voice_memos.whisper_model),
+        ):
+            return False
+        if recording_pk is not None:
+            return link_voice_memo_transcript(
+                recording_pk, transcript_row_id=row_id, content_hash=file_hash,
+                audio_path=str(audio_path),
+                terminal_state=None if quality == 'passed' else 'needs_review',
+            )
+        return True
     if existing is not None:
         log.info("Voice Memo already logged (PK=%s)", recording_pk)
         row_id = int(existing["id"])

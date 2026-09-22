@@ -64,6 +64,23 @@ does not prove that a plist is loaded, approved, or running. The launchd
 
 ## Controlled deployment
 
+After merging and pushing `main`, run from the main checkout:
+
+```bash
+venv/bin/python scripts/deploy_penny.py --apply
+venv/bin/python scripts/deploy_penny.py
+```
+
+The first command requires a clean checkout matching remote `main`, runs the
+trust check, creates and verifies a backup, preserves private copies of installed
+plists, stamps the pushed revision, reloads the five Penny labels, and checks
+the loaded revisions. It refuses to restart shared Whisper during an active
+request. Runtime credentials remain in installed plists and never appear
+in output. A partial failure is reported as failed; rerun after resolving
+the reported condition. The second command detects revision drift without
+restarting services. Activation still requires the Doctor and ledger acceptance
+checks below. A Git push alone is not deployment.
+
 Run local checks first:
 
 ```bash

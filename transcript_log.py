@@ -4741,6 +4741,61 @@ def _queue_archive_delivery_conn(
         )
 
 
+def recover_migrated_transcript(
+    transcript_id: int, *, text: str, quality_status: str,
+    quality_detail: str | None, staged: Any, metadata: dict[str, Any],
+) -> bool:
+    """Replace only a migration sentinel, atomically retaining its canonical ID.
+
+    Historical recovery never queues external effects. The prior archive
+    generation remains on disk while a new manifest generation is published.
+    """
+    if quality_status not in {"passed", "needs_review"}:
+        raise ValueError("invalid_recovery_quality")
+    conn = _get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            """UPDATE transcripts SET transcript = ?, transcript_sha256 = ?,
+               quality_status = ?, quality_detail = ?, audio_path = ?,
+               status = 'processed', ingest_state = ?,
+               transcription_completed_at = datetime('now'),
+               routing_suppressed = 1,
+               routing_suppression_reason = 'historical_local_only',
+               maya_delivery_eligible = 0, maya_delivery_status = 'ineligible',
+               updated_at = datetime('now')
+               WHERE id = ? AND (quality_detail IS NULL OR quality_detail = 'migrated_placeholder')
+               AND transcript = ?""",
+            (text, hashlib.sha256(text.encode('utf-8')).hexdigest(),
+             quality_status, _bounded_quality_detail(quality_detail), str(staged.path),
+             'transcribed' if quality_status == 'passed' else 'needs_review',
+             transcript_id, '(migrated — original transcript not preserved)'),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return False
+        _queue_archive_delivery_conn(conn, transcript_id, staged, metadata)
+        conn.execute(
+            """UPDATE archive_deliveries SET publication_generation = publication_generation + 1,
+               status = 'pending', validation_status = 'pending',
+               validation_error_code = NULL, rebuild_needed = 0,
+               next_attempt_at = NULL, updated_at = datetime('now')
+               WHERE transcript_row_id = ?""", (transcript_id,),
+        )
+        conn.execute(
+            """UPDATE voice_memo_ingest SET routing_suppressed = 1,
+               routing_suppression_reason = 'historical_local_only'
+               WHERE transcript_row_id = ?""", (transcript_id,),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def queue_archive_delivery(
     transcript_id: int,
     staged: Any,

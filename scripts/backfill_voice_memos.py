@@ -9,6 +9,7 @@ import logging
 import sqlite3
 import sys
 from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,17 @@ def _metadata_upsert(recording: dict[str, Any]) -> bool:
     )
 
 
+def _placeholder_source_pks() -> set[int]:
+    with closing(transcript_log._get_conn()) as conn:
+        return {int(row[0]) for row in conn.execute(
+            """SELECT v.recording_pk FROM voice_memo_ingest v
+               JOIN transcripts t ON t.id = v.transcript_row_id
+               WHERE t.transcript = ?
+               AND v.status != 'skipped_too_large'""",
+            ('(migrated — original transcript not preserved)',),
+        )}
+
+
 def run_backfill(
     limit: int | None = DEFAULT_LIMIT,
     dry_run: bool = False,
@@ -125,11 +137,13 @@ def run_backfill(
     ledger_pks = transcript_log.get_voice_memo_recording_pks()
     initial_unindexed = source_pks - ledger_pks
     retryable_pks = _retryable_source_pks(source_pks)
+    placeholder_pks = _placeholder_source_pks()
     candidates = [
         row
         for row in source_rows
         if int(row["Z_PK"]) in initial_unindexed
         or int(row["Z_PK"]) in retryable_pks
+        or int(row["Z_PK"]) in placeholder_pks
     ]
     if limit is not None:
         candidates = candidates[:limit]
@@ -173,6 +187,7 @@ def run_backfill(
         "archive_counts": archive_counts,
         "downstream_effect_count": _downstream_effect_count(),
         "dry_run": dry_run,
+        "placeholder_source_count": len(_placeholder_source_pks() & source_pks),
     }
     return report
 

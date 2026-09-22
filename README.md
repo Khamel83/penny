@@ -110,6 +110,13 @@ gap proves current source coverage only; each row still needs a linked
 transcript or an explicit unavailable, retryable, needs-review, or terminal
 state. `--limit 0` removes the batch limit after the dry run is understood.
 
+Migration placeholders are not transcripts. The backfill also revisits linked
+placeholder rows, recovers their words from available audio into the same
+canonical ID, and publishes a new archive generation. Reports include
+`placeholder_source_count`; source coverage alone does not establish that
+transcription is complete. Oversized recordings retain their explicit skipped
+state under the configured size limit.
+
 The historical pass is local-only: it uses Penny's offline local transcription
 backend, does not call external/cloud providers, does not send
 Slack/Maya/Apple/Notes/Reminders/Hermes/GitHub effects, and does not run outbox
