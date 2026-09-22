@@ -114,6 +114,15 @@ def test_doctor_reports_source_coverage_gap_without_private_content(tmp_path: Pa
     assert "/Users/" not in rendered
 
 
+def test_historical_absence_is_visible_without_reporting_capture_down(tmp_path: Path):
+    from doctor import run_doctor
+    probes = _ready_probes(tmp_path)
+    probes['voice_memos']['unavailable_count'] = 1
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.components['voice_memos'].state == 'degraded'
+    assert report.components['voice_memos'].reason == 'historical_unavailable'
+
+
 def test_doctor_does_not_add_coverage_reason_when_gap_is_zero(tmp_path: Path):
     from doctor import run_doctor
 

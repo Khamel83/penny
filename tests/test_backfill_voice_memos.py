@@ -21,6 +21,44 @@ from scripts.backfill_voice_memos import compact_ranges, run_backfill  # noqa: E
 
 
 class BackfillVoiceMemoTests(unittest.TestCase):
+    def test_existing_alias_containing_label_is_not_classified_as_absent(self):
+        from scripts.reconcile_absent_voice_memos import reconcile
+        transcript_log.upsert_voice_memo_recording(9, raw_path='absent.m4a', label='Meeting', duration_seconds=1)
+        conn = transcript_log._get_conn()
+        conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='file_not_downloaded' WHERE recording_pk=9")
+        conn.commit()
+        conn.close()
+        (self.voice_root / '20200101-Meeting.m4a').write_bytes(b'available')
+        self.assertEqual(reconcile(apply=True)['classified_count'], 0)
+
+    def test_unreadable_alias_inventory_is_not_classified_as_absent(self):
+        from scripts.reconcile_absent_voice_memos import reconcile
+        transcript_log.upsert_voice_memo_recording(9, raw_path='absent.m4a', label='2019-01-01', duration_seconds=1)
+        conn = transcript_log._get_conn()
+        conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='file_not_downloaded' WHERE recording_pk=9")
+        conn.commit()
+        with patch('scripts.reconcile_absent_voice_memos.os.scandir', side_effect=PermissionError):
+            with self.assertRaises(PermissionError):
+                reconcile(apply=True)
+        self.assertEqual(conn.execute('SELECT status FROM voice_memo_ingest WHERE recording_pk=9').fetchone()[0], 'failed_terminal')
+        conn.close()
+
+    def test_only_absent_missing_file_failure_becomes_unavailable(self):
+        from scripts.reconcile_absent_voice_memos import reconcile
+        for pk, path in ((8, '10.m4a'), (9, 'absent.m4a'), (10, 'missing.m4a')):
+            transcript_log.upsert_voice_memo_recording(pk, raw_path=path, label='', duration_seconds=1)
+        conn = transcript_log._get_conn()
+        conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='file_not_downloaded', terminal_at='2026-01-01', attempt_count=8 WHERE recording_pk IN (8,9,10)")
+        conn.commit()
+        conn.close()
+        report = reconcile(apply=True)
+        self.assertEqual(report['absent_recording_pks'], [9])
+        self.assertEqual(report['classified_count'], 1)
+        conn = transcript_log._get_conn()
+        row = conn.execute('SELECT status,error_message,attempt_count,terminal_at FROM voice_memo_ingest WHERE recording_pk=9').fetchone()
+        conn.close()
+        self.assertEqual(tuple(row), ('unavailable','file_not_downloaded',8,'2026-01-01'))
+
     def test_source_failure_is_not_reported_as_an_empty_completed_scope(self):
         saved = self.source_db.with_suffix('.saved')
         self.source_db.rename(saved)

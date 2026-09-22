@@ -70,6 +70,7 @@ _SAFE_REASON_VALUES = frozenset(
         "source_coverage_gap",
         "source_stale",
         "source_unavailable",
+        "historical_unavailable",
         "terminal_failure",
         "timestamp_invalid",
         "uncertain_effect",
@@ -113,6 +114,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "source_health_age_seconds",
         "stale_in_flight_count",
         "terminal_failure_count",
+        "unavailable_count",
         "uncertain_count",
         "verified",
         "watcher_ok",
@@ -443,6 +445,7 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
             "query_ok",
             "health_error",
             "terminal_failure_count",
+            "unavailable_count",
             "failed_count",
             "retry_due_count",
             "completion_pending_count",
@@ -1133,6 +1136,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "degraded", "retryable_failure"
         if int(values.get("retry_due_count", 0) or 0) > 0 or int(values.get("awaiting_file_count", 0) or 0) > 0:
             return "degraded", "backlog"
+        if int(values.get('unavailable_count', 0) or 0) > 0:
+            return 'degraded', 'historical_unavailable'
         return "ready", "ok"
     if name == "archive":
         if values.get("health_error", 0):

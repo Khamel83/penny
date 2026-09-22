@@ -6463,6 +6463,27 @@ def mark_voice_memo_retryable(
             conn.close()
 
 
+def mark_voice_memo_source_absent(recording_pk: int) -> bool:
+    """Record a verified absent historical source without erasing its history.
+
+    Caller must prove absence from a successful source inventory and all known
+    audio paths. Only unlinked, terminal missing-file failures can transition.
+    """
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            """UPDATE voice_memo_ingest SET status = 'unavailable',
+               retryable = 0, next_attempt_at = NULL, updated_at = datetime('now')
+               WHERE recording_pk = ? AND transcript_row_id IS NULL
+               AND status = 'failed_terminal' AND error_message = 'file_not_downloaded'""",
+            (recording_pk,),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
 def mark_voice_memo_terminal(recording_pk: int, error_code: str) -> bool:
     """Record a linked non-retryable source outcome without retaining unsafe detail."""
     conn = None
@@ -6691,6 +6712,7 @@ def get_voice_memo_health() -> dict[str, Any]:
         "completion_pending_count": 0,
         "terminal_count": 0,
         "terminal_failure_count": 0,
+        "unavailable_count": 0,
         "max_attempt_count": 0,
         "source_watermark": 0,
     }
@@ -6739,6 +6761,9 @@ def get_voice_memo_health() -> dict[str, Any]:
             "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'failed_terminal'"
         ).fetchone()
         health["terminal_failure_count"] = int(terminal_failures[0] or 0)
+        health['unavailable_count'] = int(conn.execute(
+            "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'unavailable'"
+        ).fetchone()[0])
         max_attempts = conn.execute(
             "SELECT COUNT(*) FROM voice_memo_ingest WHERE attempt_count >= ?",
             (VOICE_MEMO_MAX_ATTEMPTS,),

@@ -708,6 +708,11 @@ def scan_for_unprocessed_files() -> List[tuple[Path, str]]:
 # ===== Processing =====
 
 
+def _recording_alias_matches(name: str, label: str) -> bool:
+    prefix = str(label)[:10].replace('-', '')
+    return bool(label and (label in name or (prefix and name.startswith(prefix))))
+
+
 def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
     roots = _voice_memo_roots()
     if roots is None:
@@ -739,12 +744,9 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
             log.warning("Voice Memo source file unavailable or unsafe")
 
     if label:
-        normalized_prefix = str(label)[:10].replace("-", "")
         for candidate in voice_base.glob("*.m4a"):
             name = candidate.name
-            if label in name or (
-                normalized_prefix and name.startswith(normalized_prefix)
-            ):
+            if _recording_alias_matches(name, label):
                 safe = _safe_voice_memo_candidate(
                     candidate, voice_base=voice_base, voice_root=voice_root
                 )

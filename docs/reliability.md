@@ -42,6 +42,15 @@ failures use quarantine, ordinary failures remain `failed`, and ambiguous
 timeouts remain `uncertain`. Maya terminal delivery uses `dead_letter`.
 Retryable failures use bounded backoff and a terminal attempt/age limit.
 
+An operator may classify an old missing-file failure as `unavailable` with
+`scripts/reconcile_absent_voice_memos.py --apply` after reviewing its default
+dry run. The command requires a successful complete Apple inventory, absence
+of that source row, and absence of its known audio paths. It never changes a
+present source or a processing failure. The prior error, attempt count and
+terminal timestamp remain in the ledger. Doctor reports these historical
+absences as degraded with an explicit count; current capture failures remain
+unready.
+
 ## Archive and iCloud mirror
 
 Each audio-bearing canonical row may have one immutable local object and a
