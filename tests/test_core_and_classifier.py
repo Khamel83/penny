@@ -1066,6 +1066,116 @@ class DetectContentTypeTests(unittest.TestCase):
         self.assertNotIn(sentinel, repr(log_mock.mock_calls))
 
 
+class ClassifierStructuredExtractionTests(unittest.TestCase):
+    """Deterministic structured-extraction contract tests (no provider calls)."""
+
+    def test_valid_extraction_converts_to_legacy_shape(self) -> None:
+        result = classifier.normalize_extraction_result({
+            "items": [
+                {
+                    "text": "milk",
+                    "category": "groceries",
+                    "source_span": {"start_char": 4, "end_char": 8},
+                },
+                {"text": "call dentist", "category": "Health"},
+                {"text": "mystery thing", "category": "unknown"},
+            ],
+            "skip": False,
+            "reason": None,
+        })
+        self.assertEqual(result, {
+            "items": [
+                {"item": "milk", "category": "groceries"},
+                {"item": "call dentist", "category": "health"},
+                {"item": "mystery thing", "category": "inbox"},
+            ]
+        })
+        self.assertNotIn("source_span", result)
+        self.assertNotIn("fallback", result)
+
+    def test_skip_result_converts_to_legacy_skip_shape(self) -> None:
+        result = classifier.normalize_extraction_result(
+            {"skip": True, "reason": "journal entry"}
+        )
+        self.assertEqual(result, {"skip": True, "reason": "journal entry"})
+        self.assertNotIn("fallback", result)
+
+    def test_malformed_extraction_returns_none(self) -> None:
+        for malformed in (
+            {},
+            {"items": "not a list", "skip": False, "reason": None},
+            {"items": [{"text": "milk"}], "skip": False, "reason": None},
+            {
+                "items": [
+                    {"text": "milk", "category": "groceries"},
+                    {"text": "call dentist"},
+                ],
+                "skip": False,
+                "reason": None,
+            },
+            {
+                "items": [
+                    {
+                        "text": "milk",
+                        "category": "groceries",
+                        "source_span": {"start_char": 9, "end_char": 4},
+                    }
+                ],
+                "skip": False,
+                "reason": None,
+            },
+            {"items": [{"text": "milk", "category": "groceries"}], "skip": True, "reason": "mixed"},
+            {"items": [], "skip": True, "reason": ""},
+            {"items": [], "skip": "true", "reason": "journal"},
+            None,
+            [],
+        ):
+            self.assertIsNone(classifier.normalize_extraction_result(malformed))
+
+    def test_classify_structured_result_uses_legacy_shape(self) -> None:
+        with patch.object(classifier.requests, "post") as post_mock:
+            post_mock.return_value.status_code = 200
+            post_mock.return_value.raise_for_status = lambda: None
+            post_mock.return_value.json.return_value = {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "items": [{
+                                "text": "milk",
+                                "category": "groceries",
+                                "source_span": {"start_char": 0, "end_char": 4},
+                            }],
+                            "skip": False,
+                            "reason": None,
+                        })
+                    }
+                }]
+            }
+            result = classifier.classify("buy milk", api_key="key", model="model")
+        self.assertEqual(result, {"items": [{"item": "milk", "category": "groceries"}]})
+
+
+    def test_classify_malformed_result_uses_inbox_fallback(self) -> None:
+        with patch.object(classifier.requests, "post") as post_mock:
+            post_mock.return_value.status_code = 200
+            post_mock.return_value.raise_for_status = lambda: None
+            post_mock.return_value.json.return_value = {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({
+                            "items": [{"text": "milk"}],
+                            "skip": False,
+                            "reason": None,
+                        })
+                    }
+                }]
+            }
+            result = classifier.classify("buy milk", api_key="key", model="model")
+        self.assertEqual(
+            result,
+            {"items": [{"item": "buy milk", "category": "inbox"}], "fallback": True},
+        )
+
 class ClassifierCategoriesTests(unittest.TestCase):
     def test_project_is_a_valid_category(self):
         self.assertIn("project", classifier.CATEGORIES)

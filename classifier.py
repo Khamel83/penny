@@ -4,12 +4,17 @@ LLM-based transcript classifier using OpenRouter.
 
 Extracts actionable items from voice memo transcripts and classifies
 each into a reminder category. Returns structured JSON.
+
+Provider responses are validated against the normalized structured-extraction
+contract in ``normalize_extraction_result()`` and converted exactly to the
+legacy caller shape; invalid/incomplete extraction takes the Inbox fallback.
 """
 
-import logging
 import json
+import logging
 from typing import Any, Dict
 
+from jsonschema import Draft202012Validator
 import requests
 
 log = logging.getLogger(__name__)
@@ -17,6 +22,66 @@ log = logging.getLogger(__name__)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox", "project"]
+
+STRUCTURED_EXTRACTION_SCHEMA: Dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/actionable_item"},
+        },
+        "skip": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+    },
+    "required": ["skip", "reason"],
+    "allOf": [
+        {
+            "if": {"properties": {"skip": {"const": False}}},
+            "then": {"required": ["items"], "properties": {"items": {"minItems": 1}}},
+        },
+        {
+            "if": {"properties": {"skip": {"const": True}}},
+            "then": {"properties": {"items": {"maxItems": 0}}},
+        },
+    ],
+    "$defs": {
+        "actionable_item": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "text": {"type": "string", "minLength": 1},
+                "category": {"type": "string", "minLength": 1},
+                "source_span": {
+                    "anyOf": [
+                        {"type": "null"},
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "start_char": {"type": "integer", "minimum": 0},
+                                "end_char": {"type": "integer", "minimum": 0},
+                            },
+                            "required": ["start_char", "end_char"],
+                        },
+                    ]
+                },
+            },
+            "required": ["text", "category"],
+        }
+    },
+}
+_STRUCTURED_EXTRACTION_VALIDATOR = Draft202012Validator(
+    STRUCTURED_EXTRACTION_SCHEMA
+)
+
+EXTRACTION_ITEMS_FIELD = "items"
+EXTRACTION_TEXT_FIELD = "text"
+EXTRACTION_CATEGORY_FIELD = "category"
+EXTRACTION_SKIP_FIELD = "skip"
+EXTRACTION_REASON_FIELD = "reason"
+EXTRACTION_SOURCE_SPAN_FIELD = "source_span"
 
 
 def _safe_exception_class(exc: BaseException) -> str:
@@ -26,6 +91,7 @@ def _safe_exception_class(exc: BaseException) -> str:
     ):
         return name
     return "Exception"
+
 
 CONTENT_TYPE_PROMPT = """You are analyzing a voice memo or text note. Classify it into exactly one type:
 
@@ -42,6 +108,19 @@ Respond with ONLY the type name, nothing else."""
 
 SYSTEM_PROMPT = """You are a personal assistant that extracts actionable reminders from voice memo transcripts.
 
+Return exactly one JSON object matching this contract:
+{
+  "items": [
+    {
+      "text": "short actionable item",
+      "category": "one category name",
+      "source_span": {"start_char": 0, "end_char": 4}
+    }
+  ],
+  "skip": false,
+  "reason": null
+}
+
 Categories (pick exactly one per item):
 - groceries: items to buy at the grocery store or food shopping
 - errands: tasks requiring leaving home (appointments, store visits, pickups, drop-offs)
@@ -53,17 +132,13 @@ Categories (pick exactly one per item):
 - inbox: anything actionable that doesn't clearly fit the above categories
 
 Rules:
-1. If the transcript has NO actionable items (journal entry, note to someone, music idea, random thought, etc.) respond with: {"skip": true, "reason": "<brief reason>"}
-2. Extract ALL distinct actionable items, even if there are many in one memo
-3. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
-4. When in doubt about category, use inbox
-5. Respond ONLY with valid JSON — no explanation, no markdown fences
-
-Output for reminders:
-{"items": [{"item": "milk", "category": "groceries"}, {"item": "call dentist", "category": "health"}]}
-
-Output for non-reminders:
-{"skip": true, "reason": "journal entry about the day"}"""
+1. If the transcript has NO actionable items (journal entry, note to someone, music idea, random thought, etc.), return {"items": [], "skip": true, "reason": "<brief reason>"}.
+2. If there are actionable items, set "skip" to false and "reason" to null.
+3. Extract ALL distinct actionable items, even if there are many in one memo.
+4. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
+5. Include "source_span" only when exact character offsets are known; use zero-based, half-open transcript character offsets.
+6. When in doubt about category, use inbox.
+7. Respond ONLY with valid JSON — no explanation, no markdown fences."""
 
 
 def _build_context(transcript: str, duration_seconds: float | None = None) -> str:
@@ -77,6 +152,64 @@ def _build_context(transcript: str, duration_seconds: float | None = None) -> st
         if metadata_blob
         else f"Transcript: {transcript}"
     )
+
+
+def validate_structured_extraction(result: Any) -> bool:
+    """Return whether ``result`` satisfies the local extraction contract."""
+    if not isinstance(result, dict):
+        return False
+    if list(_STRUCTURED_EXTRACTION_VALIDATOR.iter_errors(result)):
+        return False
+
+    skip = result[EXTRACTION_SKIP_FIELD]
+    items = result.get(EXTRACTION_ITEMS_FIELD, [])
+    reason = result[EXTRACTION_REASON_FIELD]
+    if skip:
+        if items or not isinstance(reason, str) or not reason.strip():
+            return False
+    elif not items:
+        return False
+
+    for entry in items:
+        text = entry[EXTRACTION_TEXT_FIELD]
+        category = entry[EXTRACTION_CATEGORY_FIELD]
+        if not text.strip() or not category.strip():
+            return False
+        span = entry.get(EXTRACTION_SOURCE_SPAN_FIELD)
+        if span is not None and span["end_char"] < span["start_char"]:
+            return False
+    return True
+
+
+def normalize_extraction_result(result: Any) -> Dict[str, Any] | None:
+    """
+    Validate and convert a structured extraction to the legacy caller shape.
+
+    The structured contract uses ``text`` and may include a character-level
+    ``source_span``. Existing callers receive only ``item`` and ``category``;
+    grounding metadata never reaches routing or delivery.
+    """
+    if not validate_structured_extraction(result):
+        return None
+
+    if result[EXTRACTION_SKIP_FIELD]:
+        return {
+            "skip": True,
+            "reason": result[EXTRACTION_REASON_FIELD],
+        }
+
+    items = []
+    for entry in result[EXTRACTION_ITEMS_FIELD]:
+        category = entry[EXTRACTION_CATEGORY_FIELD].strip().lower()
+        if category not in CATEGORIES:
+            category = "inbox"
+        items.append(
+            {
+                "item": entry[EXTRACTION_TEXT_FIELD],
+                "category": category,
+            }
+        )
+    return {"items": items}
 
 
 def classify(
@@ -142,19 +275,9 @@ def classify(
 
         result = json.loads(content)
 
-        if "skip" in result:
-            return {"skip": True, "reason": result.get("reason", "not a reminder")}
-
-        if "items" in result and isinstance(result["items"], list):
-            valid = []
-            for item in result["items"]:
-                if isinstance(item, dict) and "item" in item and "category" in item:
-                    cat = item["category"].lower().strip()
-                    if cat not in CATEGORIES:
-                        cat = "inbox"
-                    valid.append({"item": item["item"], "category": cat})
-            if valid:
-                return {"items": valid}
+        normalized = normalize_extraction_result(result)
+        if normalized is not None:
+            return normalized
 
         log.warning("Classifier response rejected code=unexpected_shape")
         return _fallback(transcript)
