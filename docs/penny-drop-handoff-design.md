@@ -1,6 +1,7 @@
 # Penny to Drop production handoff
 
-Status: proposed implementation contract; not deployed.
+Status: implementation installed; capture cutover and historical import held at
+the Maya quiet-storage gate. See `docs/drop-delivery.md` for current evidence.
 
 ## Approved intent
 

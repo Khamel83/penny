@@ -1,5 +1,35 @@
 # Drop delivery operations
 
+## Production status — 2026-09-22
+
+Penny implementation `f915d99` is pushed and installed in all five launch
+agents. Drop's supervised Slack reader is installed. Capture ownership remains
+disabled: existing live memos still use Penny's existing delivery path. No real
+transcripts have been transferred through the new outbox.
+
+Two synthetic artifacts (418 and 364,331 bytes) received intake acceptance,
+matching OCI archive hashes, and Maya source-event receipts. The live checks
+found and fixed the intake's named User-Agent requirement and Slack file
+metadata form encoding. Tests after these changes: Penny 670 passed, 2 skipped;
+Drop 187 Python and 30 Worker tests passed.
+
+**Do not run `--activate` or historical `--apply` yet.** Maya's existing
+`/ingest/drop` classifier treats the metadata-line/text envelope as malformed
+JSON, stores it as `needs_attention` with action route `none`, and queues a
+`maya.notice`. Historical flags suppress the Drop Slack reader, not Maya's
+independent notices. A backlog import would therefore violate the quiet-import
+contract. The approved plan excluded Maya ingestion changes; extend that scope
+before changing its API/runtime. Required behavior is verified envelope-aware,
+store-only ingestion, with no actions or notices, retaining exact original
+bytes and replayable source receipts. Do not strip metadata as a workaround.
+
+Historical inventory: 320 actual-text iCloud records eligible; 167 missing-text
+or error records excluded. This is an inventory, not an import receipt.
+Existing Apple/Maya/source-history readiness exceptions remain separate from
+the new Drop handoff. Synthetic proof is not a newly captured real-memo proof.
+
+## Operation after the production gate
+
 Penny hands one text artifact and allowlisted metadata to the existing Drop
 intake. A matching `stored` receipt ends submission ownership; `retryable=true`
 with `stored` means Drop owns queue reconciliation, not that Penny should resend.
@@ -16,8 +46,9 @@ Do not edit its database fields to perform an improvised rollback.
 `--apply --limit 50` queues a bounded historical batch without sending it.
 `--drain --apply --limit 50` sends queued text through the runtime token.
 `--reconcile --apply` looks for exact archived bytes for uncertain handoffs.
-Run bounded passes until counts reconcile. Historical records always suppress
-Slack notifications and never replay old Apple/Maya/Hermes actions.
+Run bounded passes until counts reconcile. Historical records suppress the
+Drop-owned Slack notification. Maya must first meet the quiet-storage gate
+above; do not assume the historical flag alone prevents its side effects.
 
 Payloads and receipts persist in the canonical SQLite ledger. A send intent is
 committed before network work. Lost/malformed responses and expired claims are
