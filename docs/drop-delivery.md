@@ -9,7 +9,7 @@ Penny's Drop implementation is pushed and installed in all five launch agents.
 Capture ownership is active at canonical ID **755**: future iCloud Voice Memos
 use Drop; older direct-delivery receipts remain intact. Drop's supervised Slack
 and Maya readers are installed. Maya API and scheduler both run pushed commit
-`36eb6b40f49c8468a2c4578238bea405e0a0bd2a` with healthy API/storage readiness.
+`7177ae16b0b0116c4daff0b88f39e521482d07c0` with healthy API/storage/search readiness.
 
 Two synthetic artifacts (418 and 364,331 bytes) received intake acceptance,
 matching OCI archive hashes, and Maya source-event receipts. The live checks
@@ -57,14 +57,35 @@ in isolation. Existing format/schema-drift exceptions are recorded in Maya's
 reactivated to satisfy old tests. Penny's global readiness also retains its
 older terminal-source, Apple quarantine and direct-Maya dead-letter exceptions.
 
-**Separate retrieval limitation:** a broad synthetic `/search` request timed out
-after 30 seconds. Read-only `EXPLAIN` shows a parallel sequential scan that builds
-text vectors over `ingested_files`; live index inventory contains only the primary
-key and channel/Slack-ID/created-time indexes, not a full-text index. Direct
-authenticated file retrieval succeeds. No search/index migration was attempted
-under this narrow store-only ingestion approval. API `/readyz` reports healthy,
-but that does not establish usable broad-search latency. A search performance fix
-is a separate open item, not hidden by the successful ingestion receipts.
+**Approved retrieval follow-up:** the 30-second search timeout came from a missing
+PostgreSQL full-text index. The subsequent Maya repair installs the exact matching
+GIN index concurrently and makes readiness verify its definition and validity.
+The live index is valid; all 20,054 source file records remain intact.
+
+The final read check also exposed an unimplemented durable-object fallback:
+historical search worked, but original-byte downloads could depend on staging
+files. All 320 objects were intact and hash-correct. The bounded reader repair
+follows persisted file/Drop/raw-capture/blob identities and uses the stored object
+reference. Its regression reproduces the failure with staging absent and verifies
+exact returned bytes after the fix. Neither repair adds a reader, changes source
+bytes or permissions, nor sends historical notifications.
+
+The [Maya repair record](https://github.com/Khamel83/maya/blob/main/docs/operations/FILE-SEARCH-INDEX.md)
+separates source tests, index installation and live authenticated verification.
+Confirm both search and original-byte hashes after deployment; an empty query,
+healthy process or successful search alone is insufficient.
+
+Final live follow-up: **320/320** authenticated searches found their expected
+files; **320/320** authenticated original-byte downloads matched receipt hashes.
+All 320 quiet receipts remain intact. Filename-search median was **15 ms**, with
+a **575 ms** maximum; the two synthetic text queries returned in **120 ms** and
+**111 ms**. Both Maya containers and the public endpoint report `7177ae16`.
+Maya's final suite: **4,131 passed, 27 known baseline failures, 48 skipped**;
+87 focused storage/search/ingestion checks passed, with no new full-suite failures.
+Penny's unchanged runtime code passed **674 tests, 2 skips, 53 subtests**.
+Private live proof: `~/.penny/maya-search-verification-2026-09-22.json`.
+This confirms imported transcript access, not recovery of the 167 excluded
+placeholders, upgraded quality labels, or removal of legacy readiness exceptions.
 
 ## Operation after the production gate
 
