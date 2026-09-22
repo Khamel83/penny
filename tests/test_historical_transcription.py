@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from archive import StagedAudio
+from archive import stage_audio
 from historical_transcription import transcribe_historical
 from transcript_quality import QualityResult, TranscriptionResult
 
@@ -10,7 +10,7 @@ from transcript_quality import QualityResult, TranscriptionResult
 def test_long_recovery_resumes_chunks_and_keeps_quality_failure(tmp_path, monkeypatch):
     audio = tmp_path / 'original.m4a'
     audio.write_bytes(b'original')
-    staged = StagedAudio(audio, 'a' * 64, 8, '.m4a')
+    staged = stage_audio(audio, tmp_path / 'objects')
     def decode(args, **kwargs):
         Path(args[-1]).write_bytes(b'w' * 100)
         return SimpleNamespace(returncode=0)
@@ -19,11 +19,13 @@ def test_long_recovery_resumes_chunks_and_keeps_quality_failure(tmp_path, monkey
         TranscriptionResult('first', QualityResult(True), 1),
         TranscriptionResult('second', QualityResult(False), 2),
     ])
-    result = transcribe_historical(staged, duration_seconds=400, model='local', transcribe=transcribe)
+    result = transcribe_historical(staged, duration_seconds=400, model='local', transcribe=transcribe, checkpoint_root=tmp_path / 'recovery')
     assert result.text == 'first\nsecond'
     assert not result.quality.passed
     assert audio.read_bytes() == b'original'
     transcribe.reset_mock()
-    resumed = transcribe_historical(staged, duration_seconds=400, model='local', transcribe=transcribe)
+    resumed = transcribe_historical(staged, duration_seconds=400, model='local', transcribe=transcribe, checkpoint_root=tmp_path / 'recovery')
     assert resumed.text == result.text
     transcribe.assert_not_called()
+    from backup import _archive_objects
+    assert len(_archive_objects(tmp_path / 'objects')) == 1

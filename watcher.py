@@ -893,6 +893,7 @@ def _process_audio_file(
         transcription = transcribe_historical(
             staged, duration_seconds=duration_seconds,
             model=cfg.voice_memos.whisper_model_path, transcribe=transcribe_with_quality,
+            checkpoint_root=Path(cfg.archive.object_root).parent / 'recovery',
         )
         quality = 'passed' if transcription.quality.passed else 'needs_review'
         row_id = int(existing['id'])
@@ -960,6 +961,7 @@ def _process_audio_file(
         transcription = transcribe_historical(
             staged, duration_seconds=duration_seconds,
             model=cfg.voice_memos.whisper_model_path, transcribe=transcribe_with_quality,
+            checkpoint_root=Path(cfg.archive.object_root).parent / 'recovery',
         )
     else:
         transcription = transcribe_with_quality(

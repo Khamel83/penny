@@ -14,7 +14,7 @@ from transcript_quality import QualityResult, TranscriptionResult
 from shared_whisper.protocol import WhisperBusy, WhisperPreempted
 
 
-def transcribe_historical(staged, *, duration_seconds, model, transcribe):
+def transcribe_historical(staged, *, duration_seconds, model, transcribe, checkpoint_root):
     def run(path):
         from config import get_config, WHISPER_MODEL_REVISION
         from shared_whisper.client import SharedWhisperClient
@@ -37,8 +37,8 @@ def transcribe_historical(staged, *, duration_seconds, model, transcribe):
     if not math.isfinite(duration_seconds) or duration_seconds > 86400:
         raise ValueError('historical_duration_out_of_bounds')
     # Staging is immutable and hash-bound; cached chunks never enter routing.
-    cache = staged.path.parent / (staged.audio_sha256 + '.recovery')
-    cache.mkdir(mode=0o700, exist_ok=True)
+    cache = Path(checkpoint_root) / staged.audio_sha256
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
     texts, failures = [], []
     for index in range(math.ceil(duration_seconds / 300)):
         checkpoint = cache / f'{index:05d}.json'

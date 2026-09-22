@@ -41,7 +41,8 @@ def command(args: list[str], *, env=None, allowed=(0,)) -> str:
     result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True,
                             text=True, timeout=300)
     if result.returncode not in allowed:
-        raise DeploymentError('command_failed:' + Path(args[0]).name)
+        step = Path(args[1]).name if len(args) > 1 and args[1].endswith('.py') else Path(args[0]).name
+        raise DeploymentError('command_failed:' + step)
     return result.stdout
 
 
