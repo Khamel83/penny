@@ -46,8 +46,10 @@ passing local test.
 
 - `watcher.py` — Voice Memos compatibility adapter, staging, transcription, and
   durable outbox polling
-- `transcript_log.py` — sole SQLite schema/migration owner and typed state,
-  receipt, retry, archive, Slack, and Maya primitives
+- `workflow_ledger.py` — metadata-only plan identity, stage/step progress,
+  bounded review/fix rounds, and verification records
+- `transcript_log.py` — canonical capture SQLite schema/migration owner and
+  typed state, receipt, retry, archive, Slack, and Maya primitives
 - `archive.py` — complete-copy staging, immutable objects, and manifest-last
   archive publication
 - `backup.py` / `scripts/backup_penny.py` — versioned backup sets and scratch

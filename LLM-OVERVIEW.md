@@ -9,7 +9,10 @@ Maya v2 boundaries.
 
 ## Authority and ownership
 
-- `transcript_log.py` owns the additive SQLite schema and canonical state.
+- `workflow_ledger.py` owns plan-scoped, metadata-only state for multi-step
+  agent changes; its repository baseline is immutable and review/fix rounds
+  stop at five.
+- `transcript_log.py` owns the canonical capture SQLite schema and state.
 - `watcher.py` owns source discovery, local staging, transcription orchestration,
   and bounded outbox polling.
 - `archive.py` owns immutable local audio objects and iCloud mirror publication.
