@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -953,45 +954,60 @@ class ClassifierFallbackTests(unittest.TestCase):
         self.assertTrue(result.get("fallback"))
         self.assertEqual(result["items"][0]["item"], transcript.strip())
 
-    def test_truncation_on_long_transcript(self) -> None:
+    def test_extracted_reminder_uses_classifier_contract(self) -> None:
+        extraction = SimpleNamespace(
+            extraction_class="reminder",
+            extraction_text="milk",
+            attributes={"category": "groceries"},
+        )
+        fake_result = SimpleNamespace(extractions=[extraction])
+        with patch.object(classifier.lx, "extract", return_value=fake_result) as extract_mock:
+            result = classifier.classify("buy milk", api_key="key", model="model")
+
+        self.assertEqual(
+            result,
+            {"items": [{"item": "milk", "category": "groceries"}]},
+        )
+        self.assertIs(
+            extract_mock.call_args.kwargs["output_schema"],
+            classifier.CLASSIFIER_OUTPUT_SCHEMA,
+        )
+        self.assertEqual(
+            extract_mock.call_args.kwargs["model"].model_id,
+            "model",
+        )
+
+    def test_truncation_is_passed_to_langextract(self) -> None:
         transcript = "word " * 3000  # way over 4000 chars
-        with (
-            patch.object(classifier, "log"),
-            patch.object(classifier.requests, "post") as post_mock,
-        ):
-            post_mock.return_value.status_code = 200
-            post_mock.return_value.raise_for_status = lambda: None
-            post_mock.return_value.json.return_value = {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"items": [{"item": "x", "category": "inbox"}]}'
-                        }
-                    }
-                ]
-            }
+        fake_result = SimpleNamespace(extractions=[])
+        with patch.object(classifier.lx, "extract", return_value=fake_result) as extract_mock:
             classifier.classify(transcript, api_key="key", model="model")
-            call_args = post_mock.call_args[1]["json"]["messages"][1]["content"]
-            self.assertIn("[...truncated]", call_args)
+
+        self.assertIn(
+            "[...truncated]",
+            extract_mock.call_args.kwargs["text_or_documents"],
+        )
+
+    def test_malformed_extraction_falls_back_to_inbox(self) -> None:
+        extraction = SimpleNamespace(
+            extraction_class="reminder",
+            extraction_text="milk",
+            attributes={"category": "not-a-category"},
+        )
+        fake_result = SimpleNamespace(extractions=[extraction])
+        with patch.object(classifier.lx, "extract", return_value=fake_result):
+            result = classifier.classify("buy milk", api_key="key", model="model")
+
+        self.assertTrue(result.get("fallback"))
+        self.assertEqual(result["items"][0]["category"], "inbox")
 
     def test_classifier_provider_errors_log_only_bounded_codes(self) -> None:
         sentinel = "CLASSIFIER_PROVIDER_BODY_SENTINEL"
-        response = unittest.mock.Mock()
-        response.raise_for_status = lambda: None
-        response.json.return_value = {"unexpected": sentinel}
-        with (
-            patch.object(classifier.requests, "post", return_value=response),
-            patch.object(classifier, "log") as log_mock,
-        ):
-            result = classifier.classify("buy milk", api_key="key", model="model")
-        self.assertTrue(result.get("fallback"))
-        self.assertNotIn(sentinel, repr(log_mock.mock_calls))
-
         with (
             patch.object(
-                classifier.requests,
-                "post",
-                side_effect=RuntimeError(sentinel),
+                classifier.lx,
+                "extract",
+                side_effect=TimeoutError(sentinel),
             ),
             patch.object(classifier, "log") as log_mock,
         ):

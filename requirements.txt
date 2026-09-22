@@ -2,6 +2,8 @@
 requests>=2.31.0
 flask>=3.0.0
 jsonschema[format]>=4.25.1,<5.0.0
+# LangExtract's OpenAI provider supplies structured output support for OpenRouter.
+langextract[openai]==1.7.0
 
 # Google Tasks integration
 google-api-python-client>=2.100.0

@@ -7,16 +7,43 @@ each into a reminder category. Returns structured JSON.
 """
 
 import logging
-import json
 from typing import Any, Dict
 
+import langextract as lx
+from langextract.providers.openai import OpenAILanguageModel
 import requests
-
 log = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox", "project"]
+CLASSIFIER_OUTPUT_SCHEMA = lx.schema.extractions_schema(
+    lx.schema.extraction_item_schema(
+        "reminder",
+        attributes={
+            "category": {
+                "type": "string",
+                "enum": CATEGORIES,
+            }
+        },
+    )
+)
+
+
+class _OpenRouterLanguageModel(OpenAILanguageModel):
+    """OpenAI-compatible LangExtract provider configured for OpenRouter."""
+
+    def __init__(self, *, timeout: float = 30.0, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+
+        import openai
+
+        self._client = openai.OpenAI(
+            api_key=kwargs["api_key"],
+            base_url=kwargs["base_url"],
+            timeout=timeout,
+        )
+
 
 
 def _safe_exception_class(exc: BaseException) -> str:
@@ -40,30 +67,17 @@ Rules:
 
 Respond with ONLY the type name, nothing else."""
 
-SYSTEM_PROMPT = """You are a personal assistant that extracts actionable reminders from voice memo transcripts.
+SYSTEM_PROMPT = """Extract every distinct actionable reminder from the transcript.
 
-Categories (pick exactly one per item):
-- groceries: items to buy at the grocery store or food shopping
-- errands: tasks requiring leaving home (appointments, store visits, pickups, drop-offs)
-- home: household tasks, repairs, maintenance, cleaning, home improvement
-- health: medical/dental appointments, medications, exercise, wellness, self-care
-- work: professional tasks, meetings, deadlines, career-related items
-- kids: anything related to children (school, activities, supplies, appointments)
-- project: a software/code task, bug, or idea for one of the user's own software projects or repositories — something that belongs in a GitHub issue, not a personal to-do
-- inbox: anything actionable that doesn't clearly fit the above categories
+Create one `reminder` extraction per actionable item. Put its category in the
+`category` attribute, choosing exactly one of: groceries, errands, home,
+health, work, kids, project, inbox.
 
-Rules:
-1. If the transcript has NO actionable items (journal entry, note to someone, music idea, random thought, etc.) respond with: {"skip": true, "reason": "<brief reason>"}
-2. Extract ALL distinct actionable items, even if there are many in one memo
-3. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
-4. When in doubt about category, use inbox
-5. Respond ONLY with valid JSON — no explanation, no markdown fences
-
-Output for reminders:
-{"items": [{"item": "milk", "category": "groceries"}, {"item": "call dentist", "category": "health"}]}
-
-Output for non-reminders:
-{"skip": true, "reason": "journal entry about the day"}"""
+Use short, clear descriptions. For groceries, use just the item name (for
+example, "milk" rather than "buy milk"). For other categories, use a brief
+action phrase (for example, "call dentist" rather than "I need to call the
+dentist"). Use exact text from the transcript for each extraction. When no
+actionable items are present, return no extractions."""
 
 
 def _build_context(transcript: str, duration_seconds: float | None = None) -> str:
@@ -92,7 +106,7 @@ def classify(
     Returns one of:
       {"items": [{"item": str, "category": str}, ...]}
       {"skip": True, "reason": str}
-      {"items": [...], "fallback": True}  — on API/parse failure, raw text goes to Inbox
+      {"items": [...], "fallback": True}  — on provider/extraction failure
     """
     if not transcript.strip():
         return {"skip": True, "reason": "empty transcript"}
@@ -107,76 +121,56 @@ def classify(
         return _fallback(transcript)
 
     try:
-        resp = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": _build_context(
-                            transcript, duration_seconds=duration_seconds
-                        ),
-                    },
-                ],
-                "temperature": 0.1,
-                "max_tokens": 512,
-            },
-            timeout=30,
+        context = _build_context(transcript, duration_seconds=duration_seconds)
+        language_model = _OpenRouterLanguageModel(
+            model_id=model,
+            api_key=api_key,
+            base_url=OPENROUTER_URL.removesuffix("/chat/completions"),
+            timeout=30.0,
+            temperature=0.1,
+            max_output_tokens=512,
+            max_workers=1,
         )
-        resp.raise_for_status()
-
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-
-        # Strip markdown code fences if the model wraps the response
-        if content.startswith("```"):
-            lines = content.split("\n")
-            content = "\n".join(
-                lines[1:-1] if lines[-1].startswith("```") else lines[1:]
-            )
-
-        result = json.loads(content)
-
-        if "skip" in result:
-            return {"skip": True, "reason": result.get("reason", "not a reminder")}
-
-        if "items" in result and isinstance(result["items"], list):
-            valid = []
-            for item in result["items"]:
-                if isinstance(item, dict) and "item" in item and "category" in item:
-                    cat = item["category"].lower().strip()
-                    if cat not in CATEGORIES:
-                        cat = "inbox"
-                    valid.append({"item": item["item"], "category": cat})
-            if valid:
-                return {"items": valid}
-
-        log.warning("Classifier response rejected code=unexpected_shape")
-        return _fallback(transcript)
-
-    except json.JSONDecodeError as e:
-        log.error(
-            "Classifier provider response rejected code=invalid_json class=%s",
-            _safe_exception_class(e),
+        result = lx.extract(
+            text_or_documents=context,
+            prompt_description=SYSTEM_PROMPT,
+            model=language_model,
+            output_schema=CLASSIFIER_OUTPUT_SCHEMA,
+            fence_output=False,
+            max_char_buffer=len(context),
+            max_workers=1,
+            show_progress=False,
         )
-        return _fallback(transcript)
-    except requests.RequestException as e:
-        log.error(
-            "Classifier provider request failed class=%s",
-            _safe_exception_class(e),
-        )
-        return _fallback(transcript)
+        extractions = getattr(result, "extractions", None)
+        if not isinstance(extractions, list):
+            raise ValueError("extractions missing")
+        if not extractions:
+            return {"skip": True, "reason": "no actionable items"}
+
+        items = []
+        for extraction in extractions:
+            if getattr(extraction, "extraction_class", None) != "reminder":
+                raise ValueError("unexpected extraction class")
+            item_text = getattr(extraction, "extraction_text", None)
+            attributes = getattr(extraction, "attributes", None)
+            category = attributes.get("category") if isinstance(attributes, dict) else None
+            if (
+                not isinstance(item_text, str)
+                or not item_text.strip()
+                or not isinstance(category, str)
+                or category not in CATEGORIES
+            ):
+                raise ValueError("malformed reminder extraction")
+            items.append({"item": item_text, "category": category})
+        return {"items": items}
     except Exception as e:
         log.error(
             "Classifier provider failure class=%s",
             _safe_exception_class(e),
         )
         return _fallback(transcript)
+
+
 
 
 def _fallback(transcript: str) -> Dict[str, Any]:
