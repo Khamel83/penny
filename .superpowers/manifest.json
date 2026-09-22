@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source_repository": "obra/superpowers",
+  "source_revision": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+  "license": "MIT",
+  "installation_method": "repository-policy-reference",
+  "selected_skills": [
+    "brainstorming",
+    "writing-plans",
+    "test-driven-development",
+    "systematic-debugging",
+    "subagent-driven-development",
+    "requesting-code-review",
+    "verification-before-completion"
+  ],
+  "policy_files": {
+    "AGENTS.md": "57b7f9a75e314c9d7fe0b3caa573749409eb7f17f49bf2a07022e33c035ceb21",
+    "CLAUDE.md": "57b7f9a75e314c9d7fe0b3caa573749409eb7f17f49bf2a07022e33c035ceb21"
+  },
+  "plan_ledger": ".superpowers/plan-ledger.json"
+}

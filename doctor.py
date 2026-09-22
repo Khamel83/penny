@@ -52,15 +52,24 @@ _SAFE_REASON_VALUES = frozenset(
         "database_unavailable",
         "dead_letter",
         "disabled",
+        "duplicate_owner",
         "foreign_key_failure",
         "health_stale",
         "integrity_failure",
         "launchd_unavailable",
+        "ledger_malformed",
+        "manifest_drift",
+        "manifest_missing",
+        "memory_pressure_high",
         "missing",
         "model_offline_required",
         "model_unavailable",
         "non_loopback_bind",
         "permission_denied",
+        "plan_stale",
+        "plan_mismatch",
+        "policy_mismatch",
+        "privacy_boundary_violation",
         "probe_error",
         "provider_failure",
         "quarantine",
@@ -73,8 +82,80 @@ _SAFE_REASON_VALUES = frozenset(
         "timestamp_invalid",
         "uncertain_effect",
         "unknown",
-        "duplicate_owner",
-        "memory_pressure_high",
+    }
+)
+_SAFE_DETAIL_KEYS = frozenset(
+    {
+        "age_seconds",
+        "archive_backfill_failed_count",
+        "archive_invalid_count",
+        "archive_pending_count",
+        "archive_rebuild_needed_count",
+        "archive_failed_count",
+        "invalid_count",
+        "rebuild_needed_count",
+        "awaiting_file_count",
+        "backup_catalog_present",
+        "backup_set_present",
+        "callback_secret_configured",
+        "callback_secret_missing",
+        "dead_letter_count",
+        "failed_count",
+        "foreign_keys_ok",
+        "health_error",
+        "integrity_ok",
+        "launchd_ok",
+        "local_mirror_published_count",
+        "loopback_bind",
+        "max_attempt_count",
+        "pending_count",
+        "permission_safe",
+        "privacy_safe",
+        "retry_due_count",
+        "schema_ok",
+        "secret_configured",
+        "slack_failed_count",
+        "source_watermark",
+        "source_health_age_seconds",
+        "stale_in_flight_count",
+        "terminal_failure_count",
+        "uncertain_count",
+        "verified",
+        "watcher_ok",
+        "voicememod_running",
+        "tasks_ok",
+        "voicememos_responsive",
+        "voice_db_ok",
+        "offline",
+        "integrity_check_ok",
+        "foreign_key_check_ok",
+        "schema_table_count",
+        "row_count",
+        "max_transcript_id",
+        "configured",
+        "completion_pending_count",
+        "configuration_partial",
+        "migration_quarantine_count",
+        "latest_set_matches_receipt",
+        "protected_bind",
+        "timestamp_valid",
+        "latest_set_present",
+        "database_metadata_bound",
+        "gh_binary_present",
+        "gh_auth_token_present",
+        "launchd_gh_token_configured",
+        "service_ok",
+        "model_verified",
+        "worker_count",
+        "old_large_owner_present",
+        "legacy_tiny_present",
+        "memory_pressure_ok",
+        "manifest_verified",
+        "policies_verified",
+        "ledger_valid",
+        "plan_fresh",
+        "selected_skill_count",
+        "review_round",
     }
 )
 _SAFE_DETAIL_KEYS = frozenset(
@@ -143,12 +224,51 @@ _SAFE_DETAIL_KEYS = frozenset(
         "old_large_owner_present",
         "legacy_tiny_present",
         "memory_pressure_ok",
+        "manifest_verified",
+        "policies_verified",
+        "ledger_valid",
+        "plan_fresh",
+        "privacy_safe",
+        "selected_skill_count",
+        "review_round",
     }
 )
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
 _DEFAULT_HEALTH_MAX_AGE_SECONDS = 15 * 60
 _DEFAULT_BACKUP_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_WORKFLOW_ROOT = Path(__file__).resolve().parent / ".superpowers"
+_WORKFLOW_MANIFEST_PATH = _WORKFLOW_ROOT / "manifest.json"
+_WORKFLOW_PLAN_LEDGER_PATH = _WORKFLOW_ROOT / "plan-ledger.json"
+_WORKFLOW_MANIFEST_SHA256 = "66a75e3e80d50d7fee1e2bfb5cb4cacde2860d2067ce3c389583dd8b8e5a713f"
+_WORKFLOW_SOURCE_REPOSITORY = "obra/superpowers"
+_WORKFLOW_SOURCE_REVISION = "b36e0829c6d0140e93cfef2ca599b1b07d4a7797"
+_WORKFLOW_SELECTED_SKILLS = (
+    "brainstorming",
+    "writing-plans",
+    "test-driven-development",
+    "systematic-debugging",
+    "subagent-driven-development",
+    "requesting-code-review",
+    "verification-before-completion",
+)
+_WORKFLOW_POLICY_HASH = "57b7f9a75e314c9d7fe0b3caa573749409eb7f17f49bf2a07022e33c035ceb21"
+_WORKFLOW_PLAN_ID = "issue-34-workflow-pilot"
+_WORKFLOW_BASELINE = "ecba1e29173ffd259f6ac78ea7d3df43f1a473e1"
+_WORKFLOW_MAX_ARTIFACT_BYTES = 256 * 1024
+_WORKFLOW_MAX_STALE_SECONDS = 90 * 24 * 60 * 60
+_WORKFLOW_SENSITIVE_TERMS = frozenset(
+    {
+        "audio",
+        "credential",
+        "password",
+        "personal",
+        "provider_response",
+        "raw_audio",
+        "token",
+        "transcript",
+    }
+)
 
 
 def _configured_value(value: object) -> bool:
@@ -242,6 +362,15 @@ _REQUIRED_PROBE_KEYS: dict[str, frozenset[str]] = {
     ),
     "ingress": frozenset(
         {"secret_configured", "callback_secret_configured", "loopback_bind", "protected_bind"}
+    ),
+    "workflow": frozenset(
+        {
+            "manifest_verified",
+            "policies_verified",
+            "ledger_valid",
+            "plan_fresh",
+            "privacy_safe",
+        }
     ),
 }
 
@@ -379,6 +508,189 @@ def _sha256_file(path: Path) -> str | None:
     except (OSError, ValueError):
         return None
     return digest.hexdigest()
+
+
+def _workflow_read_json(path: Path) -> tuple[object | None, str | None, str]:
+    """Read one bounded workflow metadata artifact without retaining its bytes."""
+
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _WORKFLOW_MAX_ARTIFACT_BYTES:
+            return None, None, "missing"
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        return json.loads(raw.decode("utf-8")), digest, "ok"
+    except FileNotFoundError:
+        return None, None, "missing"
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        return None, None, "malformed"
+
+
+def _workflow_sensitive_value(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _workflow_sensitive_value(key) or _workflow_sensitive_value(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_workflow_sensitive_value(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().casefold()
+    return any(term in normalized for term in _WORKFLOW_SENSITIVE_TERMS)
+
+
+def _workflow_probe_data(
+    *,
+    manifest_verified: bool = False,
+    policies_verified: bool = False,
+    ledger_valid: bool = False,
+    plan_fresh: bool = False,
+    privacy_safe: bool = True,
+    reason: str = "workflow_invalid",
+) -> dict[str, Any]:
+    return {
+        "manifest_verified": manifest_verified,
+        "policies_verified": policies_verified,
+        "ledger_valid": ledger_valid,
+        "plan_fresh": plan_fresh,
+        "privacy_safe": privacy_safe,
+        "selected_skill_count": len(_WORKFLOW_SELECTED_SKILLS),
+        "reason": reason,
+    }
+
+
+def _default_probe_workflow(
+    _config: Any = None, *, now: datetime | None = None, **_kwargs: Any
+) -> dict[str, Any]:
+    """Validate only committed workflow metadata, never capture or provider data."""
+
+    manifest, manifest_hash, manifest_state = _workflow_read_json(_WORKFLOW_MANIFEST_PATH)
+    if manifest_state == "missing":
+        return _workflow_probe_data(reason="manifest_missing")
+    if (
+        manifest_state != "ok"
+        or manifest_hash != _WORKFLOW_MANIFEST_SHA256
+        or not isinstance(manifest, Mapping)
+    ):
+        return _workflow_probe_data(reason="manifest_drift")
+
+    expected_manifest = {
+        "schema_version": 1,
+        "source_repository": _WORKFLOW_SOURCE_REPOSITORY,
+        "source_revision": _WORKFLOW_SOURCE_REVISION,
+        "license": "MIT",
+        "installation_method": "repository-policy-reference",
+        "selected_skills": list(_WORKFLOW_SELECTED_SKILLS),
+        "policy_files": {
+            "AGENTS.md": _WORKFLOW_POLICY_HASH,
+            "CLAUDE.md": _WORKFLOW_POLICY_HASH,
+        },
+        "plan_ledger": ".superpowers/plan-ledger.json",
+    }
+    if dict(manifest) != expected_manifest:
+        return _workflow_probe_data(reason="manifest_drift")
+
+    policy_root = _WORKFLOW_ROOT.parent
+    for name, expected_hash in expected_manifest["policy_files"].items():
+        path = policy_root / name
+        if path.is_symlink() or _sha256_file(path) != expected_hash:
+            return _workflow_probe_data(
+                manifest_verified=True, reason="policy_mismatch"
+            )
+
+    ledger, _ledger_hash, ledger_state = _workflow_read_json(_WORKFLOW_PLAN_LEDGER_PATH)
+    if ledger_state == "missing" or ledger_state == "malformed" or not isinstance(ledger, Mapping):
+        return _workflow_probe_data(
+            manifest_verified=True, policies_verified=True, reason="ledger_malformed"
+        )
+    if _workflow_sensitive_value(ledger):
+        return _workflow_probe_data(
+            manifest_verified=True,
+            policies_verified=True,
+            privacy_safe=False,
+            reason="privacy_boundary_violation",
+        )
+
+    required_keys = {
+        "schema_version",
+        "plan_id",
+        "repository_baseline",
+        "state",
+        "stage",
+        "updated_at",
+        "stale_after_seconds",
+        "stages",
+        "completed_steps",
+        "review_round",
+        "verification_commands",
+        "findings",
+    }
+    if set(ledger) != required_keys:
+        return _workflow_probe_data(
+            manifest_verified=True, policies_verified=True, reason="ledger_malformed"
+        )
+    if (
+        ledger.get("schema_version") != 1
+        or ledger.get("plan_id") != _WORKFLOW_PLAN_ID
+        or ledger.get("repository_baseline") != _WORKFLOW_BASELINE
+        or ledger.get("state") != "active"
+        or not isinstance(ledger.get("stage"), str)
+        or not isinstance(ledger.get("stale_after_seconds"), int)
+        or isinstance(ledger.get("stale_after_seconds"), bool)
+        or ledger["stale_after_seconds"] <= 0
+        or ledger["stale_after_seconds"] > _WORKFLOW_MAX_STALE_SECONDS
+        or not isinstance(ledger.get("stages"), Mapping)
+        or set(ledger["stages"]) != {
+            "discovery",
+            "design",
+            "planning",
+            "tdd",
+            "implementation",
+            "review",
+            "verification",
+        }
+        or any(
+            not isinstance(value, str)
+            or value not in {"pending", "in_progress", "complete", "reviewed"}
+            for value in ledger["stages"].values()
+        )
+        or ledger["stage"] not in ledger["stages"]
+        or not isinstance(ledger.get("completed_steps"), list)
+        or not all(isinstance(step, str) for step in ledger["completed_steps"])
+        or not isinstance(ledger.get("review_round"), int)
+        or isinstance(ledger.get("review_round"), bool)
+        or not 0 <= ledger["review_round"] <= 5
+        or not isinstance(ledger.get("verification_commands"), list)
+        or not ledger["verification_commands"]
+        or not all(isinstance(command, str) for command in ledger["verification_commands"])
+        or not isinstance(ledger.get("findings"), list)
+    ):
+        return _workflow_probe_data(
+            manifest_verified=True, policies_verified=True, reason="ledger_malformed"
+        )
+
+    observed_at = _parse_observed_timestamp(ledger.get("updated_at"), now=now)
+    if observed_at is None:
+        return _workflow_probe_data(
+            manifest_verified=True, policies_verified=True, reason="ledger_malformed"
+        )
+    age = max(0, int((_now(now) - observed_at).total_seconds()))
+    if age > ledger["stale_after_seconds"]:
+        return _workflow_probe_data(
+            manifest_verified=True,
+            policies_verified=True,
+            ledger_valid=True,
+            reason="plan_stale",
+        )
+    return _workflow_probe_data(
+        manifest_verified=True,
+        policies_verified=True,
+        ledger_valid=True,
+        plan_fresh=True,
+        privacy_safe=True,
+        reason="ok",
+    )
 
 
 def _source_revision() -> str:
@@ -1158,6 +1470,18 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         if int(values.get("pending_count", 0) or 0) > 0:
             return "degraded", "backlog"
         return "ready", "ok"
+    if name == "workflow":
+        if values.get("manifest_verified") is not True:
+            return "unready", _safe_reason(values.get("reason"), "manifest_drift")
+        if values.get("policies_verified") is not True:
+            return "unready", _safe_reason(values.get("reason"), "policy_mismatch")
+        if values.get("privacy_safe") is not True:
+            return "unready", "privacy_boundary_violation"
+        if values.get("ledger_valid") is not True:
+            return "unready", _safe_reason(values.get("reason"), "ledger_malformed")
+        if values.get("plan_fresh") is not True:
+            return "unready", _safe_reason(values.get("reason"), "plan_stale")
+        return "ready", "ok"
     if name == "github_triage":
         if values.get("gh_binary_present", False) and values.get("gh_auth_token_present", False):
             # gh_auth_token_present is measured in Doctor's own (operator
@@ -1218,10 +1542,9 @@ _PROBE_NAMES = (
     "backup",
     "services",
     "ingress",
+    "workflow",
 )
 _OPTIONAL_COMPONENTS = frozenset({"maya", "github_triage"})
-
-
 def run_doctor(
     *,
     config: Any | None = None,
@@ -1251,6 +1574,7 @@ def run_doctor(
         "backup": _default_probe_backup,
         "services": _default_probe_services,
         "ingress": _default_probe_ingress,
+        "workflow": _default_probe_workflow,
     }
     components: dict[str, ComponentStatus] = {}
     for name in _PROBE_NAMES:

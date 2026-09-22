@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "plan_id": "issue-34-workflow-pilot",
+  "repository_baseline": "ecba1e29173ffd259f6ac78ea7d3df43f1a473e1",
+  "state": "active",
+  "stage": "verification",
+  "updated_at": "2026-09-19T00:00:00Z",
+  "stale_after_seconds": 2592000,
+  "stages": {
+    "discovery": "complete",
+    "design": "reviewed",
+    "planning": "complete",
+    "tdd": "complete",
+    "implementation": "complete",
+    "review": "complete",
+    "verification": "pending"
+  },
+  "completed_steps": [
+    "map-doctor-surface",
+    "define-safe-failure-states",
+    "add-behavioral-check",
+    "implement-workflow-probe",
+    "add-pinned-artifacts"
+  ],
+  "review_round": 1,
+  "verification_commands": [
+    "python3 -m pytest tests/test_doctor.py -q",
+    "python3 scripts/trust_check.py"
+  ],
+  "findings": []
+}

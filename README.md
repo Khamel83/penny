@@ -79,6 +79,11 @@ Exit status is `0` for ready, `1` for degraded, and `2` for unready. Output is
 metadata-only: bounded states, reason codes, counters, ages, and booleans; it
 does not include transcript/audio bodies, secrets, paths, URLs, provider
 responses, or process IDs. `/health` is an unauthenticated liveness endpoint.
+
+Doctor also validates the pinned workflow manifest, byte-identical agent policy
+mirrors, and the active plan ledger. These checks inspect only bounded workflow
+metadata and report drift, malformed state, stale plans, or privacy-boundary
+violations without reading capture or provider content.
 `/ready` returns `200` for ready or degraded and `503` for unready.
 
 Use the canonical docs for recovery and deployment:

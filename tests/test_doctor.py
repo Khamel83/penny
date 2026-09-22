@@ -781,3 +781,107 @@ def test_health_workflow_has_no_mutating_recovery_commands():
     for forbidden in ("kickstart", "reset", "delete", "replay", "repair", "tail"):
         assert re.search(rf"\\b{forbidden}\\b", text) is None
     assert "open -a" not in text
+
+
+def test_public_doctor_reports_workflow_health_and_safe_failure(
+    tmp_path: Path, monkeypatch, capsys
+):
+    import doctor
+    from scripts import penny_doctor
+
+    ready = _ready_probes(tmp_path)
+    monkeypatch.setattr(doctor, "_default_probe_sqlite", lambda *args, **kwargs: ready["sqlite"])
+    monkeypatch.setattr(
+        doctor, "_default_probe_voice_memos", lambda *args, **kwargs: ready["voice_memos"]
+    )
+    monkeypatch.setattr(doctor, "_default_probe_archive", lambda *args, **kwargs: ready["archive"])
+    monkeypatch.setattr(
+        doctor, "_default_probe_transcription", lambda *args, **kwargs: ready["transcription"]
+    )
+    monkeypatch.setattr(
+        doctor, "_default_probe_shared_whisper",
+        lambda *args, **kwargs: ready["shared_whisper"],
+    )
+    monkeypatch.setattr(
+        doctor, "_default_probe_apple_effects",
+        lambda *args, **kwargs: ready["apple_effects"],
+    )
+    monkeypatch.setattr(doctor, "_default_probe_maya", lambda *args, **kwargs: ready["maya"])
+    monkeypatch.setattr(doctor, "_default_probe_slack", lambda *args, **kwargs: ready["slack"])
+    monkeypatch.setattr(
+        doctor, "_default_probe_github_triage",
+        lambda *args, **kwargs: ready["github_triage"],
+    )
+    monkeypatch.setattr(doctor, "_default_probe_backup", lambda *args, **kwargs: ready["backup"])
+    monkeypatch.setattr(
+        doctor, "_default_probe_services", lambda *args, **kwargs: ready["services"]
+    )
+    monkeypatch.setattr(doctor, "_default_probe_ingress", lambda *args, **kwargs: ready["ingress"])
+    healthy = doctor.run_doctor(config=_config(tmp_path))
+    assert healthy.components["workflow"].state == "ready"
+    assert healthy.components["workflow"].reason == "ok"
+
+    monkeypatch.setattr(penny_doctor, "run_doctor", lambda **_: healthy)
+    assert penny_doctor.main(["--json"]) == 1
+    healthy_output = json.loads(capsys.readouterr().out)
+    assert healthy_output["components"]["workflow"]["state"] == "ready"
+
+    monkeypatch.setattr(
+        doctor, "_WORKFLOW_MANIFEST_PATH", tmp_path / "missing-manifest.json"
+    )
+    failed = doctor.run_doctor(config=_config(tmp_path))
+    assert failed.components["workflow"].state == "unready"
+    assert failed.components["workflow"].reason == "manifest_missing"
+
+    monkeypatch.setattr(penny_doctor, "run_doctor", lambda **_: failed)
+    assert penny_doctor.main(["--json"]) == 2
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["components"]["workflow"]["reason"] == "manifest_missing"
+    assert "missing-manifest" not in output
+
+
+def test_workflow_probe_reports_each_metadata_failure_without_echoing_content(
+    tmp_path: Path, monkeypatch
+):
+    import doctor
+
+    source_root = Path(__file__).parents[1]
+    workflow_root = tmp_path / ".superpowers"
+    workflow_root.mkdir()
+    manifest_path = workflow_root / "manifest.json"
+    ledger_path = workflow_root / "plan-ledger.json"
+    manifest_path.write_bytes((source_root / ".superpowers/manifest.json").read_bytes())
+    ledger_path.write_bytes((source_root / ".superpowers/plan-ledger.json").read_bytes())
+    (tmp_path / "AGENTS.md").write_bytes((source_root / "AGENTS.md").read_bytes())
+    (tmp_path / "CLAUDE.md").write_bytes((source_root / "CLAUDE.md").read_bytes())
+    monkeypatch.setattr(doctor, "_WORKFLOW_ROOT", workflow_root)
+    monkeypatch.setattr(doctor, "_WORKFLOW_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(doctor, "_WORKFLOW_PLAN_LEDGER_PATH", ledger_path)
+
+    assert doctor._default_probe_workflow(now=datetime(2026, 9, 19, tzinfo=timezone.utc))["reason"] == "ok"
+
+    manifest_path.write_text("{}", encoding="utf-8")
+    assert doctor._default_probe_workflow()["reason"] == "manifest_drift"
+    manifest_path.write_bytes((source_root / ".superpowers/manifest.json").read_bytes())
+
+    (tmp_path / "CLAUDE.md").write_text("policy drift", encoding="utf-8")
+    assert doctor._default_probe_workflow()["reason"] == "policy_mismatch"
+    (tmp_path / "CLAUDE.md").write_bytes((source_root / "CLAUDE.md").read_bytes())
+
+    ledger_path.write_text("[]", encoding="utf-8")
+    assert doctor._default_probe_workflow()["reason"] == "ledger_malformed"
+    ledger_path.write_bytes((source_root / ".superpowers/plan-ledger.json").read_bytes())
+
+    stale = json.loads(ledger_path.read_text(encoding="utf-8"))
+    stale["updated_at"] = "2020-01-01T00:00:00Z"
+    ledger_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert doctor._default_probe_workflow()["reason"] == "plan_stale"
+    ledger_path.write_bytes((source_root / ".superpowers/plan-ledger.json").read_bytes())
+
+    private = json.loads(ledger_path.read_text(encoding="utf-8"))
+    private["findings"] = ["transcript body must not be persisted"]
+    ledger_path.write_text(json.dumps(private), encoding="utf-8")
+    result = doctor._default_probe_workflow()
+    assert result["reason"] == "privacy_boundary_violation"
+    assert "transcript body" not in repr(result)

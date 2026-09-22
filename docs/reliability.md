@@ -103,6 +103,11 @@ Slack/Maya health, backup receipt, service freshness, and ingress policy. It
 never reads transcript/audio bodies, calls Apple providers, contacts Slack/Maya,
 reads TCC databases, or prints paths, URLs, secrets, raw errors, or process identifiers.
 
+The Doctor also validates the pinned workflow manifest, mirrored agent policy
+files, and active plan ledger using metadata-only, bounded reads. Drift,
+malformed state, stale plans, and privacy-boundary violations are unready
+reasons; this probe never reads capture or provider content.
+
 - exit `0`: ready;
 - exit `1`: degraded; bounded backlog or disabled optional Maya may qualify;
 - exit `2`: unready or unknown required state.
