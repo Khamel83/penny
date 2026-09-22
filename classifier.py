@@ -57,13 +57,24 @@ Rules:
 2. Extract ALL distinct actionable items, even if there are many in one memo
 3. Use short, clear descriptions. For groceries, use just the item name (e.g. "milk" not "buy milk"). For other categories, use a brief action phrase (e.g. "call dentist" not "I need to call the dentist").
 4. When in doubt about category, use inbox
-5. Respond ONLY with valid JSON — no explanation, no markdown fences
+5. If source grounding is available, include it on that item as {"grounding": {"start_char": <zero-based>, "end_char": <exclusive>, "source_text": "<exact transcript substring>"}}. Do not guess grounding.
+6. Respond ONLY with valid JSON — no explanation, no markdown fences
 
 Output for reminders:
 {"items": [{"item": "milk", "category": "groceries"}, {"item": "call dentist", "category": "health"}]}
 
 Output for non-reminders:
 {"skip": true, "reason": "journal entry about the day"}"""
+
+TRANSCRIPT_CHAR_CAP = 4000
+
+
+def classification_transcript(transcript: str) -> str:
+    """Return the exact transcript body sent to the classifier."""
+    if len(transcript) <= TRANSCRIPT_CHAR_CAP:
+        return transcript
+    return transcript[:TRANSCRIPT_CHAR_CAP] + "\n[...truncated]"
+
 
 
 def _build_context(transcript: str, duration_seconds: float | None = None) -> str:
@@ -99,8 +110,7 @@ def classify(
 
     # Safety truncation — long notes should be caught by detect_content_type,
     # but if they slip through, don't burn tokens.
-    if len(transcript) > 4000:
-        transcript = transcript[:4000] + "\n[...truncated]"
+    transcript = classification_transcript(transcript)
 
     if not api_key:
         log.warning("OPENROUTER_API_KEY not set — falling back to Inbox")
@@ -152,7 +162,28 @@ def classify(
                     cat = item["category"].lower().strip()
                     if cat not in CATEGORIES:
                         cat = "inbox"
-                    valid.append({"item": item["item"], "category": cat})
+                    normalized = {"item": item["item"], "category": cat}
+                    grounding = item.get("grounding") or item.get("source_span")
+                    if isinstance(grounding, dict):
+                        normalized["grounding"] = grounding
+                    else:
+                        grounding = {
+                            key: item[key]
+                            for key in (
+                                "start_char",
+                                "end_char",
+                                "start_pos",
+                                "end_pos",
+                                "source_text",
+                                "extraction_text",
+                                "char_interval",
+                                "source_span",
+                            )
+                            if key in item
+                        }
+                        if grounding:
+                            normalized["grounding"] = grounding
+                    valid.append(normalized)
             if valid:
                 return {"items": valid}
 

@@ -432,6 +432,33 @@ class CorePipelineTests(unittest.TestCase):
             "buy milk", classify_result["items"], source="iCloud"
         )
 
+    def test_hermes_payload_omits_local_source_grounding(self) -> None:
+        classify_result = {
+            "items": [
+                {
+                    "item": "buy milk",
+                    "category": "groceries",
+                    "grounding": {
+                        "start_char": 0,
+                        "end_char": 8,
+                        "source_text": "buy milk",
+                    },
+                }
+            ]
+        }
+        with (
+            patch.object(core, "detect_content_type", return_value="action_items"),
+            patch.object(core, "classify", return_value=classify_result),
+            patch.object(core, "_notify_hermes", return_value=True) as notify_mock,
+        ):
+            core.classify_and_route("buy milk", source="iCloud", row_id=42)
+
+        notify_mock.assert_called_once_with(
+            "buy milk",
+            [{"item": "buy milk", "category": "groceries"}],
+            source="iCloud",
+        )
+
     def test_action_items_raises_when_reminder_write_fails(self) -> None:
         result = {"items": [{"item": "buy milk", "category": "groceries"}]}
         with (
@@ -973,6 +1000,44 @@ class ClassifierFallbackTests(unittest.TestCase):
             classifier.classify(transcript, api_key="key", model="model")
             call_args = post_mock.call_args[1]["json"]["messages"][1]["content"]
             self.assertIn("[...truncated]", call_args)
+
+    def test_classifier_preserves_langextract_grounding_fields(self) -> None:
+        response = unittest.mock.Mock()
+        response.raise_for_status = lambda: None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "items": [
+                                    {
+                                        "item": "buy milk",
+                                        "category": "groceries",
+                                        "grounding": {
+                                            "char_interval": {
+                                                "start_pos": 0,
+                                                "end_pos": 8,
+                                            },
+                                            "extraction_text": "buy milk",
+                                        },
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        with patch.object(classifier.requests, "post", return_value=response):
+            result = classifier.classify(
+                "buy milk", api_key="key", model="model"
+            )
+
+        self.assertEqual(
+            result["items"][0]["grounding"]["char_interval"],
+            {"start_pos": 0, "end_pos": 8},
+        )
 
     def test_classifier_provider_errors_log_only_bounded_codes(self) -> None:
         sentinel = "CLASSIFIER_PROVIDER_BODY_SENTINEL"

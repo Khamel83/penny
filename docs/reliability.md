@@ -68,6 +68,13 @@ serialized through `transcript_log.py`. Apple effects persist deterministic keys
 before attempting AppleScript, then store provider identifiers and read-back
 receipts. Permission failures and uncertain timeouts are explicit states.
 
+Optional classifier source grounding is stored locally as
+`penny-grounding.v1` metadata on the canonical transcript row. Each retained
+span uses zero-based, end-exclusive character offsets plus the exact matched
+source text and is discarded when absent or inconsistent with the classification
+source. Grounding is written during the post-ledger route transition; it is not
+included in reminder, note, Slack, or Hermes delivery payloads.
+
 Slack delivery is an independent durable outbox. It may be pending, retryable,
 sent, or terminally failed without changing local routing or Maya state. Long
 messages are deterministically chunked and each acknowledged chunk has durable

@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 import requests
 
 from apple_effects import AppleEffectError, AppleEffectReceipt, ensure_note, ensure_reminder
-from classifier import classify, detect_content_type
+from classifier import classify, classification_transcript, detect_content_type
 from config import get_config
 from reminders import add_note, add_reminder
 from transcript_log import (
@@ -311,7 +311,15 @@ def _notify_hermes(
 def _hermes_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     items = result.get("items")
     if isinstance(items, list):
-        return [item for item in items if isinstance(item, dict)]
+        # Provenance remains local unless a caller explicitly sends it.
+        return [
+            {
+                "item": item.get("item", ""),
+                "category": item.get("category", "inbox"),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ]
     if result.get("skip"):
         return [{"type": "skip", "reason": str(result.get("reason", ""))}]
     return []
@@ -356,6 +364,7 @@ def build_result_message(transcript: str, result: Dict[str, Any], source: str) -
         lines.append(f"  {e} {cat.capitalize()}: {', '.join(cat_items)}")
     lines += ["", f'📋 "{excerpt}"']
     return "\n".join(lines)
+
 
 
 # ===== Pipeline =====
@@ -699,8 +708,10 @@ def classify_and_route(
             return _finish_route(transcript, result, source)
 
         # action_items — use the existing item extractor
+        # Grounding offsets are relative to the exact body sent to classify.
+        classification_source = classification_transcript(transcript)
         result = classify(
-            transcript,
+            classification_source,
             cfg.openrouter_api_key,
             cfg.llm.model,
             duration_seconds=duration_seconds,
@@ -784,9 +795,15 @@ def classify_and_route(
 
         if any(str(entry.get("category", "")).strip().lower() == "project" for entry in items):
             queue_github_delivery(row_id, idempotency_key=f"penny-row-{row_id}")
-
         effect_row_id = _require_effect_row(row_id)
-        if not mark_routed(effect_row_id, result, f"{routed_count} reminder(s)"):
+
+        if not mark_routed(
+            effect_row_id,
+            result,
+            f"{routed_count} reminder(s)",
+            source_grounding=result,
+            grounding_transcript=transcript,
+        ):
             raise RoutingError("receipt_persistence_failed")
 
         return _finish_route(transcript, result, source)

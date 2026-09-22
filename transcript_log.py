@@ -29,6 +29,105 @@ log = logging.getLogger(__name__)
 
 TRANSCRIPT_DB_PATH = Path("~/.penny/transcripts.db").expanduser()
 DEFAULT_SLACK_CHANNEL_ID = "C0BKS0QT7FU"
+SOURCE_GROUNDING_SCHEMA_VERSION = "penny-grounding.v1"
+SOURCE_GROUNDING_COLUMN = "source_grounding"
+
+
+def _grounding_entries(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return []
+    entries = value.get("items")
+    if isinstance(entries, list):
+        return entries
+    nested = value.get("grounding") or value.get("source_grounding")
+    if isinstance(nested, (dict, list)):
+        return _grounding_entries(nested)
+    if any(
+        key in value
+        for key in (
+            "start_char",
+            "end_char",
+            "source_text",
+            "extraction_text",
+            "char_interval",
+        )
+    ):
+        return [value]
+    return []
+
+
+def _integer_offset(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _serialize_source_grounding(
+    value: object,
+    transcript: str,
+) -> str | None:
+    """Serialize only spans whose text exactly matches the classification source."""
+    grounded_items: list[dict[str, Any]] = []
+    for raw_entry in _grounding_entries(value):
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_grounding = (
+            raw_entry.get("grounding")
+            or raw_entry.get("source_span")
+            or raw_entry.get("source_spans")
+        )
+        grounding = raw_grounding if isinstance(raw_grounding, dict) else raw_entry
+        interval = grounding.get("char_interval")
+        interval = interval if isinstance(interval, dict) else grounding
+        start = _integer_offset(
+            interval.get("start_char", interval.get("start_pos"))
+        )
+        end = _integer_offset(interval.get("end_char", interval.get("end_pos")))
+        source_text = grounding.get("source_text")
+        if source_text is None:
+            source_text = grounding.get("extraction_text")
+        if source_text is None:
+            source_text = grounding.get("text")
+        if (
+            not isinstance(source_text, str)
+            or not source_text
+            or start is None
+            or end is None
+            or start < 0
+            or end <= start
+            or end > len(transcript)
+            or transcript[start:end] != source_text
+        ):
+            continue
+        item: dict[str, Any] = {
+            "start_char": start,
+            "end_char": end,
+            "source_text": source_text,
+        }
+        extracted_item = raw_entry.get("item")
+        if isinstance(extracted_item, str) and extracted_item:
+            item["item"] = extracted_item
+        category = raw_entry.get("category")
+        if isinstance(category, str) and category:
+            item["category"] = category
+        grounded_items.append(item)
+    if not grounded_items:
+        return None
+    return json.dumps(
+        {
+            "schema_version": SOURCE_GROUNDING_SCHEMA_VERSION,
+            "transcript_sha256": hashlib.sha256(
+                transcript.encode("utf-8")
+            ).hexdigest(),
+            "items": grounded_items,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
 SLACK_MAX_ATTEMPTS = 5
 SLACK_HTTP_TIMEOUT_SECONDS = 10
 SLACK_CLAIM_LEASE_MARGIN_SECONDS = 5
@@ -169,6 +268,7 @@ def init_db() -> None:
                 status          TEXT NOT NULL DEFAULT 'pending',
                 ingest_state    TEXT,
                 routing_result  TEXT,
+                source_grounding TEXT,
                 routing_progress TEXT,
                 error_message   TEXT,
                 recorded_at     TEXT,
@@ -1086,6 +1186,9 @@ def _ensure_transcript_columns(conn: sqlite3.Connection) -> None:
         "duration_seconds": "ALTER TABLE transcripts ADD COLUMN duration_seconds REAL",
         "ingest_state": "ALTER TABLE transcripts ADD COLUMN ingest_state TEXT",
         "routing_progress": "ALTER TABLE transcripts ADD COLUMN routing_progress TEXT",
+        "source_grounding": (
+            "ALTER TABLE transcripts ADD COLUMN source_grounding TEXT"
+        ),
         "recorded_at": "ALTER TABLE transcripts ADD COLUMN recorded_at TEXT",
         "discovered_at": "ALTER TABLE transcripts ADD COLUMN discovered_at TEXT",
         "file_seen_at": "ALTER TABLE transcripts ADD COLUMN file_seen_at TEXT",
@@ -5295,22 +5398,50 @@ def get_pending(limit: int = 20) -> list[dict]:
             conn.close()
 
 
-def mark_routed(row_id: int, routing_result: dict, routed_to: str) -> bool:
-    """Mark a transcript as successfully routed."""
+def mark_routed(
+    row_id: int,
+    routing_result: dict,
+    routed_to: str,
+    *,
+    source_grounding: object | None = None,
+    grounding_transcript: str | None = None,
+) -> bool:
+    """Mark a route and retain only exact, versioned source grounding."""
     conn = None
     try:
         conn = _get_conn()
+        canonical = conn.execute(
+            "SELECT transcript FROM transcripts WHERE id = ?", (row_id,)
+        ).fetchone()
+        if canonical is None:
+            return False
+        grounding_source = (
+            str(canonical["transcript"])
+            if grounding_transcript is None
+            else grounding_transcript
+        )
+        if source_grounding is None:
+            source_grounding = routing_result
+        serialized_grounding = _serialize_source_grounding(
+            source_grounding, grounding_source
+        )
         cursor = conn.execute(
             """UPDATE transcripts
                SET status = 'routed',
                    ingest_state = 'routed',
                    routing_result = ?,
+                   source_grounding = ?,
                    error_message = NULL,
                    routed_at = datetime('now'),
                    routed_to = ?,
                    updated_at = datetime('now')
                 WHERE id = ?""",
-            (json.dumps(routing_result, default=str), routed_to, row_id),
+            (
+                json.dumps(routing_result, default=str),
+                serialized_grounding,
+                routed_to,
+                row_id,
+            ),
         )
         conn.commit()
         return cursor.rowcount > 0

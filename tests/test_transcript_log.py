@@ -88,6 +88,82 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(row["duration_seconds"], 12.5)
         self.assertEqual(row["ingest_state"], "transcribed")
 
+    def test_source_grounding_persists_exact_transcript_substrings(self) -> None:
+        transcript = "Please buy milk tomorrow."
+        row_id = transcript_log.insert_transcript(
+            content_hash="grounding-exact",
+            source="iCloud",
+            transcript=transcript,
+        )
+
+        result = {
+            "items": [
+                {
+                    "item": "buy milk",
+                    "category": "groceries",
+                    "grounding": {
+                        "start_char": 7,
+                        "end_char": 15,
+                        "source_text": "buy milk",
+                    },
+                }
+            ]
+        }
+        self.assertTrue(transcript_log.mark_routed(row_id, result, "reminder"))
+
+        stored = transcript_log.get_transcript(row_id)
+        grounding = json.loads(stored["source_grounding"])
+        grounded = grounding["items"][0]
+        self.assertEqual(grounding["schema_version"], "penny-grounding.v1")
+        self.assertEqual(
+            transcript[grounded["start_char"] : grounded["end_char"]],
+            grounded["source_text"],
+        )
+        self.assertEqual(grounded["source_text"], "buy milk")
+
+    def test_invalid_or_absent_source_grounding_is_not_fabricated(self) -> None:
+        invalid_id = transcript_log.insert_transcript(
+            content_hash="grounding-invalid",
+            source="iCloud",
+            transcript="Please buy milk tomorrow.",
+        )
+        invalid_result = {
+            "items": [
+                {
+                    "item": "buy milk",
+                    "category": "groceries",
+                    "grounding": {
+                        "start_char": 7,
+                        "end_char": 15,
+                        "source_text": "buy eggs",
+                    },
+                }
+            ]
+        }
+        self.assertTrue(
+            transcript_log.mark_routed(invalid_id, invalid_result, "reminder")
+        )
+        self.assertIsNone(
+            transcript_log.get_transcript(invalid_id)["source_grounding"]
+        )
+
+        absent_id = transcript_log.insert_transcript(
+            content_hash="grounding-absent",
+            source="iCloud",
+            transcript="Please buy milk tomorrow.",
+        )
+        self.assertTrue(
+            transcript_log.mark_routed(
+                absent_id,
+                {"items": [{"item": "buy milk", "category": "groceries"}]},
+                "reminder",
+            )
+        )
+        self.assertIsNone(
+            transcript_log.get_transcript(absent_id)["source_grounding"]
+        )
+
+
     def test_apple_effect_schema_migrates_partial_table_and_preserves_row(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="apple-effect-migration",
@@ -966,7 +1042,8 @@ class TranscriptLogTests(unittest.TestCase):
                 conn.execute(
                     """
                     SELECT content_hash, transcript, quality_status, quality_detail,
-                           transcript_sha256, maya_delivery_status, maya_drop_id,
+                           transcript_sha256, source_grounding,
+                           maya_delivery_status, maya_drop_id,
                            maya_delivery_eligible, recorded_at,
                            superseded_by_transcript_row_id
                     FROM transcripts
@@ -983,6 +1060,7 @@ class TranscriptLogTests(unittest.TestCase):
                 "quality_status",
                 "quality_detail",
                 "transcript_sha256",
+                "source_grounding",
                 "maya_delivery_status",
                 "maya_drop_id",
                 "maya_delivery_attempt_count",
@@ -1000,6 +1078,7 @@ class TranscriptLogTests(unittest.TestCase):
                 "superseded_by_transcript_row_id",
             }.issubset(columns)
         )
+        self.assertIsNone(row["source_grounding"])
         self.assertEqual(row["content_hash"], "legacy-content-hash")
         self.assertEqual(row["transcript"], legacy_transcript)
         self.assertEqual(row["quality_status"], "pending")
