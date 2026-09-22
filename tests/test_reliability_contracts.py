@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReliabilityContractTests(unittest.TestCase):
+
+    def test_agent_policies_are_exact_mirrors(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertEqual(agents, claude, "AGENTS.md and CLAUDE.md have drifted")
+
     def test_phase_a_secret_contract_is_dedicated_and_local_first(self) -> None:
         example = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
         self.assertNotIn("TELEGRAM_BOT_TOKEN", example)
