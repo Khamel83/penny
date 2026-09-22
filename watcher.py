@@ -27,6 +27,8 @@ from archive import (
     validate_archive,  # noqa: F401  (kept as a public watcher module helper)
     validate_local_mirror_receipt,
 )
+from content_detector import MagikaDetector
+
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from github_delivery import process_pending_github_deliveries
@@ -117,6 +119,7 @@ _DEPENDENCY_ISSUE_CODES = frozenset(
         "offline_mode_required",
         "whisper_model_unavailable",
         "requests_unavailable",
+        "magika_unavailable",
         "voice_memos_directory_unavailable",
         "telegram_credentials_missing",
         "openrouter_api_key_missing",
@@ -178,6 +181,11 @@ def check_dependencies() -> tuple[List[str], List[str]]:
         import requests  # noqa: F401
     except ImportError:
         errors.append("requests_unavailable")
+
+    try:
+        import magika  # noqa: F401
+    except ImportError:
+        errors.append("magika_unavailable")
 
     if not VOICE_MEMOS_DIR.exists():
         errors.append("voice_memos_directory_unavailable")
@@ -750,6 +758,7 @@ def _process_audio_file(
     recording_pk: int | None = None,
     recorded_at: str | None = None,
     source_root: Path | None = None,
+    content_detector: MagikaDetector | None = None,
 ) -> bool:
     stage_options = {"source_root": source_root} if source_root is not None else {}
     staged = stage_audio(audio_path, cfg.archive.object_root, **stage_options)
@@ -761,6 +770,16 @@ def _process_audio_file(
     ):
         if staged_md5 != file_hash.lower():
             raise SourceChangedError("source_changed")
+    if content_detector is not None:
+        classification = content_detector.classify(staged.path)
+        if not classification.allowed:
+            log.warning(
+                "Completed file content rejected (status=%s, label=%s, reason=%s)",
+                classification.status.value,
+                classification.label or "none",
+                classification.reason or "none",
+            )
+            return False
     ingested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def metadata(
@@ -1050,7 +1069,10 @@ def _process_audio_file(
 
 
 def process_recording(
-    recording: Dict[str, Any], *, already_upserted: bool = False
+    recording: Dict[str, Any],
+    *,
+    already_upserted: bool = False,
+    content_detector: MagikaDetector | None = None,
 ) -> bool:
     pk = int(recording["Z_PK"])
     duration_seconds, duration_invalid = _recording_duration_or_invalid(recording)
@@ -1083,18 +1105,21 @@ def process_recording(
 
     try:
         mark_voice_memo_file_seen(pk, str(audio_path))
-        processed = _process_audio_file(
-            audio_path,
-            duration_seconds=duration_seconds,
-            recording_pk=pk,
-            recorded_at=recorded_at,
-            source_root=(
+        process_options: dict[str, Any] = {
+            "audio_path": audio_path,
+            "duration_seconds": duration_seconds,
+            "recording_pk": pk,
+            "recorded_at": recorded_at,
+            "source_root": (
                 roots[0]
                 if (roots := _voice_memo_roots()) is not None
                 and audio_path.is_relative_to(roots[0])
                 else None
             ),
-        )
+        }
+        if content_detector is not None:
+            process_options["content_detector"] = content_detector
+        processed = _process_audio_file(**process_options)
         if not processed:
             mark_voice_memo_retryable(pk, "transcription_failed")
         return processed
@@ -1113,17 +1138,21 @@ def process_file(
     *,
     file_hash: str | None = None,
     source_root: Path | None = None,
+    content_detector: MagikaDetector | None = None,
 ) -> bool:
     try:
         log.info(
             "Processing Voice Memo disk candidate (size_mb=%.1f)",
             audio_path.stat().st_size / (1024 * 1024),
         )
-        return _process_audio_file(
-            audio_path,
-            file_hash=file_hash,
-            source_root=source_root,
-        )
+        process_options: dict[str, Any] = {
+            "audio_path": audio_path,
+            "file_hash": file_hash,
+            "source_root": source_root,
+        }
+        if content_detector is not None:
+            process_options["content_detector"] = content_detector
+        return _process_audio_file(**process_options)
     except FileNotFoundError:
         log.warning("Voice Memo disk candidate disappeared before processing")
         return False
@@ -1202,7 +1231,11 @@ def _ensure_voicememos_running() -> None:
         )
 
 
-def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
+def _process_db_batch(
+    recordings: List[Dict[str, Any]],
+    *,
+    content_detector: MagikaDetector | None = None,
+) -> None:
     if not recordings:
         return
     log.info("Found %s new recording(s)", len(recordings))
@@ -1244,7 +1277,14 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
             log.error("Stopping discovery batch after durable upsert failure pk=%s", pk)
             break
         max_registered_pk = max(max_registered_pk, pk)
-        process_recording(recording, already_upserted=True)
+        if content_detector is None:
+            process_recording(recording, already_upserted=True)
+        else:
+            process_recording(
+                recording,
+                already_upserted=True,
+                content_detector=content_detector,
+            )
     if max_registered_pk > get_source_watermark("voice_memos"):
         if advance_source_watermark("voice_memos", max_registered_pk):
             set_last_seen_pk(max_registered_pk)
@@ -1256,7 +1296,11 @@ def _process_db_batch(recordings: List[Dict[str, Any]]) -> None:
         )
 
 
-def _process_disk_backlog(limit: int) -> None:
+def _process_disk_backlog(
+    limit: int,
+    *,
+    content_detector: MagikaDetector | None = None,
+) -> None:
     roots = _voice_memo_roots()
     if roots is None:
         return
@@ -1265,7 +1309,13 @@ def _process_disk_backlog(limit: int) -> None:
         return
     log.info("Found %s unprocessed file(s) on disk", len(unprocessed))
     for audio_file, file_hash in unprocessed[:limit]:
-        process_file(audio_file, file_hash=file_hash, source_root=roots[0])
+        process_options: dict[str, Any] = {
+            "file_hash": file_hash,
+            "source_root": roots[0],
+        }
+        if content_detector is not None:
+            process_options["content_detector"] = content_detector
+        process_file(audio_file, **process_options)
 
 
 def _process_slack_outbox() -> None:
@@ -1509,7 +1559,11 @@ def _reconcile_published_archives(limit: int) -> None:
             )
 
 
-def _retry_waiting_for_files(limit: int) -> None:
+def _retry_waiting_for_files(
+    limit: int,
+    *,
+    content_detector: MagikaDetector | None = None,
+) -> None:
     waiting = get_voice_memo_recordings_waiting_for_file(limit=limit)
     if not waiting:
         return
@@ -1552,10 +1606,21 @@ def _retry_waiting_for_files(limit: int) -> None:
                 "ZDURATION": row.get("duration_seconds"),
                 "recorded_at": row.get("recorded_at"),
             }
-        process_recording(recording, already_upserted=True)
+        if content_detector is None:
+            process_recording(recording, already_upserted=True)
+        else:
+            process_recording(
+                recording,
+                already_upserted=True,
+                content_detector=content_detector,
+            )
 
 
-def _retry_voice_memo_recordings(limit: int) -> None:
+def _retry_voice_memo_recordings(
+    limit: int,
+    *,
+    content_detector: MagikaDetector | None = None,
+) -> None:
     """Retry due unlinked source rows, refreshing CloudRecordings metadata first."""
     retryable = get_voice_memo_recordings_for_retry(limit=limit)
     if not retryable:
@@ -1599,8 +1664,14 @@ def _retry_voice_memo_recordings(limit: int) -> None:
                 duration_seconds=duration_seconds,
             ):
                 continue
-        process_recording(recording, already_upserted=True)
-
+        if content_detector is None:
+            process_recording(recording, already_upserted=True)
+        else:
+            process_recording(
+                recording,
+                already_upserted=True,
+                content_detector=content_detector,
+            )
 
 def _retry_pending_routes(limit: int) -> None:
     pending = get_pending(limit=limit)
@@ -1621,12 +1692,21 @@ def _retry_pending_routes(limit: int) -> None:
             log.error("Retry failed for id=%s: %s", row["id"], type(e).__name__)
 
 
-def _process_ingest_pass() -> None:
+def _process_ingest_pass(
+    content_detector: MagikaDetector | None = None,
+) -> None:
+    detector_options = (
+        {"content_detector": content_detector}
+        if content_detector is not None
+        else {}
+    )
     operations = (
         lambda: reconcile_linked_voice_memo_terminal_states(limit=100),
-        lambda: _process_db_batch(get_new_recordings()),
-        lambda: _retry_voice_memo_recordings(FILE_SCAN_PROCESS_LIMIT),
-        lambda: _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT),
+        lambda: _process_db_batch(get_new_recordings(), **detector_options),
+        lambda: _retry_voice_memo_recordings(
+            FILE_SCAN_PROCESS_LIMIT, **detector_options
+        ),
+        lambda: _process_disk_backlog(FILE_SCAN_PROCESS_LIMIT, **detector_options),
         lambda: _retry_pending_routes(limit=5),
         lambda: _reconcile_archive_backfill(cfg.archive.delivery_batch_limit),
         lambda: _reconcile_published_archives(cfg.archive.delivery_batch_limit),
@@ -1669,6 +1749,7 @@ def main() -> None:
                 _bounded_dependency_issue(error),
             )
         log.error("Service may not function properly until these are fixed.")
+    content_detector = MagikaDetector()
 
     if not VOICE_MEMOS_DIR.exists():
         log.error("Voice Memos directory unavailable")
@@ -1680,7 +1761,7 @@ def main() -> None:
     log.info("Running initial scan...")
     _ensure_voicememos_running()
     time.sleep(15)  # give VoiceMemos time to sync on startup before querying DB
-    _process_ingest_pass()
+    _process_ingest_pass(content_detector)
     update_health_check()
 
     log.info("Starting main polling loop...")
@@ -1701,7 +1782,7 @@ def main() -> None:
                 last_health_check = time.time()
 
             _ensure_voicememos_running()
-            _process_ingest_pass()
+            _process_ingest_pass(content_detector)
 
         except KeyboardInterrupt:
             log.info("Shutting down...")

@@ -72,20 +72,28 @@ class WatcherTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def test_main_sets_penny_process_title_before_startup(self) -> None:
+        detector = object()
         with (
             patch.object(watcher, "_set_process_title", create=True) as set_title,
             patch.object(watcher, "init_db"),
             patch.object(watcher, "check_dependencies", return_value=([], [])),
+            patch.object(
+                watcher, "MagikaDetector", return_value=detector
+            ) as detector_factory,
             patch.object(watcher, "VOICE_MEMOS_DIR", Path(self.db_dir)),
             patch.object(watcher, "get_last_seen_pk", return_value=0),
             patch.object(watcher, "_ensure_voicememos_running"),
-            patch.object(watcher, "_process_ingest_pass"),
+            patch.object(watcher, "_process_ingest_pass") as ingest_pass,
             patch.object(watcher, "update_health_check", return_value=True),
-            patch.object(watcher.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            patch.object(watcher.time, "sleep", side_effect=[None, None, KeyboardInterrupt]),
         ):
             watcher.main()
 
         set_title.assert_called_once_with()
+        detector_factory.assert_called_once_with()
+        self.assertEqual(len(ingest_pass.call_args_list), 2)
+        self.assertIs(ingest_pass.call_args_list[0].args[0], detector)
+        self.assertIs(ingest_pass.call_args_list[1].args[0], detector)
 
     def test_set_process_title_uses_visible_penny_label(self) -> None:
         title_setter = Mock()
