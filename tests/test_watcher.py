@@ -396,6 +396,26 @@ class WatcherTests(unittest.TestCase):
                     watcher.scan_for_unprocessed_files(), [(safe, "safe-hash")]
                 )
 
+    def test_missing_source_path_does_not_borrow_same_day_audio(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos"
+        voice_root.mkdir()
+        (voice_root / "20200201-another-memo.m4a").write_bytes(b"different memo")
+        with patch.object(watcher, "VOICE_MEMOS_DIR", voice_root):
+            for raw_path in (None, "", "missing.m4a"):
+                with self.subTest(raw_path=raw_path):
+                    self.assertIsNone(watcher._find_audio_path_for_recording({
+                        "ZPATH": raw_path, "ZCUSTOMLABEL": "2020-02-01 missing memo",
+                    }))
+
+    def test_missing_source_path_does_not_borrow_matching_label_audio(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos"
+        voice_root.mkdir()
+        (voice_root / "export-Meeting.m4a").write_bytes(b"different memo")
+        with patch.object(watcher, "VOICE_MEMOS_DIR", voice_root):
+            self.assertIsNone(watcher._find_audio_path_for_recording({
+                "ZPATH": "missing.m4a", "ZCUSTOMLABEL": "Meeting",
+            }))
+
     def test_voice_memo_root_must_not_be_a_symlink(self) -> None:
         actual_root = Path(self.db_dir) / "voice-memos-real"
         actual_root.mkdir()

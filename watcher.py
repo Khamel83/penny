@@ -720,7 +720,6 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
     voice_base, voice_root = roots
 
     raw_path = recording.get("ZPATH")
-    label = recording.get("ZCUSTOMLABEL") or ""
 
     if raw_path:
         source = Path(str(raw_path))
@@ -743,16 +742,8 @@ def _find_audio_path_for_recording(recording: Dict[str, Any]) -> Optional[Path]:
                 return None
             log.warning("Voice Memo source file unavailable or unsafe")
 
-    if label:
-        for candidate in voice_base.glob("*.m4a"):
-            name = candidate.name
-            if _recording_alias_matches(name, label):
-                safe = _safe_voice_memo_candidate(
-                    candidate, voice_base=voice_base, voice_root=voice_root
-                )
-                if safe is not None:
-                    return safe
-
+    # Labels and date prefixes are not audio identity. A missing source must
+    # remain missing rather than borrowing a different memo's transcript.
     return None
 
 

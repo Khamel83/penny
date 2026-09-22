@@ -51,6 +51,11 @@ terminal timestamp remain in the ledger. Doctor reports these historical
 absences as degraded with an explicit count; current capture failures remain
 unready.
 
+Apple source-to-audio lookup requires its exact bounded `ZPATH`. A matching
+label or date prefix is not recording identity and must never substitute
+another memo's audio. Pathless source rows stay indexed as missing audio;
+standalone files can still be captured by the separate safe disk scan.
+
 ## Archive and iCloud mirror
 
 Each audio-bearing canonical row may have one immutable local object and a
