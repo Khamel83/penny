@@ -35,6 +35,10 @@ for live evidence and remaining exceptions.
     not add a schema/index change to the narrow ingestion release. Direct byte
     retrieval works. Wrong-call cost: broad Maya search stays slow until that
     follow-up is approved and verified.
+14. Integrate the concurrent approved SSD-backup documentation and preserve its
+    installed mount guard/environment in pre-deployment backup and agent reload.
+    Wrong-call cost: a deployment would be blocked or recreate internal staging;
+    two test-first regressions guard this compatibility path.
 
 ## Deferred review minors
 
@@ -43,6 +47,11 @@ empty ID, malformed JSON and strict-type permutations) and a Penny-specific
 persisted-cursor assertion are not each directly tested. Existing common cursor
 tests and independent code review cover that path. The accepted guard cases and
 full Drop suite passed; these extra permutations remain follow-up test coverage.
+The final SSD compatibility review also deferred a wrapped-export reload
+round-trip, conflicting shell-versus-installed environment values, and wrong
+wrapper-interpreter/other-service rejection permutations. Focused compatibility
+tests and full Penny suite pass; installed guard/placement verification is a
+separate live gate.
 
 ## Review and preservation
 

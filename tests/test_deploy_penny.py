@@ -74,3 +74,44 @@ def test_drop_runtime_configuration_preserves_existing_credentials(tmp_path, mon
     assert watcher['EnvironmentVariables']['PENNY_DROP_TOKEN']=='drop-test-secret'
     webhook=plistlib.loads((tmp_path/'Library/LaunchAgents/com.penny.webhook.plist').read_bytes())
     assert 'PENNY_DROP_TOKEN' not in webhook['EnvironmentVariables']
+
+
+def wrapped_export(tmp_path, monkeypatch):
+    label = 'com.penny.export'
+    path = make_installed(tmp_path, monkeypatch, label, deploy.ENTRYPOINTS[label])
+    data = plistlib.loads(path.read_bytes())
+    data['ProgramArguments'] = ['/opt/homebrew/bin/python3',
+        str(tmp_path / '.local/libexec/compost/with-storage-volume.py'),
+        *data['ProgramArguments']]
+    data['EnvironmentVariables'] = {
+        'PENNY_BACKUP_ROOT': '/Volumes/fixture/backup',
+        'PENNY_BACKUP_VERIFICATION_RECEIPT': '/Volumes/fixture/backup/receipt.json',
+        'COMPOST_STORAGE_VOLUME': '/Volumes/fixture',
+        'COMPOST_STORAGE_UUID': 'fixture-volume-uuid',
+    }
+    path.write_bytes(plistlib.dumps(data))
+    return path, data
+
+
+def test_deploy_preserves_known_export_volume_wrapper(tmp_path, monkeypatch):
+    path, data = wrapped_export(tmp_path, monkeypatch)
+    assert deploy.installed('com.penny.export') == (path, data)
+
+
+def test_predeployment_backup_uses_installed_guard_and_placement(tmp_path, monkeypatch):
+    _, data = wrapped_export(tmp_path, monkeypatch)
+    assert hasattr(deploy, 'backup_before_deploy'), 'Installed backup invocation is not preserved'
+    with patch.object(deploy, 'command') as command:
+        deploy.backup_before_deploy()
+    args, kwargs = command.call_args
+    assert args[0] == [*data['ProgramArguments'], '--skip-export']
+    assert data['EnvironmentVariables'].items() <= kwargs['env'].items()
+
+
+@pytest.mark.parametrize('replacement', ['/tmp/unknown-wrapper.py', '/tmp/stale/backup_penny.py'])
+def test_wrapped_export_rejects_unknown_wrapper_or_stale_target(tmp_path, monkeypatch, replacement):
+    path, data = wrapped_export(tmp_path, monkeypatch)
+    data['ProgramArguments'][1 if 'wrapper' in replacement else 3] = replacement
+    path.write_bytes(plistlib.dumps(data))
+    with pytest.raises(deploy.DeploymentError, match='runtime_path_mismatch'):
+        deploy.installed('com.penny.export')

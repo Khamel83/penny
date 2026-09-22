@@ -14,7 +14,7 @@ and Maya readers are installed. Maya API and scheduler both run pushed commit
 Two synthetic artifacts (418 and 364,331 bytes) received intake acceptance,
 matching OCI archive hashes, and Maya source-event receipts. The live checks
 found and fixed the intake's named User-Agent requirement and Slack file
-metadata form encoding. Final Penny suite: 670 passed, 2 skipped, 53 subtests.
+metadata form encoding. Final Penny suite: 674 passed, 2 skipped, 53 subtests.
 Drop: 198 Python and 30 Worker tests passed; seven monitor fixture tests passed.
 
 The initial canaries exposed unwanted Maya notices. The owner approved a narrow
@@ -115,6 +115,12 @@ source-event receipt. Maya requires matching bytes, metadata and `store_only`.
 If an attempt is uncertain, investigate that identity only; never resend the
 whole archive. Source code on main is not deployment: verify Penny's five loaded
 source revisions, Drop's installed file hashes, and both Maya container images.
+Deployment uses the installed export command and environment for its backup,
+including the concurrent approved SSD mount guard and placement. It does not
+recreate backup staging at the retired default path. See
+[SSD backup placement](ssd-backup-placement.md). An earlier verification run
+before this concurrent change was discovered left a verified default-path backup;
+it is retained, not used as the active backup receipt or silently deleted.
 
 Permission boundary: the owner approved transcript text and metadata to ordinary
 Drop, Slack and Maya. Audio, credentials and local paths remain local. This

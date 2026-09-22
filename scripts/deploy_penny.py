@@ -76,12 +76,23 @@ def installed(label: str) -> tuple[Path, dict]:
         raise DeploymentError('plist_symlink:' + label)
     data = plistlib.loads(path.read_bytes())
     args = data.get('ProgramArguments', [])
+    command_args = args
+    guard = str(Path.home() / '.local/libexec/compost/with-storage-volume.py')
+    if label == 'com.penny.export' and args[:2] == ['/opt/homebrew/bin/python3', guard]:
+        command_args = args[2:]
     if (data.get('Label') != label or data.get('WorkingDirectory') != str(ROOT)
-            or not args or args[0] not in {str(ROOT / 'venv/bin/python'), str(ROOT / 'venv/bin/python3')}
-            or args[1:] != ENTRYPOINTS[label]
+            or not command_args or command_args[0] not in {str(ROOT / 'venv/bin/python'), str(ROOT / 'venv/bin/python3')}
+            or command_args[1:] != ENTRYPOINTS[label]
             or data.get('Program', args[0]) != args[0]):
         raise DeploymentError('runtime_path_mismatch:' + label)
     return path, data
+
+
+def backup_before_deploy() -> None:
+    """Use the installed backup placement and mount guard, never shell defaults."""
+    _, data = installed('com.penny.export')
+    environment = {**os.environ, **data.get('EnvironmentVariables', {})}
+    command([*data['ProgramArguments'], '--skip-export'], env=environment)
 
 
 def reload_agent(label: str, sha: str, backup_dir: Path) -> dict:
@@ -176,7 +187,7 @@ def main() -> int:
         receipt['services'] = [runtime(label) for label in LABELS]
         if args.apply:
             command([str(ROOT / 'venv/bin/python'), 'scripts/trust_check.py'])
-            command([str(ROOT / 'venv/bin/python'), 'scripts/backup_penny.py', '--skip-export'])
+            backup_before_deploy()
             directory = Path.home() / '.penny/deployments' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
             directory.mkdir(parents=True, mode=0o700)
             if args.configure_drop:
