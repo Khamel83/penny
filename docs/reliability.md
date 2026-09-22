@@ -158,9 +158,12 @@ must never be used as the readiness source.
 ## Security and privacy
 
 Raw audio stays within the approved Apple/Penny storage and backup boundary.
-Transcription is local and offline. Only authenticated, policy-mediated Maya or
-Hermes paths may receive transcript text; Slack quality receipts are metadata
-only. The callback uses `PENNY_WEBHOOK_SECRET`; Hermes uses the dedicated
+Transcription is local and offline. The approved Drop route transfers transcript
+text and allowlisted metadata to Drop, Slack and Maya; audio remains local.
+Maya stores these captures without executing their contents. Legacy Maya/Hermes
+routes retain their authenticated policy boundaries. Health and quality receipts
+remain metadata-only; they are distinct from approved Slack transcript delivery.
+The callback uses `PENNY_WEBHOOK_SECRET`; Hermes uses the dedicated
 `PENNY_HERMES_WEBHOOK_SECRET`. Selected provider, Google Tasks, and webhook runtime logs use bounded
 fields and redacted exception classes; this does not retroactively clean every
 historical log artifact. Doctor output, tests, and deployment evidence remain

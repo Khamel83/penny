@@ -14,7 +14,7 @@ and Maya readers are installed. Maya API and scheduler both run pushed commit
 Two synthetic artifacts (418 and 364,331 bytes) received intake acceptance,
 matching OCI archive hashes, and Maya source-event receipts. The live checks
 found and fixed the intake's named User-Agent requirement and Slack file
-metadata form encoding. Final Penny suite: 674 passed, 2 skipped, 53 subtests.
+metadata form encoding. Initial Penny suite: 674 passed, 2 skipped, 53 subtests.
 Drop: 198 Python and 30 Worker tests passed; seven monitor fixture tests passed.
 
 The initial canaries exposed unwanted Maya notices. The owner approved a narrow
@@ -42,8 +42,7 @@ Maya (receipt/raw/file/object/extracted-text/metadata), and **320/320** suppress
 in Slack. No related Maya notice/task outbox or URL-acquisition rows. Penny's
 outbox has zero pending, sending, failed or uncertain rows. A final export dry-run
 reports 320 already queued, 167 migration placeholders excluded, and zero new
-live-owned rows. No new real memo arrived during verification; the real-capture
-gate remains observational, separate from successful synthetic delivery proof.
+live-owned rows. Those counts describe the historical import, not later live memos.
 The real-text rows retain 179 `passed`, 110 `pending`, and 31 `needs_review`
 quality labels; importing text does not upgrade its transcription quality.
 Existing Apple/Maya/source-history readiness exceptions remain separate from
@@ -82,10 +81,25 @@ a **575 ms** maximum; the two synthetic text queries returned in **120 ms** and
 **111 ms**. Both Maya containers and the public endpoint report `7177ae16`.
 Maya's final suite: **4,131 passed, 27 known baseline failures, 48 skipped**;
 87 focused storage/search/ingestion checks passed, with no new full-suite failures.
-Penny's unchanged runtime code passed **674 tests, 2 skips, 53 subtests**.
+Penny's runtime code at the retrieval follow-up passed **674 tests, 2 skips,
+53 subtests**; the later capture-health release passed **678 tests, 2 skips,
+53 subtests**.
 Private live proof: `~/.penny/maya-search-verification-2026-09-22.json`.
 This confirms imported transcript access, not recovery of the 167 excluded
 placeholders, upgraded quality labels, or removal of legacy readiness exceptions.
+
+### Real-memo gate completed
+
+The subsequent real 10.17-second memo (Penny 762 / source 436) was discovered,
+transcribed locally and accepted by Drop automatically in one attempt. Slack
+authenticated read-back matched the expected message at about 104 seconds from
+recording, and Maya returned a matching store-only source-event receipt. No
+manual replay or audio transfer was used. This closes the earlier observational
+gate; it does not imply every future memo will meet that latency.
+
+Private evidence: `~/.penny/real-memo-762-verification-2026-09-22.json`.
+The later health correction and preserved historical exceptions are documented
+in [capture health](capture-health.md) and the [current handoff](../HANDOFF.md).
 
 ## Operation after the production gate
 

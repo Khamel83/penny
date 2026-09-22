@@ -96,8 +96,15 @@ code alone and never bulk replay the outbox from a health check.
 
 ## Slack or Maya delivery is unhealthy
 
-Slack and Maya are independent outboxes. Check their Doctor component and the
-row's bounded state, attempt age, and terminal/dead-letter counters. Slack
+For Drop-owned Voice Memos, first check Penny's `drop` component and matching
+intake receipt, then Drop's independent Slack and Maya readers and downstream
+receipts. Follow [Drop operations](drop-delivery.md). Clear Penny queues do not
+prove downstream success. Direct Penny Slack is a reconciled fallback, not a
+second concurrent sender. Historical import deliberately suppresses Slack.
+
+For legacy direct-delivery rows, Slack and Maya are independent outboxes. Check
+their Doctor component and the row's bounded state, attempt age, and
+terminal/dead-letter counters. Slack
 requires its dedicated runtime credential and has its own retry window. Maya v2
 requires its dedicated authenticated endpoint/token, has a 20-attempt/seven-day
 bound, and uses claims so only one worker owns a delivery at a time.
@@ -106,6 +113,15 @@ Do not print credentials or provider responses. Do not turn a network timeout
 into `sent`; require an identity-matching durable receipt. A disabled optional
 Maya route is degraded, while partial configuration, ledger errors, or invalid
 receipts are unready.
+
+## Healthy capture with degraded overall readiness
+
+Read component reasons rather than treating every degradation as a new outage.
+The [capture-health contract](capture-health.md) separates fixed historical
+failures from current failures. Historical Apple quarantine and direct-Maya dead
+letters retain their own component warnings. Preserve those records; a fresh
+failure, stale watcher evidence or source coverage gap still requires investigation.
+An idle Apple sync daemon alone is not proof that capture is unavailable.
 
 ## Transcription/model is unready
 

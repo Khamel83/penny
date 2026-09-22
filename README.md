@@ -69,9 +69,14 @@ passing local test.
 
 ## Services
 
-| Agent | Responsibility |
+These are five macOS background services, not five AI agents. The voice-memo
+path uses the watcher and shared Whisper; Tasks is a separate input, the webhook
+provides intake/health, and export runs scheduled backups rather than continuously.
+
+| Service | Responsibility |
 | --- | --- |
-| `com.penny.watcher` | Polls the Voice Memos compatibility source, stages audio, transcribes offline, and drains local/Slack/Maya outboxes |
+| `com.penny.watcher` | Discovers and stages Voice Memos, requests offline transcription, and drains Drop plus legacy outboxes according to persisted ownership |
+| `com.penny.shared-whisper` | Owns the shared local transcription model; unloads its worker when idle |
 | `com.penny.tasks` | Polls the approved Google Tasks input and persists work before local routing |
 | `com.penny.webhook` | Authenticated upload, text ingest, callback, `/health`, and `/ready`; loopback is the target bind policy |
 | `com.penny.export` | Creates a versioned backup, verifies it in scratch, and records a safe verification receipt |
@@ -93,6 +98,8 @@ responses, or process IDs. `/health` is an unauthenticated liveness endpoint.
 Use the canonical docs for recovery and deployment:
 
 - [Handoff](HANDOFF.md)
+- [Drop delivery and completed historical import](docs/drop-delivery.md)
+- [Current capture health and historical exceptions](docs/capture-health.md)
 - [Reliability](docs/reliability.md)
 - [Mac mini deployment](docs/macmini-deployment.md)
 - [Troubleshooting](docs/troubleshooting.md)

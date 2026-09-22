@@ -1,11 +1,45 @@
 # Penny handoff
 
+## Production closeout — 2026-09-22
+
+The current Voice Memo path is local capture -> SQLite -> local shared Whisper
+-> durable Drop handoff -> independent Slack delivery and Maya store-only storage.
+See [Drop operations](docs/drop-delivery.md) for ownership, historical import,
+real-memo proof, and downstream recovery. Legacy routing below applies to other
+inputs and pre-cutover rows, not new Drop-owned Voice Memos.
+
+Capture-health implementation `b9c3158802beafb174a2807b8515ac0f096759cd`
+was pushed and verified in all five launchd services. The full suite at that
+release passed 678 tests and 53 subtests, with two skipped. Documentation-only
+closeout commits may follow; compare remote main and installed revisions with
+`venv/bin/python scripts/deploy_penny.py` before making a fresh runtime claim.
+
+At 2026-09-22T17:15:49Z, watcher, transcription, SQLite, archive, backup and Drop
+were ready, with zero current terminal capture failures, zero source coverage
+gap and zero pending/failed/uncertain Drop deliveries. Overall readiness was
+degraded: two historical capture failures, one Apple quarantine and nine legacy
+direct-Maya dead letters remain preserved. These are not new Drop delivery failures.
+See [capture health](docs/capture-health.md); retain the fixed reporting boundary.
+
+The available historical-text import and real-memo delivery gate are complete.
+Missing audio, excluded placeholders and non-passed quality labels are not
+recovered merely by indexing or importing them. Optional test permutations remain
+listed in [release decisions](docs/drop-release-decisions.md), not as blockers to
+normal capture. No new feature work or replay is required for this closeout.
+
+Private evidence remains local in `~/.penny/capture-health-release-2026-09-22.json`
+and `~/.penny/real-memo-762-verification-2026-09-22.json`. Recheck live health for
+future incidents; this is a dated result, not a guarantee against future outages.
+
 ## Current Mac backup placement — 2026-09-22
 
 [SSD backup placement](docs/ssd-backup-placement.md) records the owner-approved migration, installed mount-identity guard, matching export/webhook environment, fresh restore/remote proof, and retired internal staging. Preserve that placement in future plist rendering. The ledger and live audio were not moved; overall readiness remains separate from the passing backup checks.
 
 
-## Active synchronized shared-Whisper cutover — 2026-09-17
+## Historical synchronized shared-Whisper cutover — 2026-09-17
+
+The following records that cutover's observations; its revision, test counts,
+queue counts and readiness do not describe the current release above.
 
 This is the Penny side of the Atlas handover plan:
 `/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
@@ -70,7 +104,7 @@ readiness.
 
 ## System shape
 
-The durable path is:
+The legacy durable path (other inputs and pre-cutover captures) is:
 
 ```text
 Apple capture -> local staging -> SQLite receipt -> offline MLX -> local routing

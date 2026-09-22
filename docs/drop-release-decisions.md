@@ -34,7 +34,9 @@ for live evidence and remaining exceptions.
 13. Report the broad-search timeout and missing full-text index separately; do
     not add a schema/index change to the narrow ingestion release. Direct byte
     retrieval works. Wrong-call cost: broad Maya search stays slow until that
-    follow-up is approved and verified.
+    follow-up is approved and verified. That follow-up is now complete: see
+    [operations](drop-delivery.md) for the deployed index and durable-download
+    repair, including 320 authenticated search and hash-matched download checks.
 14. Integrate the concurrent approved SSD-backup documentation and preserve its
     installed mount guard/environment in pre-deployment backup and agent reload.
     Wrong-call cost: a deployment would be blocked or recreate internal staging;
