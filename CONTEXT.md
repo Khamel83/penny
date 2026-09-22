@@ -46,14 +46,12 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-- `649e7b6` launchd: give the shared Whisper service the same file limit as the other services (#48)
-- `c7ac3ac` backup.py: fix backslash-inside-f-string syntax error for pre-3.12 compatibility (#47)
-- `7d31513` Tests: remove temp folders created by tests (#45)
-- `65960d8` docs: record shared Whisper timestamp repair
-- `f6e531d` fix: disable shared Whisper word timestamps by default (word_timestamps=true still supported)
-- `8e53c10` fix: keep tiny Wyoming out of Whisper doctor blocker
-- `cea41ff` fix: filter shared Whisper worker options
-- `d0afcfc` fix: ignore tiny Wyoming in Whisper owner guard
-- `33a4843` feat: add shared killable Whisper service
-- `525456f` feat: define shared Whisper protocol
+- `d33580f` — Preserved the installed SSD guard and backup placement during deployment.
+- `c6bdc71` — Recorded verified Drop cutover and quiet Maya history import.
+- `04480ec` — Documented preservation of verified SSD backup placement across deployments.
+- `b53d64f` — Recorded live verification and held import for Maya quiet storage.
+- `f915d99` — Identified the Penny intake client and prioritized live memos over historical export.
+- `1bd490a` — Fixed ambiguous intake recovery and provisioned the Drop runtime safely.
+- `01b53ad` — Added a quiet resumable historical Drop export and documented cutover operations.
+- `f03bd62` — Delivered frozen transcripts through the existing Drop intake with receipt validation.
 <!-- janitor:end:recent -->
