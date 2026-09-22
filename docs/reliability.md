@@ -31,6 +31,11 @@ durable `voice_memo_ingest` upsert. Processing failures remain in
 `voice_memo_ingest` with retryable/backoff state or `failed_terminal`; there is
 no separate completion watermark.
 
+Before staging or transcription, Penny detects the file content locally. The
+detector outcome (content label, MIME type, status, and bounded read error when
+applicable) is retained in canonical routing or quality-review metadata; a
+rejected input becomes a durable `needs_review` row without downstream work.
+
 An audio file is copied into Penny-owned local staging, checked for a stable
 size/signature, and hashed. A source that changes during copying is retried;
 partial materialization remains `awaiting_file`/retryable, and a terminal source

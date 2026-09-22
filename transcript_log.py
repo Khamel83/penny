@@ -1863,6 +1863,7 @@ def _insert_transcript_transaction(
     recorded_at: str | None = None,
     quality_status: str | None = None,
     quality_detail: str | None = None,
+    routing_progress: dict[str, Any] | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
     archive_staged: Any | None = None,
@@ -1873,6 +1874,9 @@ def _insert_transcript_transaction(
     if quality_status is None:
         quality_status = "needs_review" if ingest_state == "needs_review" else "passed"
     quality_detail = _bounded_quality_detail(quality_detail)
+    normalized_routing_progress = (
+        json.dumps(routing_progress, default=str) if routing_progress else None
+    )
     normalized_recorded_at = (
         _as_iso8601_utc(recorded_at) if recorded_at is not None else None
     )
@@ -1894,10 +1898,10 @@ def _insert_transcript_transaction(
                    content_hash, source, transcript, audio_path,
                    duration_seconds, ingest_state, discovered_at, file_seen_at,
                    transcription_started_at, transcription_completed_at, error_message,
-                   recorded_at, quality_status, quality_detail, transcript_sha256,
-                   maya_delivery_status, maya_delivery_eligible
+                   recorded_at, quality_status, quality_detail, routing_progress,
+                   transcript_sha256, maya_delivery_status, maya_delivery_eligible
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 content_hash,
                 source,
@@ -1913,6 +1917,7 @@ def _insert_transcript_transaction(
                 normalized_recorded_at,
                 quality_status,
                 quality_detail,
+                normalized_routing_progress,
                 transcript_sha256,
                 maya_delivery_status,
                 1 if maya_eligible else 0,
@@ -2007,6 +2012,7 @@ def insert_transcript(
     recorded_at: str | None = None,
     quality_status: str | None = None,
     quality_detail: str | None = None,
+    routing_progress: dict[str, Any] | None = None,
     maya_delivery_eligible: bool = False,
     enqueue_slack: bool = True,
     archive_staged: Any | None = None,
@@ -2029,6 +2035,7 @@ def insert_transcript(
         recorded_at=recorded_at,
         quality_status=quality_status,
         quality_detail=quality_detail,
+        routing_progress=routing_progress,
         maya_delivery_eligible=maya_delivery_eligible,
         enqueue_slack=enqueue_slack,
         archive_staged=archive_staged,
@@ -2036,7 +2043,6 @@ def insert_transcript(
         archive_unavailable_reason=archive_unavailable_reason,
     )
     return result.row_id if result.outcome is InsertOutcome.INSERTED else None
-
 
 def re_evaluate_quality_review(transcript_id: int) -> QualityReviewResult:
     """Re-evaluate one retained quality-review row under current policy.

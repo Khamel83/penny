@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import mimetypes
@@ -28,6 +29,7 @@ from archive import (
     validate_archive,
     validate_local_mirror_receipt,
 )
+from audio_detector import AudioDetection, declared_audio_mime, detect_audio_content
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from github_delivery import process_pending_github_deliveries
@@ -743,6 +745,59 @@ def _canonical_voice_terminal_state(row: Dict[str, Any]) -> str | None:
     return None
 
 
+def _detector_progress(detection: AudioDetection) -> dict[str, Any]:
+    return {"audio_detector": detection.as_dict()}
+
+
+def _record_detector_rejection(
+    audio_path: Path,
+    detection: AudioDetection,
+    *,
+    file_hash: str | None,
+    duration_seconds: float | None,
+    recording_pk: int | None,
+    recorded_at: str | None,
+) -> bool:
+    content_hash = file_hash
+    if not content_hash:
+        try:
+            content_hash = get_file_hash(audio_path)
+        except Exception:
+            seed = f"voice-memo-detector:{recording_pk}:{audio_path.name}"
+            content_hash = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    result = insert_transcript_result(
+        content_hash=content_hash,
+        source="iCloud",
+        transcript="",
+        audio_path=str(audio_path),
+        duration_seconds=duration_seconds,
+        ingest_state="needs_review",
+        error_message=detection.reason or "content_rejected",
+        recorded_at=recorded_at,
+        quality_status="needs_review",
+        quality_detail=(
+            f"detector_status={detection.status};"
+            f"detected_label={detection.label};"
+            f"detected_mime={detection.mime_type or 'unknown'};"
+            f"reason={detection.reason or 'content_rejected'}"
+        ),
+        routing_progress=_detector_progress(detection),
+        enqueue_slack=False,
+    )
+    if result.outcome is InsertOutcome.FAILED:
+        return False
+    row_id = int(result.row_id or get_transcript_by_hash(content_hash)["id"])
+    if recording_pk is None:
+        return True
+    return link_voice_memo_transcript(
+        recording_pk,
+        transcript_row_id=row_id,
+        content_hash=content_hash,
+        audio_path=str(audio_path),
+        terminal_state="needs_review",
+    )
+
+
 def _process_audio_file(
     audio_path: Path,
     file_hash: str | None = None,
@@ -752,6 +807,19 @@ def _process_audio_file(
     recorded_at: str | None = None,
     source_root: Path | None = None,
 ) -> bool:
+    detection = detect_audio_content(
+        audio_path,
+        declared_mime=declared_audio_mime(audio_path),
+    )
+    if not detection.accepted:
+        return _record_detector_rejection(
+            audio_path,
+            detection,
+            file_hash=file_hash,
+            duration_seconds=duration_seconds,
+            recording_pk=recording_pk,
+            recorded_at=recorded_at,
+        )
     stage_options = {"source_root": source_root} if source_root is not None else {}
     staged = stage_audio(audio_path, cfg.archive.object_root, **stage_options)
     staged_md5 = get_file_hash(staged.path)
@@ -777,7 +845,11 @@ def _process_audio_file(
             "captured_at": recorded_at,
             "ingested_at": ingested_at,
             "duration_seconds": duration_seconds,
-            "mime_type": mimetypes.guess_type(audio_path.name)[0],
+            "mime_type": detection.mime_type
+            or mimetypes.guess_type(audio_path.name)[0],
+            "detector_status": detection.status,
+            "detected_label": detection.label,
+            "detector_reason": detection.reason,
             "backend": backend,
             "model": model,
             "quality_status": quality_status,
@@ -825,6 +897,7 @@ def _process_audio_file(
             recorded_at=recorded_at,
             file_seen_at=datetime.now().isoformat(),
             quality_status="skipped_too_large",
+            routing_progress=_detector_progress(detection),
             enqueue_slack=False,
             archive_staged=staged,
             archive_metadata=metadata("skipped_too_large"),
@@ -932,6 +1005,7 @@ def _process_audio_file(
             transcription_completed_at=transcription_completed_at,
             quality_status="needs_review",
             quality_detail=quality_detail,
+            routing_progress=_detector_progress(detection),
             enqueue_slack=False,
             archive_staged=staged,
             archive_metadata=metadata(
@@ -984,6 +1058,7 @@ def _process_audio_file(
         transcription_started_at=transcription_started_at,
         transcription_completed_at=transcription_completed_at,
         maya_delivery_eligible=recorded_at is not None,
+        routing_progress=_detector_progress(detection),
         archive_staged=staged,
         archive_metadata=metadata(
             "passed",
