@@ -19,6 +19,8 @@ import logging
 import re
 import secrets
 import sqlite3
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -157,6 +159,8 @@ def init_db() -> None:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA fullfsync=ON")
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS transcripts (
@@ -359,6 +363,7 @@ def init_db() -> None:
             "ON archive_deliveries(status, next_attempt_at)"
         )
         _ensure_apple_effects_schema(conn)
+        _ensure_drop_schema(conn)
         conn.commit()
 
         migrated = _migrate_processed_files(conn)
@@ -379,7 +384,123 @@ def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(TRANSCRIPT_DB_PATH), timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA fullfsync=ON")
     return conn
+
+
+def _ensure_drop_schema(conn: sqlite3.Connection) -> None:
+    conn.execute('''CREATE TABLE IF NOT EXISTS drop_policy (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), producer_id TEXT NOT NULL,
+        cutoff_id INTEGER, enabled INTEGER NOT NULL DEFAULT 0)''')
+    conn.execute('INSERT OR IGNORE INTO drop_policy(singleton,producer_id) VALUES(1,?)',
+                 (str(uuid.uuid4()),))
+    conn.execute('''CREATE TABLE IF NOT EXISTS drop_deliveries (
+        id INTEGER PRIMARY KEY, transcript_id INTEGER NOT NULL REFERENCES transcripts(id),
+        identity TEXT NOT NULL UNIQUE, payload BLOB NOT NULL, payload_sha256 TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL, next_attempt_at REAL NOT NULL DEFAULT 0,
+        claim_token TEXT, lease_until REAL, error_code TEXT,
+        intake_receipt TEXT, archive_receipt TEXT,
+        accepted_at REAL, UNIQUE(transcript_id,payload_sha256))''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_drop_due ON drop_deliveries(status,next_attempt_at)')
+
+
+def build_drop_payload(row, producer_id: str, historical: bool, notify_slack: bool) -> bytes:
+    """Allowlisted metadata plus exact transcript bytes; never an audio path."""
+    row = dict(row)
+    text = row.get('transcript') or ''
+    if (row.get('source') != 'iCloud' or not text.strip()
+            or text.startswith('(migrated') or row.get('quality_detail') == 'migrated_placeholder'
+            or row.get('ingest_state') in {'skipped_too_large', 'transcription_failed', 'failed'}):
+        raise ValueError('not_exportable_transcript')
+    metadata = dict(schema='penny.transcript.v1', producer_id=producer_id,
+                    transcript_id=row['id'], transcript_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                    recorded_at=row.get('recorded_at'), duration_seconds=row.get('duration_seconds'),
+                    quality_status=row.get('quality_status') or 'pending',
+                    historical=bool(historical), notify_slack=bool(notify_slack and not historical))
+    payload = (json.dumps(metadata, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+               + '\n\n' + text).encode('utf-8')
+    if len(payload) > 10 * 1024 * 1024:
+        raise ValueError('payload_too_large')
+    return payload
+
+
+def set_drop_cutover(conn, producer_id=None):
+    """One-way owner assignment; existing captures and receipts never move."""
+    if not conn.in_transaction:
+        conn.execute('BEGIN IMMEDIATE')
+    policy = dict(conn.execute('SELECT * FROM drop_policy WHERE singleton=1').fetchone())
+    if producer_id is not None and producer_id != policy['producer_id']:
+        raise ValueError('producer_identity_mismatch')
+    if not policy['enabled']:
+        cutoff = conn.execute('SELECT COALESCE(MAX(id),0) FROM transcripts').fetchone()[0]
+        conn.execute('UPDATE drop_policy SET enabled=1, cutoff_id=? WHERE singleton=1', (cutoff,))
+    return dict(conn.execute('SELECT * FROM drop_policy WHERE singleton=1').fetchone())
+
+
+def _drop_owns(conn, transcript_id):
+    return conn.execute('''SELECT 1 FROM drop_policy p JOIN transcripts t
+        ON t.id=? WHERE p.enabled=1 AND t.id>p.cutoff_id AND t.source='iCloud'
+        AND COALESCE(t.routing_suppressed,0)=0''', (transcript_id,)).fetchone() is not None
+
+
+def _queue_live_drop(conn, transcript_id):
+    if not _drop_owns(conn, transcript_id):
+        return
+    row = conn.execute('SELECT * FROM transcripts WHERE id=?', (transcript_id,)).fetchone()
+    producer = conn.execute('SELECT producer_id FROM drop_policy WHERE singleton=1').fetchone()[0]
+    try:
+        payload = build_drop_payload(row, producer, False, True)
+    except ValueError:
+        return  # Non-text/error placeholders remain in the capture ledger.
+    queue_drop_delivery(conn, transcript_id, payload)
+
+
+def queue_drop_delivery(conn, transcript_id: int, payload: bytes) -> None:
+    metadata = json.loads(payload.split(b'\n\n', 1)[0])
+    if metadata['transcript_id'] != transcript_id:
+        raise ValueError('transcript_identity_mismatch')
+    identity = 'penny:{producer_id}:{transcript_id}:{transcript_sha256}'.format(**metadata)
+    conn.execute('''INSERT OR IGNORE INTO drop_deliveries
+        (transcript_id,identity,payload,payload_sha256,created_at) VALUES(?,?,?,?,?)''',
+        (transcript_id, identity, payload, hashlib.sha256(payload).hexdigest(), time.time()))
+
+
+def claim_drop_delivery(now=None, lease_seconds=60):
+    now = time.time() if now is None else now
+    conn = _get_conn()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute("UPDATE drop_deliveries SET status='uncertain', claim_token=NULL, error_code='lease_expired' WHERE status='sending' AND lease_until<=?", (now,))
+        row = conn.execute("SELECT * FROM drop_deliveries WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT 1", (now,)).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        token = str(uuid.uuid4())
+        conn.execute("UPDATE drop_deliveries SET status='sending', claim_token=?, lease_until=?, attempt_count=attempt_count+1 WHERE id=?", (token, now + lease_seconds, row['id']))
+        result = dict(conn.execute('SELECT * FROM drop_deliveries WHERE id=?', (row['id'],)).fetchone())
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def finish_drop_delivery(claim, state, receipt=None, next_attempt_at=None, now=None, error_code=None):
+    if state not in {'pending', 'accepted', 'uncertain', 'failed'}:
+        raise ValueError('invalid_drop_state')
+    now = time.time() if now is None else now
+    conn = _get_conn()
+    try:
+        result = conn.execute('''UPDATE drop_deliveries SET status=?, intake_receipt=?,
+            accepted_at=?, next_attempt_at=?, error_code=?, claim_token=NULL, lease_until=NULL
+            WHERE id=? AND status='sending' AND claim_token=? AND lease_until>?''',
+            (state, json.dumps(receipt) if receipt else None, now if state == 'accepted' else None,
+             next_attempt_at or 0, error_code, claim['id'], claim['claim_token'], now))
+        conn.commit()
+        return result.rowcount == 1
+    finally:
+        conn.close()
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -1788,6 +1909,7 @@ def _queue_quality_failure_delivery(
 ) -> None:
     if (
         not enqueue_quality_failure
+        or _drop_owns(conn, transcript_row_id)
         or quality_status != "needs_review"
         or not quality_detail
     ):
@@ -1827,6 +1949,8 @@ def _queue_slack_delivery(
     quality_status: str,
     enqueue_slack: bool,
 ) -> None:
+    if _drop_owns(conn, transcript_row_id):
+        return
     if not _should_queue_slack_delivery(
         source=source,
         ingest_state=ingest_state,
@@ -1961,6 +2085,9 @@ def _insert_transcript_transaction(
             ),
         )
         if cursor.lastrowid and cursor.rowcount > 0:
+            if _drop_owns(conn, int(cursor.lastrowid)):
+                conn.execute("UPDATE transcripts SET maya_delivery_eligible=0, maya_delivery_status='ineligible' WHERE id=?", (int(cursor.lastrowid),))
+                _queue_live_drop(conn, int(cursor.lastrowid))
             if archive_staged is not None:
                 _queue_archive_delivery_conn(
                     conn,
@@ -2267,6 +2394,8 @@ def re_evaluate_quality_review(transcript_id: int) -> QualityReviewResult:
             recorded_at=normalized_recorded_at,
         )
         prior_maya_status = maya_status
+        if _drop_owns(conn, row_id):
+            maya_eligible = False
         existing_slack_delivery = conn.execute(
             "SELECT 1 FROM slack_deliveries WHERE transcript_row_id = ?",
             (row_id,),
