@@ -44,6 +44,15 @@ its local delivery ledger; new `drop-slack-reader.service` owns supervision.
 Extend `scripts/deploy-homelab.sh`, `integrations.toml`, reader tests and the
 operational docs. Do not change the Worker or Maya ingestion contract.
 
+**Approved extension, 2026-09-22:** live synthetic proof exposed Maya's unwanted
+generic-parser notices. The owner explicitly approved a narrow Maya quiet-storage
+adapter in the existing ingest endpoint and a Penny-only matching-receipt guard
+in Drop's existing Maya reader. This supersedes only the Maya-ingestion exclusion
+above. No Worker/core deployment, second reader, new schema, audio transfer or
+captured-action execution is authorized by this extension. Runtime and receipt
+evidence is in `docs/drop-delivery.md`; Maya's source/audit exceptions are recorded
+in its `docs/operations/PENNY-DROP-STORAGE.md`.
+
 Each artifact is a UTF-8 `.txt` file: one compact ASCII JSON metadata line,
 one blank line, then the unchanged canonical transcript. Required metadata:
 `schema=penny.transcript.v1`, `producer_id`, `transcript_id`,

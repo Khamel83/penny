@@ -2,31 +2,69 @@
 
 ## Production status — 2026-09-22
 
-Penny implementation `f915d99` is pushed and installed in all five launch
-agents. Drop's supervised Slack reader is installed. Capture ownership remains
-disabled: existing live memos still use Penny's existing delivery path. No real
-transcripts have been transferred through the new outbox.
+Review decisions and deferred test coverage are in the
+[release decision record](drop-release-decisions.md).
+
+Penny's Drop implementation is pushed and installed in all five launch agents.
+Capture ownership is active at canonical ID **755**: future iCloud Voice Memos
+use Drop; older direct-delivery receipts remain intact. Drop's supervised Slack
+and Maya readers are installed. Maya API and scheduler both run pushed commit
+`36eb6b40f49c8468a2c4578238bea405e0a0bd2a` with healthy API/storage readiness.
 
 Two synthetic artifacts (418 and 364,331 bytes) received intake acceptance,
 matching OCI archive hashes, and Maya source-event receipts. The live checks
 found and fixed the intake's named User-Agent requirement and Slack file
-metadata form encoding. Tests after these changes: Penny 670 passed, 2 skipped;
-Drop 187 Python and 30 Worker tests passed.
+metadata form encoding. Final Penny suite: 670 passed, 2 skipped, 53 subtests.
+Drop: 198 Python and 30 Worker tests passed; seven monitor fixture tests passed.
 
-**Do not run `--activate` or historical `--apply` yet.** Maya's existing
-`/ingest/drop` classifier treats the metadata-line/text envelope as malformed
-JSON, stores it as `needs_attention` with action route `none`, and queues a
-`maya.notice`. Historical flags suppress the Drop Slack reader, not Maya's
-independent notices. A backlog import would therefore violate the quiet-import
-contract. The approved plan excluded Maya ingestion changes; extend that scope
-before changing its API/runtime. Required behavior is verified envelope-aware,
-store-only ingestion, with no actions or notices, retaining exact original
-bytes and replayable source receipts. Do not strip metadata as a workaround.
+The initial canaries exposed unwanted Maya notices. The owner approved a narrow
+Maya fix: strict envelope validation in the existing ingest endpoint, exact
+original bytes and metadata, information/no-action classification, and a
+replayable `capture_policy=store_only` receipt. No schema migration or second
+reader was added. The original synthetic receipts remain unchanged evidence.
 
-Historical inventory: 320 actual-text iCloud records eligible; 167 missing-text
-or error records excluded. This is an inventory, not an import receipt.
+New live-style and historical synthetic notes both passed archive hashes and
+Maya receipt/raw/file/object/extracted-text verification. Related notice/task
+outbox and URL-acquisition counts were zero. Slack short-note read-back matched
+text, emoji and bot; history was suppressed with no message. Replaying both
+against an isolated copy of the Slack ledger made zero Slack API calls.
+Both new synthetic files were also retrieved through Maya's authenticated
+`/files/{id}/content` route with hashes matching Drop's archive.
+
+Drop's existing Maya reader now refuses to advance past a Penny item without
+the matching store-only receipt. Permanent refusals also hold the cursor. The
+existing monitor exposes a stuck reader; Slack remains independent. A bad item
+can delay later Maya items until repaired, rather than silently dropping one.
+
+Historical import verified: **320/320** actual-text iCloud records accepted by
+Drop, **320/320** archived with matching bytes/hashes, **320/320** verified in
+Maya (receipt/raw/file/object/extracted-text/metadata), and **320/320** suppressed
+in Slack. No related Maya notice/task outbox or URL-acquisition rows. Penny's
+outbox has zero pending, sending, failed or uncertain rows. A final export dry-run
+reports 320 already queued, 167 migration placeholders excluded, and zero new
+live-owned rows. No new real memo arrived during verification; the real-capture
+gate remains observational, separate from successful synthetic delivery proof.
+The real-text rows retain 179 `passed`, 110 `pending`, and 31 `needs_review`
+quality labels; importing text does not upgrade its transcription quality.
 Existing Apple/Maya/source-history readiness exceptions remain separate from
 the new Drop handoff. Synthetic proof is not a newly captured real-memo proof.
+
+Maya's focused release checks passed (46 tests). Its full suite was **not green**:
+4,125 passed, 28 failed, 48 skipped. Twenty-seven legacy Hermes/execution failures
+were reproduced with unchanged ingestion; one subprocess timing failure passed
+in isolation. Existing format/schema-drift exceptions are recorded in Maya's
+`.audit/evidence/penny-quiet-storage-2026-09-22.json`. No retired behavior was
+reactivated to satisfy old tests. Penny's global readiness also retains its
+older terminal-source, Apple quarantine and direct-Maya dead-letter exceptions.
+
+**Separate retrieval limitation:** a broad synthetic `/search` request timed out
+after 30 seconds. Read-only `EXPLAIN` shows a parallel sequential scan that builds
+text vectors over `ingested_files`; live index inventory contains only the primary
+key and channel/Slack-ID/created-time indexes, not a full-text index. Direct
+authenticated file retrieval succeeds. No search/index migration was attempted
+under this narrow store-only ingestion approval. API `/readyz` reports healthy,
+but that does not establish usable broad-search latency. A search performance fix
+is a separate open item, not hidden by the successful ingestion receipts.
 
 ## Operation after the production gate
 
@@ -47,8 +85,8 @@ Do not edit its database fields to perform an improvised rollback.
 `--drain --apply --limit 50` sends queued text through the runtime token.
 `--reconcile --apply` looks for exact archived bytes for uncertain handoffs.
 Run bounded passes until counts reconcile. Historical records suppress the
-Drop-owned Slack notification. Maya must first meet the quiet-storage gate
-above; do not assume the historical flag alone prevents its side effects.
+Drop-owned Slack notification. Maya's independent store-only receipt is required;
+do not assume the historical flag alone prevents its side effects.
 
 Payloads and receipts persist in the canonical SQLite ledger. A send intent is
 committed before network work. Lost/malformed responses and expired claims are
@@ -61,6 +99,22 @@ Penny's old direct Slack sender remains available for an explicitly reconciled
 fallback only. Before fallback, stop the Drop Slack reader and check its receipt
 ledger. Never enable two senders for the same memo. Preserve every ledger,
 archive and cursor during rollback.
+
+## Routine verification
+
+Check the installed Penny `/ready` response, not a CLI process with missing
+runtime environment. The `drop` component reports pending/uncertain counts and
+age; old direct-Maya/source/Apple exceptions remain separate. In Drop, run
+`python3 scripts/check_app_reading.py slack 10` and the same command for `maya`.
+An active systemd unit alone is insufficient. The monitor fixtures verify stuck
+and recovered states without breaking live credentials.
+
+For a named item, compare Penny's frozen payload hash/intake receipt against
+Drop's archived bytes; then check the Slack identity state and Maya's stable
+source-event receipt. Maya requires matching bytes, metadata and `store_only`.
+If an attempt is uncertain, investigate that identity only; never resend the
+whole archive. Source code on main is not deployment: verify Penny's five loaded
+source revisions, Drop's installed file hashes, and both Maya container images.
 
 Permission boundary: the owner approved transcript text and metadata to ordinary
 Drop, Slack and Maya. Audio, credentials and local paths remain local. This

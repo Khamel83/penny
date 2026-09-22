@@ -1,7 +1,8 @@
 # Penny to Drop production handoff
 
-Status: implementation installed; capture cutover and historical import held at
-the Maya quiet-storage gate. See `docs/drop-delivery.md` for current evidence.
+Status: implementation installed; the approved Maya quiet-storage extension is
+deployed and capture cutover is active. See `docs/drop-delivery.md` for import
+and per-boundary evidence.
 
 ## Approved intent
 
@@ -59,9 +60,9 @@ rollback state. Leave production unchanged if any required boundary is unproven.
 The Home Lab Slack credential passed auth.test. conversations.info confirmed
 membership in the active penny channel (C0BKS0QT7FU). Returned scopes include
 chat:write, files:write, channels:history and channels:read. This establishes
-access, not a successful transcript post. Both drop-maya-reader.service and
-drop-watch.timer are active. Existing Drop Slack code sends health alerts;
-there is no registered transcript Slack reader.
+access, not a successful transcript post. The registered Drop-owned Slack reader,
+existing Maya reader and drop-watch.timer are active. The operations record
+separately documents successful message/file read-back and Maya byte verification.
 
 Drop's working tree contains unrelated in-progress access-control changes.
 Do not modify, commit or deploy those changes with this work. Implement in an
