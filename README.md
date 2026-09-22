@@ -114,8 +114,9 @@ Migration placeholders are not transcripts. The backfill also revisits linked
 placeholder rows, recovers their words from available audio into the same
 canonical ID, and publishes a new archive generation. Reports include
 `placeholder_source_count`; source coverage alone does not establish that
-transcription is complete. Oversized recordings retain their explicit skipped
-state under the configured size limit.
+transcription is complete. Historical placeholders longer than five minutes
+use bounded local audio chunks and private restart checkpoints. Their original
+audio stays intact. The normal capture path retains its configured size limit.
 
 The historical pass is local-only: it uses Penny's offline local transcription
 backend, does not call external/cloud providers, does not send

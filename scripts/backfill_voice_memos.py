@@ -115,8 +115,7 @@ def _placeholder_source_pks() -> set[int]:
         return {int(row[0]) for row in conn.execute(
             """SELECT v.recording_pk FROM voice_memo_ingest v
                JOIN transcripts t ON t.id = v.transcript_row_id
-               WHERE t.transcript = ?
-               AND v.status != 'skipped_too_large'""",
+               WHERE t.transcript = ?""",
             ('(migrated — original transcript not preserved)',),
         )}
 
@@ -124,6 +123,7 @@ def _placeholder_source_pks() -> set[int]:
 def run_backfill(
     limit: int | None = DEFAULT_LIMIT,
     dry_run: bool = False,
+    progress: bool = False,
 ) -> dict[str, Any]:
     """Run one bounded local-only historical pass and return metadata counts."""
     if limit is not None and limit < 0:
@@ -165,6 +165,11 @@ def run_backfill(
                 processed_count += 1
             else:
                 failed_count += 1
+            if progress:
+                print(json.dumps({'recording_pk': int(recording['Z_PK']),
+                                  'attempted_count': attempted_count,
+                                  'processed_count': processed_count,
+                                  'failed_count': failed_count}), flush=True)
 
     coverage = transcript_log.get_voice_memo_coverage()
     final_ledger_pks = transcript_log.get_voice_memo_recording_pks()
@@ -205,6 +210,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="report source/ledger coverage without changing the ledger",
     )
+    parser.add_argument('--progress', action='store_true', help='emit metadata after each record')
     return parser
 
 
@@ -217,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     limit = None if args.limit == 0 else args.limit
     logging.disable(logging.CRITICAL)
     try:
-        report = run_backfill(limit=limit, dry_run=args.dry_run)
+        report = run_backfill(limit=limit, dry_run=args.dry_run, progress=args.progress)
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         print(json.dumps({"error_code": "backfill_failed"}, sort_keys=True))
         return 1

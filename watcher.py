@@ -828,7 +828,7 @@ def _process_audio_file(
             return False
 
     file_size = staged.byte_length
-    if file_size > MAX_FILE_SIZE:
+    if file_size > MAX_FILE_SIZE and not local_only:
         log.warning(
             "Skipping oversized Voice Memo (size_mb=%.1f, PK=%s)",
             file_size / (1024 * 1024),
@@ -889,7 +889,11 @@ def _process_audio_file(
     if existing is not None and existing.get('transcript') == '(migrated — original transcript not preserved)' and local_only:
         from transcript_log import recover_migrated_transcript
 
-        transcription = transcribe_with_quality(staged.path, model=cfg.voice_memos.whisper_model_path)
+        from historical_transcription import transcribe_historical
+        transcription = transcribe_historical(
+            staged, duration_seconds=duration_seconds,
+            model=cfg.voice_memos.whisper_model_path, transcribe=transcribe_with_quality,
+        )
         quality = 'passed' if transcription.quality.passed else 'needs_review'
         row_id = int(existing['id'])
         if not recover_migrated_transcript(
