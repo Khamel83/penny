@@ -28,9 +28,9 @@ from backup import (  # noqa: E402
     BackupError,
     BackupReceipt,
     _reject_symlink_components,
-    create_backup_set,
     verify_backup_set,
 )
+from workflow_artifacts import WorkflowArtifactError, validate_workflow_artifact
 
 
 DEFAULT_DB = Path("~/.penny/transcripts.db").expanduser()
@@ -111,6 +111,25 @@ def write_verification_receipt(
         "verified_at": timestamp.isoformat().replace("+00:00", "Z"),
         "remote_catalog_verified": True,
     }
+    try:
+        validate_workflow_artifact(
+            {
+                "artifact_type": "verification",
+                "artifact_id": set_id,
+                "identifiers": {
+                    "backup_set_id": set_id,
+                    "catalog_sha256": catalog_sha,
+                },
+                "statuses": {
+                    "status": "verified",
+                    "valid": True,
+                    "complete": True,
+                },
+            },
+            expected_type="verification",
+        )
+    except WorkflowArtifactError as exc:
+        raise SyncError("verification_artifact_rejected") from exc
     destination = Path(path).expanduser()
     try:
         _reject_symlink_components(destination.absolute(), label="verification_receipt")

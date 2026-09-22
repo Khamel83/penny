@@ -22,8 +22,14 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from pathlib import Path
 from typing import Any
+
+from workflow_artifacts import (
+    WorkflowArtifactError,
+    build_review_prompt_artifact,
+    serialize_workflow_artifact,
+    validate_workflow_artifact,
+)
 
 log = logging.getLogger(__name__)
 
@@ -2546,20 +2552,35 @@ def queue_github_delivery(transcript_id: int, idempotency_key: str) -> None:
     try:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT transcript FROM transcripts WHERE id = ?",
+            "SELECT id FROM transcripts WHERE id = ?",
             (transcript_id,),
         ).fetchone()
         if row is None:
             return
+        review_prompt = serialize_workflow_artifact(
+            build_review_prompt_artifact(
+                artifact_id=idempotency_key,
+                source_id=str(transcript_id),
+            ),
+            expected_type="review_prompt",
+        )
         conn.execute(
             """INSERT OR IGNORE INTO github_deliveries (
                    transcript_row_id, idempotency_key, transcript_text
                ) VALUES (?, ?, ?)""",
-            (transcript_id, idempotency_key, str(row["transcript"])),
+            (transcript_id, idempotency_key, review_prompt),
         )
         conn.commit()
+    except WorkflowArtifactError as exc:
+        log.error(
+            "Rejected GitHub review prompt transcript=%s category=%s field=%s reason=%s",
+            transcript_id,
+            exc.artifact_type,
+            exc.field,
+            exc.reason,
+        )
     except Exception as e:
-        log.error("Failed to queue GitHub delivery transcript=%s: %s", transcript_id, e)
+        log.error("Failed to queue GitHub delivery transcript=%s: %s", transcript_id, type(e).__name__)
     finally:
         if conn:
             conn.close()
@@ -5377,6 +5398,14 @@ def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> bool:
         ).fetchone()
         progress = _json_loads_or_default(row[0] if row else None, {})
         progress.update(patch)
+        validate_workflow_artifact(
+            {
+                "artifact_type": "progress",
+                "artifact_id": str(row_id),
+                "findings": progress,
+            },
+            expected_type="progress",
+        )
         cursor = conn.execute(
             """UPDATE transcripts
                SET routing_progress = ?, updated_at = datetime('now')
@@ -5385,8 +5414,17 @@ def update_transcript_progress(row_id: int, patch: dict[str, Any]) -> bool:
         )
         conn.commit()
         return cursor.rowcount > 0
+    except WorkflowArtifactError as exc:
+        log.error(
+            "Rejected routing progress id=%s category=%s field=%s reason=%s",
+            row_id,
+            exc.artifact_type,
+            exc.field,
+            exc.reason,
+        )
+        return False
     except Exception as e:
-        log.error("Failed to update routing progress id=%s: %s", row_id, e)
+        log.error("Failed to update routing progress id=%s: %s", row_id, type(e).__name__)
         return False
     finally:
         if conn:
