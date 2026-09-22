@@ -654,7 +654,7 @@ class WatcherTests(unittest.TestCase):
         self.assertIn("|watcher_ok:0|", health)
         self.assertIn("|voicememos_responsive:0|", health)
 
-    def test_health_check_requires_voicememod_running(self) -> None:
+    def test_health_check_allows_idle_daemon_with_readable_source(self) -> None:
         health_path = Path(self.db_dir) / "health.txt"
         with (
             patch.object(watcher, "HEALTH_FILE", health_path),
@@ -706,10 +706,10 @@ class WatcherTests(unittest.TestCase):
                 },
             ),
         ):
-            self.assertFalse(watcher.update_health_check())
+            self.assertTrue(watcher.update_health_check())
 
         health = health_path.read_text(encoding="utf-8")
-        self.assertIn("|watcher_ok:0|", health)
+        self.assertIn("|watcher_ok:1|", health)
         self.assertIn("|voicememod_running:0|", health)
 
     def test_health_check_requires_cloud_recording_database_integrity(self) -> None:

@@ -114,6 +114,8 @@ _SAFE_DETAIL_KEYS = frozenset(
         "source_health_age_seconds",
         "stale_in_flight_count",
         "terminal_failure_count",
+        "historical_terminal_failure_count",
+        "current_terminal_failure_count",
         "unavailable_count",
         "uncertain_count",
         "verified",
@@ -437,7 +439,9 @@ def _default_probe_sqlite(_config: Any = None, *, now: datetime | None = None, *
 
 def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     current = _now(now)
-    health = transcript_log.get_voice_memo_health()
+    cutoff = getattr(getattr(_config, "voice_memos", None), "historical_failure_before", "")
+    health = (transcript_log.get_voice_memo_health(historical_failure_before=cutoff)
+              if cutoff else transcript_log.get_voice_memo_health())
     watcher_path = Path(os.environ.get("PENNY_HEALTH_FILE", "~/.penny/health.txt")).expanduser()
     data = {
         key: health.get(key, 0)
@@ -445,6 +449,7 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
             "query_ok",
             "health_error",
             "terminal_failure_count",
+            "historical_terminal_failure_count",
             "unavailable_count",
             "failed_count",
             "retry_due_count",
@@ -454,6 +459,9 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
             "max_attempt_count",
         )
     }
+    data["current_terminal_failure_count"] = health.get(
+        "current_terminal_failure_count", health.get("terminal_failure_count", 0)
+    )
     data["voicememos_responsive"] = _health_flag(
         watcher_path, "voicememos_responsive"
     )
@@ -1144,22 +1152,22 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         ) > _DEFAULT_HEALTH_MAX_AGE_SECONDS:
             return "unready", "source_stale"
         if (
-            not values.get("voicememod_running", False)
-            or not values.get("voicememos_responsive", False)
+            not values.get("voicememos_responsive", False)
             or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"
         if int(values.get("voice_memo_coverage_gap", 0) or 0) > 0:
             return "unready", "source_coverage_gap"
-        if int(values.get("terminal_failure_count", 0) or 0) > 0:
+        if int(values.get("current_terminal_failure_count", values.get("terminal_failure_count", 0)) or 0) > 0:
             return "unready", "terminal_failure"
         if int(values.get("completion_pending_count", 0) or 0) > 0:
             return "unready", "retryable_failure"
-        if int(values.get("failed_count", 0) or 0) > 0:
+        historical = int(values.get("historical_terminal_failure_count", 0) or 0)
+        if int(values.get("failed_count", 0) or 0) > historical:
             return "degraded", "retryable_failure"
         if int(values.get("retry_due_count", 0) or 0) > 0 or int(values.get("awaiting_file_count", 0) or 0) > 0:
             return "degraded", "backlog"
-        if int(values.get('unavailable_count', 0) or 0) > 0:
+        if historical or int(values.get('unavailable_count', 0) or 0) > 0:
             return 'degraded', 'historical_unavailable'
         return "ready", "ok"
     if name == "archive":
@@ -1248,8 +1256,7 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         if values.get("timestamp_valid") is False:
             return "unready", "timestamp_invalid"
         if (
-            not values.get("voicememod_running", False)
-            or not values.get("voicememos_responsive", False)
+            not values.get("voicememos_responsive", False)
             or not values.get("voice_db_ok", False)
         ):
             return "unready", "source_unavailable"

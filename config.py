@@ -63,6 +63,7 @@ class VoiceMemosConfig:
     whisper_model_path: Path
     poll_interval_seconds: int
     startup_process_limit: int
+    historical_failure_before: str = ""
 
 
 @dataclass
@@ -318,6 +319,7 @@ def get_config() -> Config:
             whisper_model_path=model_path,
             poll_interval_seconds=voice_memos_section["poll_interval_seconds"],
             startup_process_limit=voice_memos_section["startup_process_limit"],
+            historical_failure_before=voice_memos_section.get("historical_failure_before", ""),
         ),
         shared_whisper=SharedWhisperConfig(
             url=shared_whisper_url,

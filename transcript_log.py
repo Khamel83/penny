@@ -6830,7 +6830,7 @@ def get_voice_memo_recordings_waiting_for_file(limit: int = 20) -> list[dict[str
             conn.close()
 
 
-def get_voice_memo_health() -> dict[str, Any]:
+def get_voice_memo_health(*, historical_failure_before: str = "") -> dict[str, Any]:
     conn = None
     health = {
         "query_ok": 1,
@@ -6843,6 +6843,8 @@ def get_voice_memo_health() -> dict[str, Any]:
         "completion_pending_count": 0,
         "terminal_count": 0,
         "terminal_failure_count": 0,
+        "historical_terminal_failure_count": 0,
+        "current_terminal_failure_count": 0,
         "unavailable_count": 0,
         "max_attempt_count": 0,
         "source_watermark": 0,
@@ -6892,6 +6894,33 @@ def get_voice_memo_health() -> dict[str, Any]:
             "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'failed_terminal'"
         ).fetchone()
         health["terminal_failure_count"] = int(terminal_failures[0] or 0)
+        if historical_failure_before:
+            cutoff = datetime.fromisoformat(historical_failure_before.replace("Z", "+00:00"))
+            if cutoff.tzinfo is None or cutoff > datetime.now(timezone.utc):
+                raise ValueError("invalid_history_cutoff")
+            # Failure time, not recording age: a newly failed old memo must alert.
+            # Missing/unparseable failure times remain current (fail closed).
+            for row in conn.execute(
+                "SELECT terminal_at FROM voice_memo_ingest WHERE status='failed_terminal'"
+            ):
+                stamp = row[0]
+                if not isinstance(stamp, str) or not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+                    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?", stamp
+                ):
+                    continue
+                try:
+                    failed_at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                # Legacy SQLite datetime('now') values are UTC without a suffix.
+                if failed_at.tzinfo is None:
+                    failed_at = failed_at.replace(tzinfo=timezone.utc)
+                if failed_at < cutoff:
+                    health["historical_terminal_failure_count"] += 1
+        health["current_terminal_failure_count"] = (
+            health["terminal_failure_count"] - health["historical_terminal_failure_count"]
+        )
         health['unavailable_count'] = int(conn.execute(
             "SELECT COUNT(*) FROM voice_memo_ingest WHERE status = 'unavailable'"
         ).fetchone()[0])

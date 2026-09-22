@@ -135,6 +135,10 @@ the immutable Penny object and verified backup remain the recovery authority.
 
 ## Doctor and service objectives
 
+See [capture health](capture-health.md) for the fixed historical-failure reporting
+boundary and why an idle Apple sync daemon is diagnostic rather than an outage.
+Current failures and stale/unreadable source evidence remain readiness failures.
+
 The Doctor is read-only and metadata-only. It probes SQLite, Penny's Voice Memos
 discovery cursor/retry/terminal metadata, archive counters, local model/offline state, Apple receipts,
 Slack/Maya health, backup receipt, service freshness, and ingress policy. It

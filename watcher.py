@@ -343,7 +343,9 @@ def update_health_check() -> bool:
     vm_responsive = 1 if vm and _voicememos_responsive() else 0
     voicememod_running = 1 if _voicememos_sync_daemon_running() else 0
     pending = _transcripts_pending()
-    vm_health = get_voice_memo_health()
+    vm_health = get_voice_memo_health(
+        historical_failure_before=getattr(cfg.voice_memos, "historical_failure_before", "")
+    )
     slack_health = get_slack_delivery_health()
     maya_health = get_maya_delivery_health()
     archive_health = get_archive_delivery_health()
@@ -359,14 +361,15 @@ def update_health_check() -> bool:
     )
     watcher_ok = int(
         bool(vm_responsive)
-        and bool(voicememod_running)
         and bool(cloud_health.get("db_ok"))
+        and bool(vm_health.get("query_ok", 1))
+        and not vm_health.get("health_error", 0)
         and not slack_health_error
         and int(slack_health.get("failed_count", 0)) == 0
         and int(slack_health.get("quality_failure_failed_count", 0)) == 0
         and not maya_health_error
         and int(maya_health.get("failed_count", 0)) == 0
-        and int(vm_health.get("terminal_failure_count", 0)) == 0
+        and int(vm_health.get("current_terminal_failure_count", vm_health.get("terminal_failure_count", 0))) == 0
         and not int(archive_health.get("health_error", 0))
         and int(archive_health.get("failed_count", 0)) == 0
         and int(archive_health.get("invalid_count", 0)) == 0
@@ -392,6 +395,8 @@ def update_health_check() -> bool:
             f"voice_memo_terminal:{vm_health.get('terminal_count', 0)}|"
             f"voice_memo_terminal_failures:"
             f"{vm_health.get('terminal_failure_count', 0)}|"
+            f"voice_memo_historical_terminal_failures:{vm_health.get('historical_terminal_failure_count', 0)}|"
+            f"voice_memo_current_terminal_failures:{vm_health.get('current_terminal_failure_count', vm_health.get('terminal_failure_count', 0))}|"
             f"voice_memo_max_attempts:{vm_health.get('max_attempt_count', 0)}|"
             f"voice_memo_source_watermark:{vm_health.get('source_watermark', 0)}|"
             f"slack_pending:{slack_health['pending_count']}|"

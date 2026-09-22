@@ -3926,6 +3926,34 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(health["max_attempt_count"], 1)
         self.assertEqual(health["source_watermark"], 0)
 
+    def test_history_health_cutoff_never_hides_a_later_failure(self) -> None:
+        for pk in range(900, 908):
+            transcript_log.upsert_voice_memo_recording(pk, label="fixture", raw_path=f"{pk}.m4a", duration_seconds=10.0)
+        with transcript_log._get_conn() as conn:
+            conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='transcription_failed', terminal_at='2026-01-01T00:00:00Z' WHERE recording_pk=900")
+            conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='transcription_failed', terminal_at='2026-08-01T00:00:00Z' WHERE recording_pk=901")
+            conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', error_message='transcription_failed', terminal_at=NULL WHERE recording_pk=902")
+            for pk, stamp in ((903, '0'), (904, '12:00:00'),
+                              (905, '2026-02-30T00:00:00Z'),
+                              (906, '2026-07-01T00:00:00Z'),
+                              (907, '2026-01-02 00:00:00')):
+                conn.execute("UPDATE voice_memo_ingest SET status='failed_terminal', terminal_at=? WHERE recording_pk=?", (stamp, pk))
+        health = transcript_log.get_voice_memo_health(historical_failure_before="2026-07-01T00:00:00Z")
+        self.assertEqual(health['terminal_failure_count'], 8)
+        self.assertEqual(health['historical_terminal_failure_count'], 2)
+        self.assertEqual(health['current_terminal_failure_count'], 6)
+        health = transcript_log.get_voice_memo_health()
+        self.assertEqual(health['current_terminal_failure_count'], 8)
+        with transcript_log._get_conn() as conn:
+            row = conn.execute("SELECT status,error_message FROM voice_memo_ingest WHERE recording_pk=900").fetchone()
+        self.assertEqual(tuple(row), ('failed_terminal','transcription_failed'))
+
+    def test_invalid_history_cutoff_fails_closed(self) -> None:
+        for cutoff in ('not-a-date', '2026-01-01', '2999-01-01T00:00:00Z'):
+            health = transcript_log.get_voice_memo_health(historical_failure_before=cutoff)
+            self.assertEqual(health['query_ok'], 0)
+            self.assertEqual(health['health_error'], 1)
+
     def test_failed_voice_row_remains_retryable_after_watermark_advance(self) -> None:
         transcript_log.upsert_voice_memo_recording(
             293,

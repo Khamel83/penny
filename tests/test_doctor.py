@@ -92,6 +92,34 @@ def test_doctor_marks_source_terminal_failure_unready(tmp_path: Path):
     assert report.components["voice_memos"].reason == "terminal_failure"
 
 
+def test_idle_apple_daemon_does_not_override_fresh_readable_source(tmp_path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    for name in ("voice_memos", "services"):
+        probes[name]["voicememod_running"] = False
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.components["voice_memos"].state == "ready"
+    assert report.components["services"].state == "ready"
+
+
+def test_historical_terminal_failures_remain_visible_without_blocking_capture(tmp_path):
+    from doctor import run_doctor
+
+    probes = _ready_probes(tmp_path)
+    probes["voice_memos"].update(terminal_failure_count=2, failed_count=2,
+        historical_terminal_failure_count=2, current_terminal_failure_count=0)
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.components["voice_memos"].state == "degraded"
+    assert report.components["voice_memos"].reason == "historical_unavailable"
+    assert report.components["voice_memos"].details["historical_terminal_failure_count"] == 2
+    probes["voice_memos"].update(terminal_failure_count=3, failed_count=3,
+        current_terminal_failure_count=1)
+    report = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert report.components["voice_memos"].state == "unready"
+    assert report.components["voice_memos"].reason == "terminal_failure"
+
+
 def test_doctor_reports_source_coverage_gap_without_private_content(tmp_path: Path):
     from doctor import run_doctor
 
@@ -317,7 +345,7 @@ def test_doctor_source_readiness_uses_watcher_metadata(tmp_path: Path, monkeypat
     assert doctor._infer_status("services", services) == ("unready", "source_unavailable")
 
 
-def test_doctor_source_readiness_requires_voicememod_running(tmp_path: Path, monkeypatch):
+def test_doctor_keeps_idle_daemon_diagnostic_without_false_outage(tmp_path: Path, monkeypatch):
     import doctor
 
     observed = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
@@ -353,14 +381,8 @@ def test_doctor_source_readiness_requires_voicememod_running(tmp_path: Path, mon
 
     assert voice["voicememod_running"] is False
     assert services["voicememod_running"] is False
-    assert doctor._infer_status("voice_memos", voice) == (
-        "unready",
-        "source_unavailable",
-    )
-    assert doctor._infer_status("services", services) == (
-        "unready",
-        "source_unavailable",
-    )
+    assert doctor._infer_status("voice_memos", voice) == ("ready", "ok")
+    assert doctor._infer_status("services", services) == ("ready", "ok")
 
 
 def test_doctor_source_evidence_must_be_fresh_exact_and_not_a_symlink(

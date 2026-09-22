@@ -24,6 +24,9 @@ whisper_model_revision = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 whisper_model_path = "~/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 poll_interval_seconds = 60
 startup_process_limit = 5
+# Fixed, approved history boundary. Later failures never age into this bucket.
+# This changes reporting only; original failed records and errors remain intact.
+historical_failure_before = "2026-09-22T16:45:38Z"
 
 [webhook]
 port = 5678
