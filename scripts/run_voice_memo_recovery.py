@@ -29,9 +29,20 @@ def main():
         os.environ['PENNY_SHARED_WHISPER_TIMEOUT_SECONDS'] = '300'
         from backfill_voice_memos import run_backfill
         logging.disable(logging.CRITICAL)
+        scope_path = state / 'historical-recovery-scope.json'
+        if scope_path.exists():
+            cutoff = int(json.loads(scope_path.read_text())['max_recording_pk'])
+        else:
+            import watcher
+            cutoff = max((int(row['Z_PK']) for row in watcher.get_all_recordings()), default=0)
+            with scope_path.open('x') as handle:
+                os.chmod(scope_path, 0o600)
+                json.dump({'max_recording_pk': cutoff}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
         attempted = 0
         while True:
-            report = run_backfill(limit=1)
+            report = run_backfill(limit=1, max_recording_pk=cutoff)
             attempted += report['attempted_count']
             report['run_attempted_count'] = attempted
             report['observed_at_epoch'] = int(time.time())

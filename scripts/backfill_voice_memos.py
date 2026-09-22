@@ -127,6 +127,7 @@ def run_backfill(
     limit: int | None = DEFAULT_LIMIT,
     dry_run: bool = False,
     progress: bool = False,
+    max_recording_pk: int | None = None,
 ) -> dict[str, Any]:
     """Run one bounded local-only historical pass and return metadata counts."""
     if limit is not None and limit < 0:
@@ -136,6 +137,8 @@ def run_backfill(
         transcript_log.init_db()
 
     source_rows = watcher.get_all_recordings()
+    if max_recording_pk is not None:
+        source_rows = [row for row in source_rows if int(row['Z_PK']) <= max_recording_pk]
     source_pks = {int(row["Z_PK"]) for row in source_rows}
     ledger_pks = transcript_log.get_voice_memo_recording_pks()
     initial_unindexed = source_pks - ledger_pks
@@ -179,6 +182,7 @@ def run_backfill(
     archive_counts = transcript_log.get_archive_delivery_health()
     report: dict[str, Any] = {
         "source_records": len(source_rows),
+        "source_max_pk": max_recording_pk,
         "ledger_records": coverage["ledger_count"],
         "linked_count": coverage["linked_count"],
         "unlinked_count": coverage["unlinked_count"],

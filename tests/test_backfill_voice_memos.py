@@ -21,6 +21,13 @@ from scripts.backfill_voice_memos import compact_ranges, run_backfill  # noqa: E
 
 
 class BackfillVoiceMemoTests(unittest.TestCase):
+    def test_frozen_backlog_does_not_capture_new_voice_memos(self):
+        with patch.object(watcher, 'transcribe_with_quality', return_value=TranscriptionResult('historical', QualityResult(True), 1)):
+            report = run_backfill(limit=None, max_recording_pk=10)
+        self.assertEqual(report['source_records'], 1)
+        self.assertEqual(report['processed_count'], 1)
+        self.assertNotIn(11, transcript_log.get_voice_memo_recording_pks())
+
     def test_unavailable_linked_placeholder_does_not_starve_next_batch(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash='missing', source='iCloud',

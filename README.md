@@ -124,6 +124,9 @@ single-process lock and saves metadata progress in
 `~/.penny/historical-recovery.json`; it is suitable for a supervised local
 launchd job and loads credentials from the installed watcher without printing
 them. A nonzero exit or remaining placeholder count is incomplete recovery.
+The runner freezes its source cutoff in `historical-recovery-scope.json` on its
+first start. Later recordings belong to the live watcher and are never silently
+absorbed into the local-only historical pass.
 
 The historical pass is local-only: it uses Penny's offline local transcription
 backend, does not call external/cloud providers, does not send
