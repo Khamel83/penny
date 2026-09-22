@@ -32,6 +32,7 @@ from core import classify_and_route, get_file_hash, setup_logging
 from github_delivery import process_pending_github_deliveries
 from maya_delivery import process_pending_maya_deliveries
 from slack_delivery import process_pending_slack
+from drop_delivery import process_pending_drop_deliveries, reconcile_pending_drop
 from transcript_quality import (
     ModelUnavailableError,
     resolve_whisper_model,
@@ -1358,6 +1359,14 @@ def _process_slack_outbox() -> None:
         log.error("Slack outbox processing failed (class=%s)", type(e).__name__)
 
 
+def _process_drop_outbox() -> None:
+    if not getattr(getattr(cfg, 'drop', None), 'enabled', False):
+        return
+    delivered = process_pending_drop_deliveries(limit=1)
+    if not delivered:
+        reconcile_pending_drop(limit=1)
+
+
 def _process_maya_outbox() -> None:
     try:
         delivered = process_pending_maya_deliveries(limit=1)
@@ -1732,6 +1741,7 @@ def _process_ingest_pass() -> None:
         lambda: _reconcile_published_archives(cfg.archive.delivery_batch_limit),
         _process_archive_outbox,
         _process_slack_outbox,
+        _process_drop_outbox,
         _process_maya_outbox,
         _process_github_outbox,
     )

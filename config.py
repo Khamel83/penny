@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 try:
@@ -107,6 +107,12 @@ class ArchiveConfig:
 
 
 @dataclass
+class DropConfig:
+    enabled: bool = False
+    ingest_token: str = ''
+
+
+@dataclass
 class Config:
     llm: LLMConfig
     google_tasks: GoogleTasksConfig
@@ -124,6 +130,7 @@ class Config:
     telegram_chat_id: str
     google_credentials_file: Path
     google_token_file: Path
+    drop: DropConfig = field(default_factory=DropConfig)
 
 
 def get_config() -> Config:
@@ -332,6 +339,10 @@ def get_config() -> Config:
             telegram_enabled=notifications_enabled,
         ),
         maya=maya,
+        drop=DropConfig(
+            enabled=os.environ.get('PENNY_DROP_ENABLED', str(raw.get('drop', {}).get('enabled', False))).lower() == 'true',
+            ingest_token=os.environ.get('PENNY_DROP_TOKEN', ''),
+        ),
         archive=archive,
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),

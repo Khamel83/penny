@@ -676,6 +676,28 @@ def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: 
     }
 
 
+def _default_probe_drop(config=None, *, now=None, **_kwargs):
+    drop = getattr(config, 'drop', None)
+    if not getattr(drop, 'enabled', False):
+        return {'state': 'ready', 'reason': 'disabled', 'configured': False}
+    if not getattr(drop, 'ingest_token', ''):
+        return {'state': 'unready', 'reason': 'secret_missing', 'configured': False}
+    current = _now(now).timestamp()
+    conn = sqlite3.connect(f'file:{_sqlite_path()}?mode=ro', uri=True, timeout=5)
+    try:
+        states = dict(conn.execute('SELECT status,count(*) FROM drop_deliveries GROUP BY status'))
+        oldest = conn.execute("SELECT min(created_at) FROM drop_deliveries WHERE status IN ('pending','sending')").fetchone()[0]
+        pending = states.get('pending', 0) + states.get('sending', 0)
+        age = max(0, int(current-oldest)) if oldest is not None else 0
+        uncertain, failed = states.get('uncertain', 0), states.get('failed', 0)
+        state = 'unready' if uncertain or failed or age > 900 else ('degraded' if pending else 'ready')
+        reason = 'uncertain_effect' if uncertain else ('terminal_failure' if failed else ('backlog' if pending else 'ok'))
+        return dict(state=state, reason=reason, configured=True, pending_count=pending,
+                    uncertain_count=uncertain, failed_count=failed, age_seconds=age)
+    finally:
+        conn.close()
+
+
 def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
     health = transcript_log.get_slack_delivery_health()
@@ -1253,6 +1275,7 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
 
 
 _PROBE_NAMES = (
+    "drop",
     "sqlite",
     "voice_memos",
     "archive",
@@ -1286,6 +1309,7 @@ def run_doctor(
             config = None
     overrides = probe_overrides or {}
     probe_functions: dict[str, Callable[..., dict[str, Any]]] = {
+        "drop": _default_probe_drop,
         "sqlite": _default_probe_sqlite,
         "voice_memos": _default_probe_voice_memos,
         "archive": _default_probe_archive,

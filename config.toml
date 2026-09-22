@@ -64,3 +64,5 @@ object_root = "~/.penny/archive/objects"
 # PENNY_ARCHIVE_MIRROR_ROOT; this mirror is not the durable object store.
 mirror_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Penny Archive"
 delivery_batch_limit = 5
+[drop]
+enabled = false
