@@ -8,7 +8,8 @@ Memos; Just Press Record (JPR) is a later, explicitly gated pilot.
 ## Contract
 
 ```text
-capture -> immutable local staging -> canonical SQLite -> local MLX transcript
+capture -> complete/readable bytes -> local Magika validation
+        -> immutable local staging -> canonical SQLite -> local MLX transcript
         -> local routing / Maya reasoning -> Hermes execution -> receipts
 ```
 
@@ -31,6 +32,9 @@ Phase A hardens the existing Voice Memos + MLX path without requiring JPR,
 macOS 27, Swift/EventKit, Apple Speech, or MacWhisper. The transcription
 dependency is `mlx-whisper==0.4.3`, with model revision
 `a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`, and requires `HF_HUB_OFFLINE=1`.
+Content validation uses one local Magika detector initialized with the watcher.
+Only the explicit supported label/suffix policy is admitted; mismatches and
+unknown results stay in local review/retry state before staging or Whisper.
 The default absolute model path is
 `/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`.
 Doctor must verify the local model manifest/weights receipt before readiness;
@@ -113,6 +117,7 @@ metadata-only.
 ## Development checks
 
 ```bash
+venv/bin/python scripts/smoke_content_validation.py --json
 venv/bin/python scripts/trust_check.py
 venv/bin/python -m pytest -q
 ```

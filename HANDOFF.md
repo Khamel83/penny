@@ -28,6 +28,13 @@ scratch directory.
 Apple Notes and Reminders are projections with durable effect keys and
 read-after-write receipts.
 
+Before that flow, the watcher waits for a complete/readable source and runs
+the local Magika content detector once per watcher process. Only the explicit
+supported label/suffix policy is admitted to immutable staging and MLX Whisper.
+Mismatches, non-audio, and unsupported labels receive durable bounded review
+detail; unknown or unreadable/incomplete inputs remain retryable. This local
+validation record proves neither transcription nor any downstream delivery.
+
 The routing boundaries are deliberately separate: **local routing** is the
 fallback and user-facing Apple projection; **independent Slack** delivery is a
 durable outbox; **independent Maya v2** delivery is a separately acknowledged
@@ -130,6 +137,7 @@ pass.
 
 - [README](README.md)
 - [Reliability](docs/reliability.md)
+- [Content validation](docs/content-validation.md)
 - [Mac mini deployment](docs/macmini-deployment.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Approved design](docs/superpowers/specs/2026-08-09-penny-august-2026-design.md)

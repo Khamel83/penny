@@ -42,6 +42,19 @@ failures use quarantine, ordinary failures remain `failed`, and ambiguous
 timeouts remain `uncertain`. Maya terminal delivery uses `dead_letter`.
 Retryable failures use bounded backoff and a terminal attempt/age limit.
 
+## Local capture content validation
+
+Completed, readable capture bytes pass through the local Magika detector before
+immutable staging, canonical transcript persistence in the normal capture path,
+or MLX Whisper. The detector is initialized once with the watcher. Penny accepts
+only the explicit label/suffix policy in [content-validation.md](content-validation.md);
+extensions and MIME hints alone are insufficient. Mismatches, non-audio, and
+unsupported labels become durable review outcomes with bounded detector detail.
+Unknown results and unreadable/incomplete sources remain visible as retryable
+work rather than being sent to Whisper. A local validation/review row proves
+only that local boundary; it does not prove archive publication, transcription,
+Apple effects, provider receipt, or downstream delivery.
+
 ## Archive and iCloud mirror
 
 Each audio-bearing canonical row may have one immutable local object and a

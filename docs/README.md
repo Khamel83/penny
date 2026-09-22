@@ -9,6 +9,7 @@ Canonical docs for Penny live here.
 - `reliability.md` — operational model, failure modes, health signals
 - `macmini-deployment.md` — Mac mini layout, launchd deployment, runtime locations
 - `troubleshooting.md` — concrete recovery steps for Voice Memos/iCloud issues
+- `content-validation.md` — local capture classification, rejection, and smoke verification
 - `ios-shortcut-setup.md` — optional alternate ingest path, not the primary flow
 
 ## Current Product Shape
