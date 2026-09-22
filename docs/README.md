@@ -10,6 +10,7 @@ Canonical docs for Penny live here.
 - `macmini-deployment.md` — Mac mini layout, launchd deployment, runtime locations
 - `troubleshooting.md` — concrete recovery steps for Voice Memos/iCloud issues
 - `ios-shortcut-setup.md` — optional alternate ingest path, not the primary flow
+- `../.penny/workflow/README.md` — plan-scoped development lifecycle templates and gates
 
 ## Current Product Shape
 
