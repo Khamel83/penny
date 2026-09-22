@@ -21,6 +21,14 @@ from scripts.backfill_voice_memos import compact_ranges, run_backfill  # noqa: E
 
 
 class BackfillVoiceMemoTests(unittest.TestCase):
+    def test_source_failure_is_not_reported_as_an_empty_completed_scope(self):
+        saved = self.source_db.with_suffix('.saved')
+        self.source_db.rename(saved)
+        with self.assertRaisesRegex(RuntimeError, 'source_unavailable'):
+            watcher.get_all_recordings()
+        saved.rename(self.source_db)
+        self.assertEqual(len(watcher.get_all_recordings()), 3)
+
     def test_frozen_backlog_does_not_capture_new_voice_memos(self):
         with patch.object(watcher, 'transcribe_with_quality', return_value=TranscriptionResult('historical', QualityResult(True), 1)):
             report = run_backfill(limit=None, max_recording_pk=10)

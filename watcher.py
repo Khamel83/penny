@@ -457,19 +457,21 @@ def get_new_recordings() -> List[Dict[str, Any]]:
 
 def get_all_recordings() -> List[Dict[str, Any]]:
     """Read every current Voice Memo source row ordered by Z_PK."""
-    return _query_recordings("", ())
+    return _query_recordings("", (), strict=True)
 
 
 def _query_recordings(
-    where_clause: str, parameters: tuple[Any, ...]
+    where_clause: str, parameters: tuple[Any, ...], *, strict: bool = False
 ) -> List[Dict[str, Any]]:
     if not CLOUDRECORDINGS_DB.exists():
         log.warning("VoiceMemos sync database unavailable")
+        if strict:
+            raise RuntimeError('voice_memo_source_unavailable')
         return []
 
     conn = None
     try:
-        conn = sqlite3.connect(str(CLOUDRECORDINGS_DB), timeout=5.0)
+        conn = sqlite3.connect(CLOUDRECORDINGS_DB.resolve().as_uri() + '?mode=ro', uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -484,6 +486,8 @@ def _query_recordings(
         return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         log.error("Database query failed (class=%s)", type(e).__name__)
+        if strict:
+            raise RuntimeError('voice_memo_source_query_failed') from None
         return []
     finally:
         if conn:
