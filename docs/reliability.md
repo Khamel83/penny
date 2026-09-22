@@ -6,6 +6,13 @@ downstream effect.
 
 ## Evidence layers
 
+For captures assigned to Drop by the persistent cutover, the Penny Drop outbox
+replaces new direct Slack/Maya intents. A validated stored intake receipt proves
+durable edge staging, not archival or downstream delivery. Historical export is
+an explicit text-only operation and suppresses Slack notifications. See
+[Drop delivery](drop-delivery.md). Existing independent delivery receipts below
+remain authoritative for pre-cutover captures.
+
 For every capture, keep these layers independent:
 
 1. source receipt and immutable local staging;

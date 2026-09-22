@@ -7,6 +7,12 @@ Memos; Just Press Record (JPR) is a later, explicitly gated pilot.
 
 ## Contract
 
+The approved Drop handoff adds a persistent cutover for future Voice Memos:
+local transcript -> durable Penny Drop outbox -> Drop intake -> independent
+Drop Slack/Maya readers. Audio remains local. The cutover is disabled until
+production receipt verification; existing direct delivery receipts remain intact.
+See [Drop operations](docs/drop-delivery.md).
+
 ```text
 capture -> immutable local staging -> canonical SQLite -> local MLX transcript
         -> local routing / Maya reasoning -> Hermes execution -> receipts

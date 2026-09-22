@@ -113,3 +113,18 @@ def test_needs_review_after_cutover_has_only_drop_notification(db):
         transcript='possibly inaccurate words', quality_status='needs_review', ingest_state='needs_review', quality_detail='repetition')
     assert db.execute('SELECT count(*) FROM drop_deliveries').fetchone()[0] == 1
     assert db.execute('SELECT count(*) FROM quality_failure_slack_deliveries WHERE transcript_row_id=?',(row_id,)).fetchone()[0] == 0
+
+
+def test_cutover_serializes_against_concurrent_insertion(db):
+    import threading
+    ledger.set_drop_cutover(db)  # Holds the write lock until this transaction commits.
+    result = []
+    worker = threading.Thread(target=lambda: result.append(ledger._insert_transcript_transaction(
+        content_hash='concurrent',source='iCloud',transcript='concurrent memo',quality_status='passed')))
+    worker.start()
+    db.commit()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert result[0] is not None
+    assert db.execute('SELECT count(*) FROM drop_deliveries').fetchone()[0] == 1
+    assert db.execute('SELECT count(*) FROM slack_deliveries').fetchone()[0] == 0
