@@ -25,7 +25,7 @@ class NoRedirect(HTTPRedirectHandler):
 def submit_payload(payload, headers, token, opener=None):
     opener = opener or build_opener(NoRedirect())
     request = Request(INTAKE, data=payload, method='POST',
-                      headers={**headers, 'Authorization': 'Bearer ' + token})
+                      headers={**headers, 'User-Agent': 'penny/1', 'Authorization': 'Bearer ' + token})
     with opener.open(request, timeout=10) as response:
         return json.loads(response.read(65536))
 

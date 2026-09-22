@@ -403,6 +403,8 @@ def _ensure_drop_schema(conn: sqlite3.Connection) -> None:
         claim_token TEXT, lease_until REAL, error_code TEXT,
         intake_receipt TEXT, archive_receipt TEXT,
         accepted_at REAL, UNIQUE(transcript_id,payload_sha256))''')
+    if 'historical' not in _table_columns(conn, 'drop_deliveries'):
+        conn.execute('ALTER TABLE drop_deliveries ADD COLUMN historical INTEGER NOT NULL DEFAULT 1')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_drop_due ON drop_deliveries(status,next_attempt_at)')
 
 
@@ -463,8 +465,8 @@ def queue_drop_delivery(conn, transcript_id: int, payload: bytes) -> None:
         raise ValueError('transcript_identity_mismatch')
     identity = 'penny:{producer_id}:{transcript_id}:{transcript_sha256}'.format(**metadata)
     conn.execute('''INSERT OR IGNORE INTO drop_deliveries
-        (transcript_id,identity,payload,payload_sha256,created_at) VALUES(?,?,?,?,?)''',
-        (transcript_id, identity, payload, hashlib.sha256(payload).hexdigest(), time.time()))
+        (transcript_id,identity,payload,payload_sha256,created_at,historical) VALUES(?,?,?,?,?,?)''',
+        (transcript_id, identity, payload, hashlib.sha256(payload).hexdigest(), time.time(),int(metadata['historical'])))
 
 
 def claim_drop_delivery(now=None, lease_seconds=60):
@@ -473,7 +475,7 @@ def claim_drop_delivery(now=None, lease_seconds=60):
     try:
         conn.execute('BEGIN IMMEDIATE')
         conn.execute("UPDATE drop_deliveries SET status='uncertain', claim_token=NULL, error_code='lease_expired' WHERE status='sending' AND lease_until<=?", (now,))
-        row = conn.execute("SELECT * FROM drop_deliveries WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT 1", (now,)).fetchone()
+        row = conn.execute("SELECT * FROM drop_deliveries WHERE status='pending' AND next_attempt_at<=? ORDER BY historical,id LIMIT 1", (now,)).fetchone()
         if row is None:
             conn.commit()
             return None

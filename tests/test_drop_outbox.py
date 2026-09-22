@@ -128,3 +128,12 @@ def test_cutover_serializes_against_concurrent_insertion(db):
     assert result[0] is not None
     assert db.execute('SELECT count(*) FROM drop_deliveries').fetchone()[0] == 1
     assert db.execute('SELECT count(*) FROM slack_deliveries').fetchone()[0] == 0
+
+
+def test_new_memo_has_priority_over_historical_import(db):
+    old=memo(db,text='historical')
+    ledger.queue_drop_delivery(db,old['id'],ledger.build_drop_payload(old,'installation-test',True,False))
+    new=memo(db,text='live')
+    ledger.queue_drop_delivery(db,new['id'],ledger.build_drop_payload(new,'installation-test',False,True))
+    db.commit()
+    assert ledger.claim_drop_delivery()['transcript_id']==new['id']

@@ -51,6 +51,18 @@ def test_stored_reconcile_pending_is_accepted():
     assert not mod.validate_receipt(receipt(b'text', drop_id='bad'), b'text')
 
 
+def test_wire_request_identifies_client_for_drop_edge():
+    import io
+    mod=adapter()
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_header('User-agent')=='penny/1'
+            assert request.get_header('Authorization')=='Bearer test'
+            assert request.data==b'text'
+            return io.BytesIO(json.dumps(receipt(b'text')).encode())
+    assert mod.validate_receipt(mod.submit_payload(b'text',{},'test',Opener()),b'text')
+
+
 @pytest.mark.parametrize('response,expected', [
     ({'ok': False, 'status':'rejected', 'reason':'unauthorized','retryable':False}, 'failed'),
     ({'ok': False, 'status':'not_stored', 'reason':'body_unreadable','retryable':True}, 'pending'),
