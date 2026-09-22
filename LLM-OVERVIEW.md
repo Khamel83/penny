@@ -43,9 +43,10 @@ is required; provisioning is the only network boundary. Apple Speech and
 MacWhisper are later challengers and cannot replace canonical transcripts until
 measured gates pass.
 
-Any remaining direct OpenRouter classification is transitional. Do not remove it
-until Maya's replacement is deployed, authenticated, idempotent, and verified.
-OpenRouter is not part of the transcription path.
+The remaining direct classifier route is transitional. It uses the explicit
+provider registry and may target OpenRouter through its OpenAI-compatible
+LangExtract provider. Do not remove it until Maya's replacement is deployed and
+proven. OpenRouter is not part of the transcription path.
 
 ## Readiness
 

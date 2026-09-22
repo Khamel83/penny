@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
 from dataclasses import dataclass
-from typing import List
+from pathlib import Path
+from typing import Any, List
 
 try:
     import tomllib
@@ -39,7 +39,12 @@ _config: "Config | None" = None
 
 @dataclass
 class LLMConfig:
+    provider: str
     model: str
+    endpoint: str
+    options: dict[str, Any]
+    api_key_env: str
+    custom_path: str
 
 
 @dataclass
@@ -112,6 +117,8 @@ class Config:
     archive: ArchiveConfig
     # Secrets — from environment variables
     openrouter_api_key: str
+    openai_api_key: str
+    gemini_api_key: str
     telegram_bot_token: str
     telegram_chat_id: str
     google_credentials_file: Path
@@ -183,6 +190,41 @@ def get_config() -> Config:
         7,
         7,
         "MAYA_MAX_AGE_DAYS",
+    )
+
+    llm_section = raw.get("llm", {})
+    llm_options = llm_section.get("options", {})
+    if not isinstance(llm_options, dict):
+        raise ValueError("llm.options must be a table")
+    llm_provider = os.environ.get(
+        "PENNY_LLM_PROVIDER", str(llm_section.get("provider", ""))
+    ).strip()
+    llm_model = os.environ.get(
+        "PENNY_LLM_MODEL", str(llm_section.get("model", ""))
+    ).strip()
+    llm_endpoint = os.environ.get(
+        "PENNY_LLM_ENDPOINT",
+        str(llm_section.get("endpoint", llm_section.get("base_url", ""))),
+    ).strip()
+    llm_api_key_env = os.environ.get(
+        "PENNY_LLM_API_KEY_ENV", str(llm_section.get("api_key_env", ""))
+    ).strip()
+    llm_custom_path = os.environ.get(
+        "PENNY_LLM_CUSTOM_PROVIDER_PATH",
+        str(
+            llm_section.get(
+                "custom_provider_path", llm_section.get("custom_path", "")
+            )
+        ),
+    ).strip()
+
+    llm = LLMConfig(
+        provider=llm_provider,
+        model=llm_model,
+        endpoint=llm_endpoint,
+        options=dict(llm_options),
+        api_key_env=llm_api_key_env,
+        custom_path=llm_custom_path,
     )
 
     maya = MayaConfig(
@@ -267,9 +309,7 @@ def get_config() -> Config:
         raise ValueError("PENNY_WHISPER_MODEL_PATH must be an absolute path")
 
     _config = Config(
-        llm=LLMConfig(
-            model=raw["llm"]["model"],
-        ),
+        llm=llm,
         google_tasks=GoogleTasksConfig(
             list_name=raw["google_tasks"]["list_name"],
             poll_interval_seconds=raw["google_tasks"]["poll_interval_seconds"],
@@ -303,9 +343,15 @@ def get_config() -> Config:
         ),
         maya=maya,
         archive=archive,
-        openrouter_api_key=env("OPENROUTER_API_KEY"),
-        telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
-        telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),
+        openrouter_api_key=env("OPENROUTER_API_KEY", warn_if_missing=False),
+        openai_api_key=env("OPENAI_API_KEY", warn_if_missing=False),
+        gemini_api_key=env("GEMINI_API_KEY", warn_if_missing=False),
+        telegram_bot_token=env(
+            "TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled
+        ),
+        telegram_chat_id=env(
+            "TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled
+        ),
         google_credentials_file=Path(
             os.environ.get("GOOGLE_CREDENTIALS_FILE", "~/.penny/google_credentials.json")
         ).expanduser(),

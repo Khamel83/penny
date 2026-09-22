@@ -110,6 +110,15 @@ and redacted exception classes. This is not a claim about every historical log
 artifact in the repository; Doctor output and deployment evidence remain
 metadata-only.
 
+The classifier provider is selected explicitly by `[llm].provider`; it never
+infers a remote provider from the model name. Supported modes are `openrouter`
+(OpenAI-compatible), `openai`, `gemini`, `ollama`, and `custom`. Provider
+endpoints and non-secret options are configured under `[llm]`/`[llm.options]`.
+Runtime credentials use `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or
+`GEMINI_API_KEY` as appropriate. Ollama defaults to loopback and needs no
+credential. A custom provider requires an explicit `custom_path` such as
+`package.module:ProviderClass`; setup failures fail closed to Inbox.
+
 ## Development checks
 
 ```bash

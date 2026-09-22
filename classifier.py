@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-LLM-based transcript classifier using OpenRouter.
+LLM-based transcript classifier.
 
-Extracts actionable items from voice memo transcripts and classifies
-each into a reminder category. Returns structured JSON.
+Configured pipeline callers use the explicit LangExtract provider registry.
+The legacy request path remains available for existing direct callers during
+the transitional migration.
+
 """
-
 import logging
 import json
 from typing import Any, Dict
@@ -77,6 +78,33 @@ def _build_context(transcript: str, duration_seconds: float | None = None) -> st
         if metadata_blob
         else f"Transcript: {transcript}"
     )
+def _provider_content(provider: Any, prompt: str) -> str:
+    """Return one provider completion without exposing its response."""
+    batches = provider.infer([prompt])
+    if isinstance(batches, (str, bytes)):
+        output = batches
+    else:
+        try:
+            batch = next(iter(batches))
+        except TypeError:
+            batch = batches
+        if isinstance(batch, (str, bytes)):
+            output = batch
+        elif isinstance(batch, dict):
+            output = batch.get("output")
+        else:
+            try:
+                first = next(iter(batch))
+            except TypeError:
+                first = batch
+            output = getattr(first, "output", first)
+    if not isinstance(output, str) or not output.strip():
+        raise ValueError("provider returned no text")
+    return output.strip()
+
+
+def _provider_prompt(system_prompt: str, context: str) -> str:
+    return f"{system_prompt}\n\n{context}\n\nRespond with only the requested output."
 
 
 def classify(
@@ -85,55 +113,51 @@ def classify(
     model: str,
     *,
     duration_seconds: float | None = None,
+    provider: Any | None = None,
 ) -> Dict[str, Any]:
     """
     Classify a transcript into actionable reminder items.
 
-    Returns one of:
-      {"items": [{"item": str, "category": str}, ...]}
-      {"skip": True, "reason": str}
-      {"items": [...], "fallback": True}  — on API/parse failure, raw text goes to Inbox
+    A configured LangExtract provider is used when supplied. The request-based
+    arguments remain supported for existing callers during the migration.
     """
     if not transcript.strip():
         return {"skip": True, "reason": "empty transcript"}
 
-    # Safety truncation — long notes should be caught by detect_content_type,
-    # but if they slip through, don't burn tokens.
     if len(transcript) > 4000:
         transcript = transcript[:4000] + "\n[...truncated]"
 
-    if not api_key:
-        log.warning("OPENROUTER_API_KEY not set — falling back to Inbox")
+    if provider is None and not api_key:
+        log.warning("Classifier credentials missing — falling back to Inbox")
         return _fallback(transcript)
 
     try:
-        resp = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": _build_context(
-                            transcript, duration_seconds=duration_seconds
-                        ),
-                    },
-                ],
-                "temperature": 0.1,
-                "max_tokens": 512,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
+        context = _build_context(transcript, duration_seconds=duration_seconds)
+        if provider is not None:
+            content = _provider_content(
+                provider, _provider_prompt(SYSTEM_PROMPT, context)
+            )
+        else:
+            resp = requests.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": context},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 512,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
 
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-
-        # Strip markdown code fences if the model wraps the response
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(
@@ -159,22 +183,16 @@ def classify(
         log.warning("Classifier response rejected code=unexpected_shape")
         return _fallback(transcript)
 
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError as exc:
         log.error(
             "Classifier provider response rejected code=invalid_json class=%s",
-            _safe_exception_class(e),
+            _safe_exception_class(exc),
         )
         return _fallback(transcript)
-    except requests.RequestException as e:
-        log.error(
-            "Classifier provider request failed class=%s",
-            _safe_exception_class(e),
-        )
-        return _fallback(transcript)
-    except Exception as e:
+    except Exception as exc:
         log.error(
             "Classifier provider failure class=%s",
-            _safe_exception_class(e),
+            _safe_exception_class(exc),
         )
         return _fallback(transcript)
 
@@ -193,52 +211,53 @@ def detect_content_type(
     model: str,
     *,
     duration_seconds: float | None = None,
+    provider: Any | None = None,
 ) -> str:
     """
     Pre-classify a transcript as 'action_items', 'long_note', or 'unclear'.
 
-    Returns 'unclear' on API failure (safest default).
+    Returns 'unclear' on provider failure (safest default).
     """
-    if not api_key:
+    if provider is None and not api_key:
         return "unclear"
 
     valid_types = {"action_items", "long_note", "unclear"}
 
     try:
-        resp = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": CONTENT_TYPE_PROMPT},
-                    {
-                        "role": "user",
-                        "content": _build_context(
-                            transcript, duration_seconds=duration_seconds
-                        ),
-                    },
-                ],
-                "temperature": 0.1,
-                "max_tokens": 16,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-
-        content = resp.json()["choices"][0]["message"]["content"].strip().lower()
+        context = _build_context(transcript, duration_seconds=duration_seconds)
+        if provider is not None:
+            content = _provider_content(
+                provider, _provider_prompt(CONTENT_TYPE_PROMPT, context)
+            ).lower()
+        else:
+            resp = requests.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": CONTENT_TYPE_PROMPT},
+                        {"role": "user", "content": context},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 16,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip().lower()
         if content in valid_types:
             return content
 
         log.warning("Content type response rejected code=unexpected_value")
         return "unclear"
 
-    except Exception as e:
+    except Exception as exc:
         log.error(
             "Content type provider failure class=%s",
-            _safe_exception_class(e),
+            _safe_exception_class(exc),
         )
         return "unclear"

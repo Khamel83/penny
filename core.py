@@ -23,6 +23,7 @@ import requests
 from apple_effects import AppleEffectError, AppleEffectReceipt, ensure_note, ensure_reminder
 from classifier import classify, detect_content_type
 from config import get_config
+from provider_registry import provider_for_config
 from reminders import add_note, add_reminder
 from transcript_log import (
     get_transcript,
@@ -603,11 +604,13 @@ def classify_and_route(
             routing_started_at=datetime.now().isoformat(),
         )
 
+    classifier_provider = provider_for_config(cfg)
     content_type = detect_content_type(
         transcript,
         cfg.openrouter_api_key,
         cfg.llm.model,
         duration_seconds=duration_seconds,
+        provider=classifier_provider,
     )
 
     try:
@@ -704,6 +707,7 @@ def classify_and_route(
             cfg.openrouter_api_key,
             cfg.llm.model,
             duration_seconds=duration_seconds,
+            provider=classifier_provider,
         )
 
         if result.get("skip"):

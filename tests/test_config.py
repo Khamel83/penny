@@ -52,10 +52,18 @@ class ConfigTests(unittest.TestCase):
         os.environ.pop("MAYA_MAX_AGE_DAYS", None)
         os.environ.pop("PENNY_INGEST_TOKEN", None)
         os.environ.pop("PENNY_WEBHOOK_HOST", None)
+        os.environ.pop("PENNY_LLM_PROVIDER", None)
+        os.environ.pop("PENNY_LLM_MODEL", None)
+        os.environ.pop("PENNY_LLM_ENDPOINT", None)
+        os.environ.pop("PENNY_LLM_API_KEY_ENV", None)
+        os.environ.pop("PENNY_LLM_CUSTOM_PROVIDER_PATH", None)
 
     def test_get_config_returns_config_with_expected_fields(self):
         cfg = config.get_config()
+        self.assertEqual(cfg.llm.provider, "openrouter")
         self.assertEqual(cfg.llm.model, "google/gemini-2.5-flash-lite")
+        self.assertEqual(cfg.llm.endpoint, "https://openrouter.ai/api/v1")
+        self.assertEqual(cfg.llm.options["temperature"], 0.1)
         self.assertEqual(cfg.google_tasks.list_name, "My Tasks")
         self.assertEqual(cfg.google_tasks.poll_interval_seconds, 180)
         self.assertIn("Groceries", cfg.apple_reminders.lists)
@@ -77,6 +85,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.webhook.ingest_token, "ingest-test-token")
         self.assertEqual(cfg.webhook.max_request_bytes, 51 * 1024 * 1024)
         self.assertEqual(cfg.openrouter_api_key, "test-key")
+
+    def test_llm_environment_overrides_file_selection(self):
+        os.environ["PENNY_LLM_PROVIDER"] = "ollama"
+        os.environ["PENNY_LLM_MODEL"] = "local-model"
+        os.environ["PENNY_LLM_ENDPOINT"] = "http://127.0.0.1:11434"
+        config._config = None
+
+        cfg = config.get_config()
+
+        self.assertEqual(cfg.llm.provider, "ollama")
+        self.assertEqual(cfg.llm.model, "local-model")
+        self.assertEqual(cfg.llm.endpoint, "http://127.0.0.1:11434")
 
     def test_webhook_host_can_be_overridden_for_lan_deployment(self):
         os.environ["PENNY_WEBHOOK_HOST"] = "0.0.0.0"
