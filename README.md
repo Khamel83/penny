@@ -57,6 +57,7 @@ passing local test.
 - `launchd/` — templates; a template is not proof that the installed agent is
   loaded or approved
 - `docs/` — operational contracts and recovery guidance
+- `.agents/skills/superpowers/` — pinned, selected agent workflow skills; provenance and hashes live in `docs/superpowers/superpowers-manifest.json`
 
 ## Services
 

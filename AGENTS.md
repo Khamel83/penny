@@ -70,6 +70,28 @@ Report ledger state, local receipt/archive state, runtime state, provider state,
 and each downstream delivery state separately. Stop when a required permission,
 receipt, or downstream effect is not proven.
 
+## Vendored Superpowers workflow
+
+Penny vendors a reviewed, pinned subset of the Superpowers skills for the
+documented Claude Code, Codex CLI, Antigravity, and Gateway2000 environments.
+The provenance, MIT license, selected skill scope, and SHA-256 file inventory
+are recorded in
+[`docs/superpowers/superpowers-manifest.json`](docs/superpowers/superpowers-manifest.json).
+The vendored files are under `.agents/skills/superpowers/`; load only the
+selected skill that matches the current work. This is a repository-local
+instruction set, not a runtime dependency or an external plugin installation.
+
+Run the metadata-only integrity check before adopting or updating the skills:
+
+```bash
+python3 scripts/check_superpowers.py
+```
+
+It fails on a missing file, changed vendored content, an unexpected extra file,
+or source repository/revision/selection drift. Never replace the pinned commit
+with a default branch or import capture content, transcripts, provider
+responses, tokens, credentials, or personal routing data.
+
 ## Canonical references
 
 - [`README.md`](README.md) — pipeline authority and boundaries

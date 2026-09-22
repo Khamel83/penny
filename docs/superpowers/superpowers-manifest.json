@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "source": {
+    "repository": "https://github.com/obra/superpowers",
+    "revision": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+    "revision_type": "git_commit",
+    "license": "MIT",
+    "license_file": "LICENSE",
+    "copyright": "Copyright (c) 2025 Jesse Vincent",
+    "supported_integration_formats": {
+      "claude_code": "official Claude plugin marketplace",
+      "codex_cli": "official Codex plugin marketplace",
+      "antigravity": "repository plugin install",
+      "opencode": "git-backed plugin entry in opencode.json"
+    }
+  },
+  "penny_integration": {
+    "method": "vendored_selected_skill_files",
+    "agent_environments": [
+      "Claude Code",
+      "Codex CLI",
+      "Antigravity",
+      "Gateway2000"
+    ],
+    "activation": "Agents load the selected files from .agents/skills/superpowers under the repository AGENTS.md contract.",
+    "runtime_dependency_added": false,
+    "moving_default_branch_tracked": false
+  },
+  "selected_skills": [
+    {
+      "name": "brainstorming",
+      "scope": "requirements discovery and design",
+      "source_path": "skills/brainstorming/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/brainstorming/SKILL.md",
+      "sha256": "aeba6156d5482a95f16cbc492cb37dd910115da64c3689523d63be08ace3d38a"
+    },
+    {
+      "name": "writing-plans",
+      "scope": "implementation planning",
+      "source_path": "skills/writing-plans/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/writing-plans/SKILL.md",
+      "sha256": "050d2d9fc3b29e2d9a3085ee16d6f840f547ed1766d4791ed2d01e2b7c84b24e"
+    },
+    {
+      "name": "test-driven-development",
+      "scope": "test-driven development",
+      "source_path": "skills/test-driven-development/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/test-driven-development/SKILL.md",
+      "sha256": "ab9e9931feef86e48ae35e71ea61497bae2ff0f06d4d0f4f0238f65fdc2cffef"
+    },
+    {
+      "name": "systematic-debugging",
+      "scope": "debugging",
+      "source_path": "skills/systematic-debugging/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/systematic-debugging/SKILL.md",
+      "sha256": "9080c23db452715d0f77cea8f465e5041fd683f39ccfdb9bf6a65e702bf42c2e"
+    },
+    {
+      "name": "subagent-driven-development",
+      "scope": "subagent execution",
+      "source_path": "skills/subagent-driven-development/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/SKILL.md",
+      "sha256": "1384bf1a1321b44cca8631d10dc299f54dc3fc4b034eb4cd6a90a0a64c85269c"
+    },
+    {
+      "name": "requesting-code-review",
+      "scope": "code review",
+      "source_path": "skills/requesting-code-review/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/requesting-code-review/SKILL.md",
+      "sha256": "be6b780e68a5e370980e66c5ec85c1b69bd59ad2534cf129a8fddb3e33e60898"
+    },
+    {
+      "name": "verification-before-completion",
+      "scope": "verification",
+      "source_path": "skills/verification-before-completion/SKILL.md",
+      "vendored_path": ".agents/skills/superpowers/verification-before-completion/SKILL.md",
+      "sha256": "07e72bb5e99c67b54745347e05f8c14cac384cf65b53ead4d26f1b25a2c1b461"
+    }
+  ],
+  "supporting_files": [
+    {
+      "source_path": "skills/test-driven-development/writing-good-tests.md",
+      "vendored_path": ".agents/skills/superpowers/test-driven-development/writing-good-tests.md",
+      "sha256": "84b4d504ae5e1f0d25745c962994c4c8964cf73db3bf79486a0f7d81f81c8b78"
+    },
+    {
+      "source_path": "skills/systematic-debugging/root-cause-tracing.md",
+      "vendored_path": ".agents/skills/superpowers/systematic-debugging/root-cause-tracing.md",
+      "sha256": "46d9c5b93562b1c44850793fed706e150393927781ed080612b9d0d6b8688a64"
+    },
+    {
+      "source_path": "skills/systematic-debugging/condition-based-waiting.md",
+      "vendored_path": ".agents/skills/superpowers/systematic-debugging/condition-based-waiting.md",
+      "sha256": "7db1ca5ae79c4be9347e89fc335c8f2f36b1ea4d3022f358101bcc5930159003"
+    },
+    {
+      "source_path": "skills/systematic-debugging/defense-in-depth.md",
+      "vendored_path": ".agents/skills/superpowers/systematic-debugging/defense-in-depth.md",
+      "sha256": "f82b32753cf4b785a5d636924fd537cdbcde101590b88d3fa7c1f7c37a3464dc"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/implementer-prompt.md",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/implementer-prompt.md",
+      "sha256": "e891a0454609f27c6df5d35de564ef0c3e19f2cdfb6672176ca87362d8c82a6d"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/task-reviewer-prompt.md",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/task-reviewer-prompt.md",
+      "sha256": "83a03d3363f2c4ac0911415eaca558626fc7b93ab206954ce23530fd85757b8b"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/re-review-prompt.md",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/re-review-prompt.md",
+      "sha256": "d9c84dbf73b9c839c5a5fc06accc4c29bbaed378b16e6bc58676882068bc4ecb"
+    },
+    {
+      "source_path": "skills/requesting-code-review/code-reviewer.md",
+      "vendored_path": ".agents/skills/superpowers/requesting-code-review/code-reviewer.md",
+      "sha256": "28e976c4002afd777f7bdcf5de78ca9e057a8e6307296bd73d4b30deb28cc390"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/scripts/review-package",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/scripts/review-package",
+      "sha256": "29a86d8571cca9b262b5d754e0ebce914b4c6b53974bc0f0ed2da64171c248fb"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/scripts/sdd-workspace",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/scripts/sdd-workspace",
+      "sha256": "01c1f080a4ef542155da847cf8a30d0167c6fd45a9c611353dfcbbf505453556"
+    },
+    {
+      "source_path": "skills/subagent-driven-development/scripts/task-brief",
+      "vendored_path": ".agents/skills/superpowers/subagent-driven-development/scripts/task-brief",
+      "sha256": "65fae97f3be54ec4c07925731dc97e99f02ca39ea7d41f137228c702fb2835d5"
+    },
+    {
+      "source_path": "LICENSE",
+      "vendored_path": ".agents/skills/superpowers/LICENSE",
+      "sha256": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400"
+    }
+  ],
+  "privacy": {
+    "imported_artifacts": "Methodology and agent instructions only; no capture data.",
+    "excluded_data": [
+      "audio",
+      "transcripts",
+      "provider responses",
+      "tokens",
+      "credentials",
+      "personal routing data"
+    ]
+  }
+}

@@ -10,6 +10,7 @@ Canonical docs for Penny live here.
 - `macmini-deployment.md` — Mac mini layout, launchd deployment, runtime locations
 - `troubleshooting.md` — concrete recovery steps for Voice Memos/iCloud issues
 - `ios-shortcut-setup.md` — optional alternate ingest path, not the primary flow
+- `superpowers/superpowers-manifest.json` — pinned agent-skill provenance and integrity inventory
 
 ## Current Product Shape
 

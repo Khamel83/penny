@@ -33,3 +33,6 @@ jobs:
 
       - name: Run trust check (compile + config invariants + launchd templates)
         run: python scripts/trust_check.py
+
+      - name: Verify pinned Superpowers skills
+        run: python scripts/check_superpowers.py
