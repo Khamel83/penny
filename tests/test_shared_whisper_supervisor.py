@@ -143,7 +143,8 @@ def test_atlas_completing_within_grace_runs_penny_on_same_worker():
     assert factory.workers[0].terminated.is_set() is False
 
 
-def test_atlas_is_preempted_after_grace_and_penny_uses_replacement_worker():
+@pytest.mark.parametrize('background_client', [ClientKind.ATLAS, ClientKind.BACKFILL])
+def test_atlas_is_preempted_after_grace_and_penny_uses_replacement_worker(background_client):
     factory = FakeFactory()
     supervisor = _supervisor(factory, grace_seconds=0.03)
     atlas_outcomes = []
@@ -151,7 +152,7 @@ def test_atlas_is_preempted_after_grace_and_penny_uses_replacement_worker():
 
     atlas_thread = _run_request(
         supervisor,
-        ClientKind.ATLAS,
+        background_client,
         atlas_outcomes,
         audio_path="atlas.wav",
         options={},

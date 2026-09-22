@@ -955,10 +955,16 @@ def _process_audio_file(
 
     file_seen_at = datetime.now().isoformat()
     transcription_started_at = datetime.now().isoformat()
-    transcription = transcribe_with_quality(
-        staged.path,
-        model=cfg.voice_memos.whisper_model_path,
-    )
+    if local_only:
+        from historical_transcription import transcribe_historical
+        transcription = transcribe_historical(
+            staged, duration_seconds=duration_seconds,
+            model=cfg.voice_memos.whisper_model_path, transcribe=transcribe_with_quality,
+        )
+    else:
+        transcription = transcribe_with_quality(
+            staged.path, model=cfg.voice_memos.whisper_model_path,
+        )
     transcription_completed_at = datetime.now().isoformat()
     transcript = transcription.text
 
@@ -1564,6 +1570,11 @@ def _reconcile_published_archives(limit: int) -> None:
             mark_archive_delivery_rebuild_needed(
                 delivery_id, "local_mirror_path_outside_root"
             )
+            continue
+        from archive import local_mirror_is_evicted
+        from transcript_log import mark_archive_validation_deferred
+        if local_mirror_is_evicted(row):
+            mark_archive_validation_deferred(delivery_id)
             continue
         valid = validate_local_mirror_receipt(row)
         if valid:

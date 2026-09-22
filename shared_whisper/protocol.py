@@ -12,6 +12,7 @@ class ClientKind(StrEnum):
 
     PENNY = "penny"
     ATLAS = "atlas"
+    BACKFILL = "backfill"
 
 
 @dataclass(frozen=True)

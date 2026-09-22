@@ -117,6 +117,13 @@ canonical ID, and publishes a new archive generation. Reports include
 transcription is complete. Historical placeholders longer than five minutes
 use bounded local audio chunks and private restart checkpoints. Their original
 audio stays intact. The normal capture path retains its configured size limit.
+Historical requests use the shared service's background priority, so a new
+Penny capture can interrupt a historical chunk. Recovery resumes from the last
+saved chunk. `scripts/run_voice_memo_recovery.py` runs bounded passes under a
+single-process lock and saves metadata progress in
+`~/.penny/historical-recovery.json`; it is suitable for a supervised local
+launchd job and loads credentials from the installed watcher without printing
+them. A nonzero exit or remaining placeholder count is incomplete recovery.
 
 The historical pass is local-only: it uses Penny's offline local transcription
 backend, does not call external/cloud providers, does not send

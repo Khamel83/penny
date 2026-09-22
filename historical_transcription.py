@@ -7,14 +7,33 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 from config import WHISPER_MODEL_ID
 from transcript_quality import QualityResult, TranscriptionResult
+from shared_whisper.protocol import WhisperBusy, WhisperPreempted
 
 
 def transcribe_historical(staged, *, duration_seconds, model, transcribe):
+    def run(path):
+        from config import get_config, WHISPER_MODEL_REVISION
+        from shared_whisper.client import SharedWhisperClient
+        from shared_whisper.protocol import ClientKind
+        cfg = get_config()
+        client = SharedWhisperClient(
+            base_url=cfg.shared_whisper.url, auth_token=cfg.shared_whisper.auth_token,
+            model_id=WHISPER_MODEL_ID, model_revision=WHISPER_MODEL_REVISION,
+            timeout=cfg.shared_whisper.timeout_seconds, client_kind=ClientKind.BACKFILL,
+        )
+        for attempt in range(60):
+            try:
+                return transcribe(path, model=model, client=client)
+            except (WhisperBusy, WhisperPreempted):
+                if attempt == 59:
+                    raise
+                time.sleep(5)
     if duration_seconds is None or duration_seconds <= 300:
-        return transcribe(staged.path, model=model)
+        return run(staged.path)
     if not math.isfinite(duration_seconds) or duration_seconds > 86400:
         raise ValueError('historical_duration_out_of_bounds')
     # Staging is immutable and hash-bound; cached chunks never enter routing.
@@ -39,7 +58,7 @@ def transcribe_historical(staged, *, duration_seconds, model, transcribe):
                 )
                 if decoded.returncode or not chunk.is_file() or chunk.stat().st_size <= 44:
                     raise RuntimeError('historical_chunk_decode_failed')
-                result = transcribe(chunk, model=model)
+                result = run(chunk)
             payload = {'model': WHISPER_MODEL_ID, 'audio_sha256': staged.audio_sha256,
                        'text': result.text, 'passed': result.quality.passed}
             with tempfile.NamedTemporaryFile(mode='w', dir=cache, delete=False) as handle:

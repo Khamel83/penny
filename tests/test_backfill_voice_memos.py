@@ -21,6 +21,21 @@ from scripts.backfill_voice_memos import compact_ranges, run_backfill  # noqa: E
 
 
 class BackfillVoiceMemoTests(unittest.TestCase):
+    def test_unavailable_linked_placeholder_does_not_starve_next_batch(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash='missing', source='iCloud',
+            transcript='(migrated — original transcript not preserved)',
+            quality_status='pending', enqueue_slack=False,
+        )
+        transcript_log.upsert_voice_memo_recording(10, raw_path='missing.m4a', label='old', duration_seconds=1)
+        transcript_log.link_voice_memo_transcript(10, transcript_row_id=row_id, content_hash='missing', audio_path='missing.m4a')
+        (self.voice_root / '10.m4a').unlink()
+        first = run_backfill(limit=1)
+        self.assertEqual(first['failed_count'], 1)
+        with patch.object(watcher, 'transcribe_with_quality', return_value=TranscriptionResult('next available', QualityResult(True), 1)):
+            second = run_backfill(limit=1)
+        self.assertEqual(second['processed_count'], 1)
+
     def test_linked_migration_placeholder_is_recovered_in_place(self) -> None:
         audio = self.voice_root / '10.m4a'
         content_hash = watcher.get_file_hash(audio)
@@ -35,12 +50,17 @@ class BackfillVoiceMemoTests(unittest.TestCase):
             10, transcript_row_id=row_id, content_hash=content_hash,
             audio_path=str(audio), routed=True,
         )
+        with transcript_log._get_conn() as conn:
+            conn.execute("INSERT INTO slack_deliveries (transcript_row_id, status, channel_id, message_text) VALUES (?, 'pending', 'C_TEST', 'old placeholder')", (row_id,))
         with patch.object(watcher, 'transcribe_with_quality', return_value=
                           TranscriptionResult('Recovered actual words.', QualityResult(True), 1)) as transcribe:
             report = run_backfill(limit=1)
             self.assertEqual(transcript_log.get_transcript(row_id)['transcript'], 'Recovered actual words.')
             transcribe.assert_called_once()
-        self.assertEqual(report['downstream_effect_count'], 0)
+        self.assertEqual(report['downstream_effect_count'], 1)
+        self.assertIsNone(transcript_log.claim_next_slack_delivery('test'))
+        with transcript_log._get_conn() as conn:
+            self.assertEqual(conn.execute('SELECT status FROM slack_deliveries WHERE transcript_row_id=?', (row_id,)).fetchone()[0], 'suppressed')
         self.assertEqual(transcript_log.get_transcript(row_id)['routing_suppressed'], 1)
         with patch.object(watcher, 'transcribe_with_quality') as transcribe:
             watcher.process_recording(watcher.get_recordings_by_pk([10])[10], local_only=True)

@@ -15,13 +15,22 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 LABELS = ('com.penny.shared-whisper', 'com.penny.watcher',
           'com.penny.webhook', 'com.penny.tasks', 'com.penny.export')
+ENTRYPOINTS = {
+    'com.penny.shared-whisper': ['-m', 'shared_whisper.server'],
+    'com.penny.watcher': [str(ROOT / 'watcher.py')],
+    'com.penny.webhook': [str(ROOT / 'webhook/server.py')],
+    'com.penny.tasks': [str(ROOT / 'tasks_poller.py')],
+    'com.penny.export': [str(ROOT / 'scripts/backup_penny.py')],
+}
 
 
 class DeploymentError(RuntimeError):
@@ -67,7 +76,9 @@ def installed(label: str) -> tuple[Path, dict]:
     data = plistlib.loads(path.read_bytes())
     args = data.get('ProgramArguments', [])
     if (data.get('Label') != label or data.get('WorkingDirectory') != str(ROOT)
-            or not args or Path(args[0]).parent != ROOT / 'venv/bin'):
+            or not args or args[0] not in {str(ROOT / 'venv/bin/python'), str(ROOT / 'venv/bin/python3')}
+            or args[1:] != ENTRYPOINTS[label]
+            or data.get('Program', args[0]) != args[0]):
         raise DeploymentError('runtime_path_mismatch:' + label)
     return path, data
 
@@ -75,13 +86,25 @@ def installed(label: str) -> tuple[Path, dict]:
 def reload_agent(label: str, sha: str, backup_dir: Path) -> dict:
     path, data = installed(label)
     old_worker = None
+    before = runtime(label)
     if label == 'com.penny.shared-whisper':
-        with urlopen('http://127.0.0.1:10311/health', timeout=5) as response:
-            health = json.load(response)
-        if health.get('active_client'):
+        try:
+            with urlopen('http://127.0.0.1:10311/health', timeout=5) as response:
+                health = json.load(response)
+        except OSError:
+            from shared_whisper.worker import MacMemoryGuard
+            if before['pid'] or MacMemoryGuard().has_existing_large_owner():
+                raise DeploymentError('shared_whisper_owner_unverified')
+            health = {}
+        for _ in range(120):
+            if not health.get('active_client'):
+                break
+            time.sleep(0.5)
+            with urlopen('http://127.0.0.1:10311/health', timeout=5) as response:
+                health = json.load(response)
+        else:
             raise DeploymentError('shared_whisper_busy')
         old_worker = health.get('worker_pid')
-    before = runtime(label)
     shutil.copy2(path, backup_dir / path.name)
     os.chmod(backup_dir / path.name, 0o600)
     data.setdefault('EnvironmentVariables', {})['PENNY_SOURCE_REVISION'] = sha
@@ -139,7 +162,9 @@ def main() -> int:
             os.chmod(directory / 'receipt.json', 0o600)
         else:
             receipt['status'] = 'current' if all(
-                r['loaded'] and r['revision'] == sha for r in receipt['services']
+                r['loaded'] and r['revision'] == sha
+                and (r['label'] == 'com.penny.export' or r['pid'])
+                for r in receipt['services']
             ) else 'revision_drift'
         print(json.dumps(receipt, sort_keys=True))
         return 0 if receipt['status'] in {'current', 'activated'} else 1

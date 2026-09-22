@@ -1287,7 +1287,11 @@ def _migrate_legacy_voice_memo_retry_state(conn: sqlite3.Connection) -> None:
            SET retryable = 0,
                next_attempt_at = NULL,
                terminal_at = COALESCE(terminal_at, datetime('now'))
-           WHERE transcript_row_id IS NOT NULL OR status = 'routed'"""
+           WHERE (transcript_row_id IS NOT NULL OR status = 'routed')
+             AND NOT EXISTS (
+                 SELECT 1 FROM transcripts t WHERE t.id = transcript_row_id
+                 AND t.transcript = '(migrated — original transcript not preserved)'
+             )"""
     )
     conn.execute(
         """UPDATE voice_memo_ingest
@@ -2502,6 +2506,7 @@ def claim_next_slack_delivery(
             LEFT JOIN transcripts
               ON transcripts.id = deliveries.transcript_row_id
             WHERE transcripts.quality_status = 'passed'
+              AND COALESCE(transcripts.routing_suppressed, 0) = 0
               AND (
                     (
                         deliveries.status = 'pending'
@@ -2632,6 +2637,7 @@ def claim_next_github_delivery(
             LEFT JOIN transcripts
               ON transcripts.id = deliveries.transcript_row_id
             WHERE transcripts.quality_status = 'passed'
+              AND COALESCE(transcripts.routing_suppressed, 0) = 0
               AND (
                     (
                         deliveries.status = 'pending'
@@ -2970,7 +2976,10 @@ def claim_next_quality_failure_delivery(
             """
             SELECT id
             FROM quality_failure_slack_deliveries
-            WHERE (
+            WHERE NOT EXISTS (
+                SELECT 1 FROM transcripts t
+                WHERE t.id = transcript_row_id AND t.routing_suppressed = 1
+            ) AND ((
                     status = 'pending'
                     AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
                   )
@@ -2981,7 +2990,7 @@ def claim_next_quality_failure_delivery(
                         OR julianday(slack_claim_expires_at) IS NULL
                         OR julianday(slack_claim_expires_at) <= julianday('now')
                     )
-                  )
+                  ))
             ORDER BY created_at ASC, id ASC
             LIMIT 1
             """
@@ -4774,6 +4783,15 @@ def recover_migrated_transcript(
         if cursor.rowcount != 1:
             conn.rollback()
             return False
+        for table in ('slack_deliveries', 'quality_failure_slack_deliveries', 'github_deliveries'):
+            lease_column = 'github_claim_expires_at' if table == 'github_deliveries' else 'slack_claim_expires_at'
+            conn.execute(
+                f"UPDATE {table} SET status = 'suppressed' "
+                "WHERE transcript_row_id = ? AND (status IN ('pending', 'failed') OR "
+                f"(status = 'delivering' AND ({lease_column} IS NULL OR julianday({lease_column}) IS NULL "
+                f"OR julianday({lease_column}) <= julianday('now'))))",
+                (transcript_id,),
+            )
         _queue_archive_delivery_conn(conn, transcript_id, staged, metadata)
         conn.execute(
             """UPDATE archive_deliveries SET publication_generation = publication_generation + 1,
@@ -4864,6 +4882,20 @@ def get_published_archive_deliveries(limit: int = 10) -> list[dict[str, Any]]:
     finally:
         if conn:
             conn.close()
+
+
+def mark_archive_validation_deferred(delivery_id: int) -> None:
+    """An evicted iCloud mirror is not evidence of corrupt immutable audio."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE archive_deliveries SET validation_status = 'deferred', "
+            "validation_error_code = 'local_mirror_evicted', last_validated_at = datetime('now') "
+            "WHERE id = ? AND status = 'published'", (delivery_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def mark_archive_delivery_validated(delivery_id: int) -> None:
@@ -6382,11 +6414,14 @@ def mark_voice_memo_retryable(
     try:
         conn = _get_conn()
         row = conn.execute(
-            """SELECT attempt_count, transcript_row_id FROM voice_memo_ingest
+            """SELECT attempt_count, transcript_row_id,
+                      (SELECT transcript = '(migrated — original transcript not preserved)'
+                       FROM transcripts WHERE id = transcript_row_id) AS placeholder
+               FROM voice_memo_ingest
                WHERE recording_pk = ?""",
             (recording_pk,),
         ).fetchone()
-        if row is None or row["transcript_row_id"] is not None:
+        if row is None or (row["transcript_row_id"] is not None and not row['placeholder']):
             return
         attempt_count = int(row["attempt_count"] or 0) + 1
         attempted_at = _voice_memo_now(now)

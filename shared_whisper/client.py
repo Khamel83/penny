@@ -27,6 +27,7 @@ class SharedWhisperClient:
         model_id: str,
         model_revision: str,
         timeout: float = 90.0,
+        client_kind: ClientKind = ClientKind.PENNY,
         post: Callable[..., Any] = requests.post,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -34,12 +35,13 @@ class SharedWhisperClient:
         self.model_id = model_id
         self.model_revision = model_revision
         self.timeout = max(1.0, float(timeout))
+        self.client_kind = ClientKind(client_kind)
         self._post = post
 
     def transcribe(self, path: Path, **options: Any) -> WhisperResult:
         """Submit a request and validate the pinned model identity."""
 
-        headers = request_headers(ClientKind.PENNY)
+        headers = request_headers(self.client_kind)
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         data = {

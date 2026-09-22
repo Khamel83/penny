@@ -107,6 +107,11 @@ database, reconcile archive objects by canonical ID and full hashes, and rerun
 Doctor before any external effect can resume. Retained sets are not deleted by
 iCloud synchronization.
 
+Mirror reconciliation recognizes macOS File Provider eviction markers. It
+records validation as deferred without downloading the whole audio file or
+quarantining the trio. Deferred validation is not current byte-verification;
+the immutable Penny object and verified backup remain the recovery authority.
+
 ## Doctor and service objectives
 
 The Doctor is read-only and metadata-only. It probes SQLite, Penny's Voice Memos

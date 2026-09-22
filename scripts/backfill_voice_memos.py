@@ -110,13 +110,16 @@ def _metadata_upsert(recording: dict[str, Any]) -> bool:
     )
 
 
-def _placeholder_source_pks() -> set[int]:
+def _placeholder_source_pks(*, due_only=False) -> set[int]:
     with closing(transcript_log._get_conn()) as conn:
         return {int(row[0]) for row in conn.execute(
             """SELECT v.recording_pk FROM voice_memo_ingest v
                JOIN transcripts t ON t.id = v.transcript_row_id
-               WHERE t.transcript = ?""",
-            ('(migrated — original transcript not preserved)',),
+               WHERE t.transcript = ? AND (? = 0 OR (
+                   v.status != 'failed_terminal' AND
+                   (v.next_attempt_at IS NULL OR julianday(v.next_attempt_at) <= julianday('now'))
+               ))""",
+            ('(migrated — original transcript not preserved)', int(due_only)),
         )}
 
 
@@ -137,7 +140,7 @@ def run_backfill(
     ledger_pks = transcript_log.get_voice_memo_recording_pks()
     initial_unindexed = source_pks - ledger_pks
     retryable_pks = _retryable_source_pks(source_pks)
-    placeholder_pks = _placeholder_source_pks()
+    placeholder_pks = _placeholder_source_pks(due_only=True)
     candidates = [
         row
         for row in source_rows
@@ -193,8 +196,23 @@ def run_backfill(
         "downstream_effect_count": _downstream_effect_count(),
         "dry_run": dry_run,
         "placeholder_source_count": len(_placeholder_source_pks() & source_pks),
+        "future_source_retry_count": len(
+            source_pks & {
+                int(row['recording_pk']) for row in _future_retries()
+            }
+        ),
     }
     return report
+
+
+def _future_retries():
+    with closing(transcript_log._get_conn()) as conn:
+        return conn.execute(
+            "SELECT recording_pk FROM voice_memo_ingest WHERE retryable = 1 "
+            "AND next_attempt_at IS NOT NULL AND julianday(next_attempt_at) > julianday('now') "
+            "AND (transcript_row_id IS NULL OR EXISTS (SELECT 1 FROM transcripts t "
+            "WHERE t.id = transcript_row_id AND t.transcript = '(migrated — original transcript not preserved)'))"
+        ).fetchall()
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -30,6 +30,7 @@ class SupervisorState(StrEnum):
     ATLAS_GRACE = "atlas_grace"
     STOPPING_ATLAS = "stopping_atlas"
     PENNY_RUNNING = "penny_running"
+    BACKFILL_RUNNING = "backfill_running"
 
 
 class MemoryGuard(Protocol):
@@ -123,7 +124,7 @@ class SharedWhisperSupervisor:
         client = ClientKind(client)
         if client is ClientKind.PENNY:
             return self._handle_penny(audio_path=audio_path, options=options)
-        return self._handle_atlas(audio_path=audio_path, options=options)
+        return self._handle_atlas(audio_path=audio_path, options=options, client=client)
 
     def expire_idle(self) -> bool:
         """Unload an idle model worker when the configured TTL has elapsed."""
@@ -140,9 +141,9 @@ class SharedWhisperSupervisor:
             self._condition.notify_all()
             return True
 
-    def _handle_atlas(self, *, audio_path: str, options: dict[str, Any]) -> WhisperResult:
+    def _handle_atlas(self, *, audio_path: str, options: dict[str, Any], client=ClientKind.ATLAS) -> WhisperResult:
         job = self._start_job(
-            ClientKind.ATLAS,
+            client,
             audio_path=audio_path,
             options=options,
         )
@@ -212,7 +213,8 @@ class SharedWhisperSupervisor:
         self._state = (
             SupervisorState.PENNY_RUNNING
             if client is ClientKind.PENNY
-            else SupervisorState.ATLAS_RUNNING
+            else (SupervisorState.BACKFILL_RUNNING if client is ClientKind.BACKFILL
+                  else SupervisorState.ATLAS_RUNNING)
         )
         self._last_used_at = self._clock()
         try:

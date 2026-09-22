@@ -479,6 +479,22 @@ def validate_archive(manifest_path: Path) -> bool:
         return False
 
 
+def local_mirror_is_evicted(row: dict[str, Any]) -> bool:
+    """Recognize File Provider placeholders without downloading archive audio."""
+    for key in ('destination_audio_path', 'destination_markdown_path', 'destination_manifest_path'):
+        raw = row.get(key)
+        if not raw:
+            continue
+        path = Path(raw)
+        try:
+            if getattr(path.stat(), 'st_flags', 0) & 0x40000000:  # macOS SF_DATALESS
+                return True
+        except FileNotFoundError:
+            if path.with_name('.' + path.name + '.icloud').exists():
+                return True
+    return False
+
+
 def validate_local_mirror_receipt(row: dict[str, Any]) -> bool:
     """Bind a valid local trio to the canonical delivery generation and receipt."""
     try:

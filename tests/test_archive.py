@@ -24,6 +24,14 @@ from archive import (
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_evicted_mirror_is_not_downloaded_for_reconciliation(self):
+        from types import SimpleNamespace
+        from archive import local_mirror_is_evicted
+        with (patch.object(Path, 'stat', return_value=SimpleNamespace(st_flags=0x40000000)),
+              patch.object(Path, 'open') as read):
+            self.assertTrue(local_mirror_is_evicted({'destination_audio_path': '/mirror/audio.m4a'}))
+        read.assert_not_called()
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
