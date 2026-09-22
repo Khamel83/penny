@@ -112,6 +112,37 @@ def test_rate_limit_is_durable_and_honors_long_delay(db):
     assert row['next_attempt_at'] >= time.time()+7195
 
 
+def test_storage_failure_is_uncertain_and_preserves_drop_identity(db):
+    mod=adapter()
+    row=memo(db)
+    ledger.queue_drop_delivery(db,row['id'],ledger.build_drop_payload(row,'installation-test',False,True))
+    db.commit()
+    drop_id=str(uuid.uuid4())
+    def send(*args):
+        return dict(ok=False,status='not_stored',retryable=True,reason='storage_failed',drop_id=drop_id)
+    mod.process_pending_drop_deliveries(token='test',send=send)
+    row=db.execute('SELECT status,intake_receipt FROM drop_deliveries').fetchone()
+    assert row['status']=='uncertain'
+    assert json.loads(row['intake_receipt'])['drop_id']==drop_id
+
+
+def test_uncertain_reconciliation_does_not_starve_later_rows(db,monkeypatch):
+    mod=adapter()
+    for text in ['absent old memo','archived later memo']:
+        row=memo(db,text=text)
+        ledger.queue_drop_delivery(db,row['id'],ledger.build_drop_payload(row,'installation-test',False,True))
+    db.execute("UPDATE drop_deliveries SET status='uncertain'")
+    db.commit()
+    examined=[]
+    def reconcile(row,client):
+        examined.append(row['id'])
+        return None
+    monkeypatch.setattr(mod,'reconcile_drop_delivery',reconcile)
+    mod.reconcile_pending_drop(1)
+    mod.reconcile_pending_drop(1)
+    assert examined==[1,2]
+
+
 def test_reconcile_requires_one_exact_archived_payload(db):
     mod = adapter()
     row = memo(db)

@@ -138,10 +138,35 @@ def reload_agent(label: str, sha: str, backup_dir: Path) -> dict:
     raise DeploymentError('activation_not_verified:' + label)
 
 
+def configure_drop(token: str, backup_dir: Path) -> None:
+    """Provision only the submitting agent's token; never print its value."""
+    if not token.strip():
+        raise DeploymentError('drop_token_missing')
+    targets = [installed(label) for label in ('com.penny.watcher', 'com.penny.webhook')]
+    for path, data in targets:
+        backup = backup_dir / (path.name + '.before-drop')
+        shutil.copy2(path, backup)
+        os.chmod(backup, 0o600)
+        environment = data.setdefault('EnvironmentVariables', {})
+        environment['PENNY_DROP_ENABLED'] = 'true'
+        if data['Label'] == 'com.penny.watcher':
+            environment['PENNY_DROP_TOKEN'] = token.strip()
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            os.chmod(temporary, 0o600)
+            plistlib.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true', help='back up and activate pushed main')
+    parser.add_argument('--configure-drop', action='store_true', help='install PENNY_DROP_TOKEN from process environment; requires --apply')
     args = parser.parse_args()
+    if args.configure_drop and (not args.apply or not os.environ.get('PENNY_DROP_TOKEN')):
+        parser.error('--configure-drop requires --apply and runtime PENNY_DROP_TOKEN')
     receipt = {'status': 'unverified', 'services': []}
     try:
         sha = pushed_revision()
@@ -154,6 +179,8 @@ def main() -> int:
             command([str(ROOT / 'venv/bin/python'), 'scripts/backup_penny.py', '--skip-export'])
             directory = Path.home() / '.penny/deployments' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
             directory.mkdir(parents=True, mode=0o700)
+            if args.configure_drop:
+                configure_drop(os.environ['PENNY_DROP_TOKEN'], directory)
             receipt['services'] = []
             for label in LABELS:
                 receipt['services'].append(reload_agent(label, sha, directory))

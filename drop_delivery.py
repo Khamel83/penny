@@ -74,6 +74,14 @@ def process_pending_drop_deliveries(limit=1, *, token=None, send=None):
                 receipt = {key: response.get(key) for key in ('drop_id', 'sha256', 'size_bytes', 'queue_state')}
                 delivered += int(ledger.finish_drop_delivery(claim, 'accepted', receipt=receipt))
             elif isinstance(response, dict) and response.get('ok') is False and response.get('status') in {'rejected', 'not_stored'}:
+                if response.get('status') == 'not_stored' and response.get('reason') not in {'body_unreadable', 'metadata_failed'}:
+                    receipt = None
+                    try:
+                        receipt = {'drop_id':str(uuid.UUID(response['drop_id']))}
+                    except (KeyError,ValueError,TypeError,AttributeError):
+                        pass
+                    ledger.finish_drop_delivery(claim,'uncertain',receipt=receipt,error_code='storage_uncertain')
+                    continue
                 retry = response.get('status') == 'not_stored' and response.get('retryable') is True
                 retry = retry and claim['attempt_count'] < 20
                 delay = min(1800, 30 * 2 ** min(claim['attempt_count'], 6)) + random.uniform(0, 10)
@@ -144,10 +152,20 @@ def reconcile_pending_drop(limit=1):
     """Read-only network reconciliation followed by a guarded local receipt write."""
     conn = ledger._get_conn()
     try:
-        rows = conn.execute("SELECT * FROM drop_deliveries WHERE status='uncertain' ORDER BY id LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute("SELECT * FROM drop_deliveries WHERE status='uncertain' AND next_attempt_at<=? ORDER BY next_attempt_at,id LIMIT ?", (time.time(),limit)).fetchall()
         count = 0
         for row in rows:
-            receipt = reconcile_drop_delivery(dict(row), DropReader())
+            # Commit scheduling before network work so a timeout cannot monopolize the queue.
+            conn.execute("UPDATE drop_deliveries SET next_attempt_at=? WHERE id=? AND status='uncertain'",(time.time()+300,row['id']))
+            conn.commit()
+            try:
+                receipt = reconcile_drop_delivery(dict(row), DropReader())
+            except ValueError as exc:
+                if str(exc) == 'duplicate_archived_identity':
+                    conn.execute("UPDATE drop_deliveries SET status='failed',error_code='duplicate_archived_identity' WHERE id=? AND status='uncertain'",(row['id'],))
+                    conn.commit()
+                    continue
+                raise
             if receipt:
                 conn.execute("UPDATE drop_deliveries SET status='accepted', archive_receipt=?, accepted_at=?, error_code=NULL WHERE id=? AND status='uncertain'",
                              (json.dumps(receipt), time.time(), row['id']))

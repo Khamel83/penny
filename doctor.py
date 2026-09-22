@@ -680,7 +680,8 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
     drop = getattr(config, 'drop', None)
     if not getattr(drop, 'enabled', False):
         return {'state': 'ready', 'reason': 'disabled', 'configured': False}
-    if not getattr(drop, 'ingest_token', ''):
+    token_configured = bool(getattr(drop, 'ingest_token', '')) or 'PENNY_DROP_TOKEN' in _launchd_environment_keys('com.penny.watcher', ('PENNY_DROP_TOKEN',))
+    if not token_configured:
         return {'state': 'unready', 'reason': 'secret_missing', 'configured': False}
     current = _now(now).timestamp()
     conn = sqlite3.connect(f'file:{_sqlite_path()}?mode=ro', uri=True, timeout=5)

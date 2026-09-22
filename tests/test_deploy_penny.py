@@ -54,3 +54,23 @@ def test_runtime_does_not_return_secret_values():
         result = deploy.runtime('com.penny.watcher')
     assert result['revision'] == 'a' * 40
     assert 'secret-value' not in str(result)
+
+
+def test_drop_runtime_configuration_preserves_existing_credentials(tmp_path, monkeypatch):
+    assert hasattr(deploy, 'configure_drop'), 'Safe runtime Drop configuration missing'
+    for label in ('com.penny.watcher','com.penny.webhook'):
+        path = make_installed(tmp_path,monkeypatch,label,deploy.ENTRYPOINTS[label])
+        data = plistlib.loads(path.read_bytes())
+        data['EnvironmentVariables']={'EXISTING_SECRET':'keep-me'}
+        path.write_bytes(plistlib.dumps(data))
+    backup = tmp_path/'backups'
+    backup.mkdir()
+    deploy.configure_drop('drop-test-secret',backup)
+    for label in ('com.penny.watcher','com.penny.webhook'):
+        data=plistlib.loads((tmp_path/'Library/LaunchAgents'/f'{label}.plist').read_bytes())
+        assert data['EnvironmentVariables']['EXISTING_SECRET']=='keep-me'
+        assert data['EnvironmentVariables']['PENNY_DROP_ENABLED']=='true'
+    watcher=plistlib.loads((tmp_path/'Library/LaunchAgents/com.penny.watcher.plist').read_bytes())
+    assert watcher['EnvironmentVariables']['PENNY_DROP_TOKEN']=='drop-test-secret'
+    webhook=plistlib.loads((tmp_path/'Library/LaunchAgents/com.penny.webhook.plist').read_bytes())
+    assert 'PENNY_DROP_TOKEN' not in webhook['EnvironmentVariables']
