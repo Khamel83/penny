@@ -1,5 +1,10 @@
 # Penny handoff
 
+## Current Mac backup placement — 2026-09-22
+
+[SSD backup placement](docs/ssd-backup-placement.md) records the owner-approved migration, installed mount-identity guard, matching export/webhook environment, fresh restore/remote proof, and retired internal staging. Preserve that placement in future plist rendering. The ledger and live audio were not moved; overall readiness remains separate from the passing backup checks.
+
+
 ## Active synchronized shared-Whisper cutover — 2026-09-17
 
 This is the Penny side of the Atlas handover plan:
