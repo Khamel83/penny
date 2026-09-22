@@ -27,6 +27,7 @@ from archive import (
     validate_archive,  # noqa: F401  (kept as a public watcher module helper)
     validate_local_mirror_receipt,
 )
+from content_detector import ContentClassification, ContentDetector
 from config import get_config
 from core import classify_and_route, get_file_hash, setup_logging
 from github_delivery import process_pending_github_deliveries
@@ -75,6 +76,7 @@ from transcript_log import (
 )
 
 cfg = get_config()
+CONTENT_DETECTOR = ContentDetector()
 log = setup_logging("watcher")
 
 # Paths
@@ -111,8 +113,8 @@ _voicememos_unresponsive_streak = 0
 
 _DEPENDENCY_ISSUE_CODES = frozenset(
     {
-        "ffmpeg_not_working",
         "ffmpeg_unavailable",
+        "magika_unavailable",
         "shared_whisper_client_unavailable",
         "offline_mode_required",
         "whisper_model_unavailable",
@@ -178,6 +180,11 @@ def check_dependencies() -> tuple[List[str], List[str]]:
         import requests  # noqa: F401
     except ImportError:
         errors.append("requests_unavailable")
+
+    try:
+        from magika import Magika  # noqa: F401
+    except ImportError:
+        errors.append("magika_unavailable")
 
     if not VOICE_MEMOS_DIR.exists():
         errors.append("voice_memos_directory_unavailable")
@@ -742,6 +749,82 @@ def _canonical_voice_terminal_state(row: Dict[str, Any]) -> str | None:
     return None
 
 
+def _retain_rejected_disk_capture(
+    audio_path: Path,
+    file_hash: str | None,
+    classification: ContentClassification,
+) -> bool:
+    """Persist a bounded review row so disk rejection is idempotent."""
+    if file_hash is None:
+        try:
+            file_hash = get_file_hash(audio_path)
+        except (FileNotFoundError, OSError):
+            return False
+    result = insert_transcript_result(
+        content_hash=file_hash,
+        source="iCloud",
+        transcript="(capture rejected by content validation)",
+        ingest_state="needs_review",
+        error_message="needs_review",
+        quality_status="needs_review",
+        quality_detail=f"content_detection={classification.status}",
+        enqueue_slack=False,
+    )
+    return result.outcome is not InsertOutcome.FAILED
+
+
+def _classify_completed_capture(
+    audio_path: Path, *, recording_pk: int | None = None
+) -> bool:
+    """Gate staging on a stable, content-based classification."""
+    classification = CONTENT_DETECTOR.classify(audio_path)
+    if classification.accepted:
+        return True
+
+    if classification.retryable:
+        if recording_pk is not None:
+            mark_voice_memo_retryable(recording_pk, "processing_error")
+        log.warning(
+            "Voice Memo content detection deferred (PK=%s, reason=%s)",
+            recording_pk,
+            classification.reason or "classification_failed",
+        )
+        return False
+
+    if recording_pk is not None:
+        mark_voice_memo_terminal(recording_pk, "needs_review")
+    log.warning(
+        "Voice Memo content rejected (PK=%s, status=%s, label=%s)",
+        recording_pk,
+        classification.status,
+        classification.label or "unknown",
+    )
+    return False
+
+
+def _classify_disk_capture(audio_path: Path, file_hash: str | None) -> bool:
+    """Classify a disk backlog candidate before immutable staging."""
+    classification = CONTENT_DETECTOR.classify(audio_path)
+    if classification.accepted:
+        return True
+    if classification.retryable:
+        log.warning(
+            "Voice Memo content detection deferred (PK=%s, reason=%s)",
+            None,
+            classification.reason or "classification_failed",
+        )
+        return False
+    _retain_rejected_disk_capture(audio_path, file_hash, classification)
+    log.warning(
+        "Voice Memo disk capture rejected (status=%s, label=%s)",
+        classification.status,
+        classification.label or "unknown",
+    )
+    return False
+
+
+
+
 def _process_audio_file(
     audio_path: Path,
     file_hash: str | None = None,
@@ -1082,6 +1165,8 @@ def process_recording(
         return False
 
     try:
+        if not _classify_completed_capture(audio_path, recording_pk=pk):
+            return False
         mark_voice_memo_file_seen(pk, str(audio_path))
         processed = _process_audio_file(
             audio_path,
@@ -1119,6 +1204,8 @@ def process_file(
             "Processing Voice Memo disk candidate (size_mb=%.1f)",
             audio_path.stat().st_size / (1024 * 1024),
         )
+        if not _classify_disk_capture(audio_path, file_hash):
+            return False
         return _process_audio_file(
             audio_path,
             file_hash=file_hash,

@@ -37,6 +37,7 @@ from apple_effects import AppleEffectReceipt  # noqa: E402
 import watcher  # noqa: E402
 import core  # noqa: E402
 import maya_delivery  # noqa: E402
+from content_detector import ContentClassification  # noqa: E402
 from archive import StagedAudio  # noqa: E402
 from transcript_log import InsertOutcome, TranscriptInsertResult  # noqa: E402
 from transcript_quality import QualityResult, TranscriptionResult  # noqa: E402
@@ -69,6 +70,15 @@ class WatcherTests(unittest.TestCase):
         patch.object(transcript_log, "TRANSCRIPT_DB_PATH", self.db_path).start()
         patch.object(transcript_log, "_MIGRATION_SOURCES", []).start()
         transcript_log.init_db()
+        patch.object(
+            watcher,
+            "CONTENT_DETECTOR",
+            SimpleNamespace(
+                classify=lambda _path: ContentClassification(
+                    "supported_audio", label="mp4", mime_type="video/mp4"
+                )
+            ),
+        ).start()
         self.addCleanup(patch.stopall)
 
     def test_main_sets_penny_process_title_before_startup(self) -> None:
@@ -165,6 +175,180 @@ class WatcherTests(unittest.TestCase):
             self.assertTrue(watcher._process_audio_file(audio_path, file_hash="legacy-md5"))
         self.assertEqual(events, ["stage", "transcribe", "insert"])
         self.assertIs(insert.call_args.kwargs["archive_staged"], staged)
+
+    def test_content_detection_precedes_staging_and_preserves_idempotency(self) -> None:
+        audio_path = Path(self.db_dir) / "renamed-capture.bin"
+        audio_path.write_bytes(b"capture bytes")
+        staged = StagedAudio(audio_path, "a" * 64, len(b"capture bytes"), ".bin")
+        events: list[str] = []
+
+        class Detector:
+            def classify(self, path: Path) -> ContentClassification:
+                events.append("classify")
+                return ContentClassification(
+                    "supported_audio", label="mp4", mime_type="video/mp4"
+                )
+
+        duplicate = {
+            "id": 42,
+            "quality_status": "passed",
+            "status": "routed",
+            "transcript": "already routed",
+            "source": "iCloud",
+        }
+        with (
+            patch.object(watcher, "CONTENT_DETECTOR", Detector()),
+            patch.object(
+                watcher,
+                "stage_audio",
+                side_effect=lambda *args, **kwargs: (
+                    events.append("stage"),
+                    staged,
+                )[1],
+            ) as stage,
+            patch.object(
+                watcher,
+                "get_file_hash",
+                return_value="capture-hash",
+            ),
+            patch.object(
+                watcher,
+                "transcribe_with_quality",
+                side_effect=lambda *args, **kwargs: (
+                    events.append("transcribe"),
+                    TranscriptionResult("new transcript", QualityResult(True), 1),
+                )[1],
+            ) as transcribe,
+            patch.object(
+                watcher,
+                "insert_transcript_result",
+                side_effect=[
+                    _inserted(42),
+                    TranscriptInsertResult(InsertOutcome.DUPLICATE, row_id=42),
+                ],
+            ) as insert,
+            patch.object(
+                watcher,
+                "get_transcript_by_hash",
+                side_effect=[None, duplicate],
+            ),
+            patch.object(watcher, "queue_archive_delivery"),
+            patch.object(watcher, "classify_and_route"),
+        ):
+            self.assertTrue(watcher.process_file(audio_path, file_hash="capture-hash"))
+            self.assertTrue(watcher.process_file(audio_path, file_hash="capture-hash"))
+
+        self.assertEqual(events[:3], ["classify", "stage", "transcribe"])
+        self.assertEqual(events.count("classify"), 2)
+        self.assertEqual(events.count("stage"), 2)
+        transcribe.assert_called_once()
+        self.assertEqual(insert.call_count, 1)
+        self.assertEqual(stage.call_count, 2)
+
+    def test_rejected_content_is_reviewed_without_staging_or_transcription(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos"
+        voice_root.mkdir()
+        capture = voice_root / "renamed.m4a"
+        capture.write_bytes(b"not audio")
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(
+                watcher,
+                "CONTENT_DETECTOR",
+                SimpleNamespace(
+                    classify=lambda _path: ContentClassification(
+                        "non_audio", label="pdf", mime_type="application/pdf"
+                    )
+                ),
+            ),
+            patch.object(watcher, "stage_audio") as stage,
+            patch.object(watcher, "transcribe_with_quality") as transcribe,
+        ):
+            self.assertFalse(
+                watcher.process_recording(
+                    {
+                        "Z_PK": 901,
+                        "ZPATH": capture.name,
+                        "ZDATE": 1,
+                        "ZDURATION": 1,
+                    }
+                )
+            )
+
+        stage.assert_not_called()
+        transcribe.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, error_message, retryable "
+                "FROM voice_memo_ingest WHERE recording_pk = 901"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(tuple(row), ("needs_review", "needs_review", 0))
+
+    def test_content_detection_failure_remains_retryable(self) -> None:
+        voice_root = Path(self.db_dir) / "voice-memos"
+        voice_root.mkdir()
+        capture = voice_root / "not-ready.m4a"
+        capture.write_bytes(b"partial")
+        with (
+            patch.object(watcher, "VOICE_MEMOS_DIR", voice_root),
+            patch.object(
+                watcher,
+                "CONTENT_DETECTOR",
+                SimpleNamespace(
+                    classify=lambda _path: ContentClassification(
+                        "retryable", reason="source_changed"
+                    )
+                ),
+            ),
+            patch.object(watcher, "stage_audio") as stage,
+        ):
+            self.assertFalse(
+                watcher.process_recording(
+                    {
+                        "Z_PK": 902,
+                        "ZPATH": capture.name,
+                        "ZDATE": 1,
+                        "ZDURATION": 1,
+                    }
+                )
+            )
+
+        stage.assert_not_called()
+        conn = transcript_log._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status, error_message, retryable "
+                "FROM voice_memo_ingest WHERE recording_pk = 902"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(tuple(row), ("failed", "processing_error", 1))
+
+    def test_disk_rejection_is_retained_and_idempotent(self) -> None:
+        capture = Path(self.db_dir) / "renamed.m4a"
+        capture.write_bytes(b"not audio")
+        rejected = ContentClassification(
+            "non_audio", label="pdf", mime_type="application/pdf"
+        )
+        with (
+            patch.object(
+                watcher,
+                "CONTENT_DETECTOR",
+                SimpleNamespace(classify=lambda _path: rejected),
+            ),
+            patch.object(watcher, "stage_audio") as stage,
+        ):
+            self.assertFalse(watcher.process_file(capture, file_hash="disk-rejected"))
+            self.assertFalse(watcher.process_file(capture, file_hash="disk-rejected"))
+
+        stage.assert_not_called()
+        row = transcript_log.get_transcript_by_hash("disk-rejected")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["quality_status"], "needs_review")
+        self.assertEqual(row["ingest_state"], "needs_review")
 
     def test_voice_memo_link_preserves_apple_source_path_while_transcript_uses_stage(self) -> None:
         audio_path = Path(self.db_dir) / "source-provenance.m4a"
