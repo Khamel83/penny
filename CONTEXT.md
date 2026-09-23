@@ -46,12 +46,9 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-- `d33580f` — Preserved the installed SSD guard and backup placement during deployment.
-- `c6bdc71` — Recorded verified Drop cutover and quiet Maya history import.
-- `04480ec` — Documented preservation of verified SSD backup placement across deployments.
-- `b53d64f` — Recorded live verification and held import for Maya quiet storage.
-- `f915d99` — Identified the Penny intake client and prioritized live memos over historical export.
-- `1bd490a` — Fixed ambiguous intake recovery and provisioned the Drop runtime safely.
-- `01b53ad` — Added a quiet resumable historical Drop export and documented cutover operations.
-- `f03bd62` — Delivered frozen transcripts through the existing Drop intake with receipt validation.
+- `787fc70e935a176643b0b7383cb14e87f4daf06e`: Recorded Penny production handoff and delivery verification.
+- `b9c3158802beafb174a2807b8515ac0f096759cd`: Distinguished live capture health from retained historical failures.
+- `84e5e3eb7ce181ec363051d6ac6a5b1f5890f7cd`: Recorded verified Maya search and durable transcript reads.
+- `d33580feda63d9bf461bbbe7e0019d1766c03288`: Preserved installed SSD guard and backup placement during deployment.
+- `c6bdc7152c2896bbfd6a84b4b0a473133bf2a2f4`: Recorded verified Drop cutover and quiet Maya history import.
 <!-- janitor:end:recent -->
