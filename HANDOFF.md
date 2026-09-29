@@ -30,10 +30,14 @@ archive ready and zero current Voice Memo terminal failures. OCI's supervised
 `20260929T185944.154146+0000-3527be8927474e7a90f06c7fb3c2ec58.json`,
 also `degraded`. Historical absences, Apple quarantine and old Maya dead
 letters remain visible; this is not an all-ready claim. The obsolete GitHub
-`health-check.yml` still queues on `oci-dev` in public Penny; this branch
-removes it after native timer proof. Next: merge this deletion, verify the
-next natural OCI timer after recovery, and keep row 769 private for quality
-review. Preserve the owner's dirty root files.
+`health-check.yml` was removed by PR #58, merged as `873f5be7` after exact-head
+review and hosted Python 3.11/3.12 CI; merged-main CI also passed. Historical
+queued Health Check run 36589491752 and AI Review run 36491923787 were
+canceled. The Mac source checkout fast-forwarded to that merge without changing
+its dirty `LLM-OVERVIEW.md` or untracked `CLAUDE.md`; the watcher process was
+not reloaded for this workflow-only change. Next: verify the first natural OCI
+timer after recovery and keep row 769 private for quality review. Resolve the
+remaining historical Doctor degradation separately.
 
 ## OCI review and Mac Doctor checkpoint — 2026-09-29
 
