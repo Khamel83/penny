@@ -959,12 +959,15 @@ def _process_audio_file(
 
     file_seen_at = datetime.now().isoformat()
     transcription_started_at = datetime.now().isoformat()
-    if local_only:
+    if local_only or (duration_seconds is not None and duration_seconds > 120):
         from historical_transcription import transcribe_historical
+        from shared_whisper.protocol import ClientKind
         transcription = transcribe_historical(
             staged, duration_seconds=duration_seconds,
             model=cfg.voice_memos.whisper_model_path, transcribe=transcribe_with_quality,
             checkpoint_root=Path(cfg.archive.object_root).parent / 'recovery',
+            chunk_seconds=300 if local_only else 120,
+            client_kind=ClientKind.BACKFILL if local_only else ClientKind.PENNY,
         )
     else:
         transcription = transcribe_with_quality(

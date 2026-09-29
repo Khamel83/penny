@@ -1414,6 +1414,26 @@ class WatcherTests(unittest.TestCase):
         stage_mock.assert_not_called()
         slack_mock.assert_not_called()
 
+    def test_long_live_memo_uses_private_chunks_with_penny_priority(self) -> None:
+        from shared_whisper.protocol import ClientKind
+
+        audio_path = Path(self.db_dir) / "long-live.m4a"
+        audio_path.write_bytes(b"audio")
+        with (
+            patch("historical_transcription.transcribe_historical", return_value=
+                  TranscriptionResult("words", QualityResult(True), 1)) as chunks,
+            patch.object(watcher, "transcribe_with_quality") as whole,
+            patch.object(watcher, "classify_and_route") as route,
+        ):
+            self.assertTrue(watcher._process_audio_file(
+                audio_path, file_hash="long-live", duration_seconds=5589,
+            ))
+
+        whole.assert_not_called()
+        self.assertEqual(chunks.call_args.kwargs["chunk_seconds"], 120)
+        self.assertEqual(chunks.call_args.kwargs["client_kind"], ClientKind.PENNY)
+        route.assert_called_once()
+
     def test_low_quality_transcription_is_retained_for_review_without_routing(self) -> None:
         audio_path = Path(self.db_dir) / "low-quality-transcription.m4a"
         audio_path.write_bytes(b"audio")

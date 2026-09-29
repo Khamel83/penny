@@ -1,3 +1,8 @@
+Long live Voice Memos use the local shared-Whisper owner with Penny priority
+and private audio-hash-bound chunk checkpoints. Historical backfill uses its
+separate backfill priority and existing checkpoint location. Chunk completion
+does not prove a canonical ledger link, archive, backup or downstream effect.
+
 <!-- janitor:begin:branches -->
 ## Branch and Worktree Review
 Base: refs/remotes/origin/main @ c3d517c2fee291c2e066e69ece2fb5ac55894de7
