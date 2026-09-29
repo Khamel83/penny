@@ -92,7 +92,7 @@ class ReliabilityContractTests(unittest.TestCase):
         self.assertIn("PENNY_HERMES_WEBHOOK_SECRET", trust_check)
         self.assertIn("PENNY_SOURCE_REVISION", trust_check)
         self.assertIn("PENNY_ARCHIVE_OBJECT_ROOT", trust_check)
-        self.assertIn("scripts/penny_doctor.py", trust_check)
+        self.assertIn("obsolete private health-check workflow remains", trust_check)
         self.assertNotIn("check_health_check_sync", trust_check)
         self.assertIn("FORBIDDEN_WORKFLOW_TOKENS", trust_check)
 
