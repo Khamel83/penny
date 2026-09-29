@@ -1,3 +1,8 @@
+## Current Voice Memo recovery — September 29, 2026
+
+- [ ] Merge and deploy the long live memo chunk path, then verify the installed watcher revision and a fresh Doctor receipt.
+- [ ] Recover exact failed Voice Memo PK 440 through local-only replay. Verify ledger link, quality, archive and backup without downstream delivery. Recheck watcher and OCI Doctor readiness.
+
 ## Active synchronized task: Atlas/MinusPod shared-Whisper cutover
 
 This Penny queue is synchronized with the Atlas execution authority at

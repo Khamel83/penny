@@ -11,19 +11,23 @@ import time
 
 from config import WHISPER_MODEL_ID
 from transcript_quality import QualityResult, TranscriptionResult
-from shared_whisper.protocol import WhisperBusy, WhisperPreempted
+from shared_whisper.protocol import ClientKind, WhisperBusy, WhisperPreempted
 
 
-def transcribe_historical(staged, *, duration_seconds, model, transcribe, checkpoint_root):
+def transcribe_historical(
+    staged, *, duration_seconds, model, transcribe, checkpoint_root,
+    chunk_seconds=300, client_kind=None,
+):
+    """Transcribe locally with private, hash-bound checkpoints for long audio."""
     def run(path):
         from config import get_config, WHISPER_MODEL_REVISION
         from shared_whisper.client import SharedWhisperClient
-        from shared_whisper.protocol import ClientKind
         cfg = get_config()
         client = SharedWhisperClient(
             base_url=cfg.shared_whisper.url, auth_token=cfg.shared_whisper.auth_token,
             model_id=WHISPER_MODEL_ID, model_revision=WHISPER_MODEL_REVISION,
-            timeout=cfg.shared_whisper.timeout_seconds, client_kind=ClientKind.BACKFILL,
+            timeout=cfg.shared_whisper.timeout_seconds,
+            client_kind=client_kind or ClientKind.BACKFILL,
         )
         for attempt in range(60):
             try:
@@ -32,15 +36,21 @@ def transcribe_historical(staged, *, duration_seconds, model, transcribe, checkp
                 if attempt == 59:
                     raise
                 time.sleep(5)
-    if duration_seconds is None or duration_seconds <= 300:
+    if duration_seconds is None or duration_seconds <= chunk_seconds:
         return run(staged.path)
     if not math.isfinite(duration_seconds) or duration_seconds > 86400:
         raise ValueError('historical_duration_out_of_bounds')
     # Staging is immutable and hash-bound; cached chunks never enter routing.
-    cache = Path(checkpoint_root) / staged.audio_sha256
+    # Preserve old backfill checkpoints. A live policy uses a different path
+    # because its chunk boundaries and worker priority differ.
+    kind = client_kind or ClientKind.BACKFILL
+    cache_root = Path(checkpoint_root)
+    if chunk_seconds != 300 or kind != ClientKind.BACKFILL:
+        cache_root /= f'{chunk_seconds}-{kind.value}'
+    cache = cache_root / staged.audio_sha256
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
     texts, failures = [], []
-    for index in range(math.ceil(duration_seconds / 300)):
+    for index in range(math.ceil(duration_seconds / chunk_seconds)):
         checkpoint = cache / f'{index:05d}.json'
         result = None
         if checkpoint.is_file():
@@ -51,8 +61,8 @@ def transcribe_historical(staged, *, duration_seconds, model, transcribe, checkp
             with tempfile.TemporaryDirectory(prefix='chunk-', dir=cache) as temporary:
                 chunk = Path(temporary) / 'audio.wav'
                 decoded = subprocess.run(
-                    ['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(index * 300),
-                     '-i', str(staged.path), '-t', str(min(300, duration_seconds - index * 300)),
+                    ['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(index * chunk_seconds),
+                     '-i', str(staged.path), '-t', str(min(chunk_seconds, duration_seconds - index * chunk_seconds)),
                      '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', str(chunk)],
                     capture_output=True, timeout=120,
                 )

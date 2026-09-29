@@ -1,5 +1,19 @@
 # Penny handoff
 
+## Current checkpoint — long Voice Memo failure — September 29, 2026
+
+Mac Doctor reports one current terminal Voice Memo and an unhealthy watcher.
+The exact source row is PK 440, about 93 minutes long, with eight failed
+attempts ending September 27. Safe logs show one shared-Whisper unavailable
+response and seven busy responses. The live path submitted the whole audio
+through a 90-second client timeout; the historical path already used private
+chunks and checkpoints. The source candidate routes live recordings longer
+than 120 seconds through 120-second chunks with Penny priority, preserving
+historical backfill checkpoints. This is source and test evidence only.
+Next: merge, deploy from exact clean main, verify watcher and Doctor, then
+locally recover PK 440 without downstream delivery and inspect its durable
+ledger/backup result. Keep audio and transcript content private.
+
 ## OCI review and Mac Doctor checkpoint — 2026-09-29
 
 This branch removes the legacy `AI Review` workflow that requested the

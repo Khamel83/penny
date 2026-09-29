@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from archive import stage_audio
 from historical_transcription import transcribe_historical
 from transcript_quality import QualityResult, TranscriptionResult
+from shared_whisper.protocol import ClientKind
 
 
 def test_long_recovery_resumes_chunks_and_keeps_quality_failure(tmp_path, monkeypatch):
@@ -29,3 +30,34 @@ def test_long_recovery_resumes_chunks_and_keeps_quality_failure(tmp_path, monkey
     transcribe.assert_not_called()
     from backup import _archive_objects
     assert len(_archive_objects(tmp_path / 'objects')) == 1
+
+
+def test_live_chunk_policy_is_separate_and_uses_penny_priority(tmp_path, monkeypatch):
+    audio = tmp_path / 'original.m4a'
+    audio.write_bytes(b'original')
+    staged = stage_audio(audio, tmp_path / 'objects')
+    offsets = []
+
+    def decode(args, **kwargs):
+        offsets.append(args[args.index('-ss') + 1])
+        Path(args[-1]).write_bytes(b'w' * 100)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr('historical_transcription.subprocess.run', decode)
+    transcribe = Mock(return_value=TranscriptionResult('words', QualityResult(True), 1))
+    result = transcribe_historical(
+        staged, duration_seconds=250, model='local', transcribe=transcribe,
+        checkpoint_root=tmp_path / 'recovery', chunk_seconds=120,
+        client_kind=ClientKind.PENNY,
+    )
+    assert result.quality.passed
+    assert offsets == ['0', '120', '240']
+    assert [call.kwargs['client'].client_kind for call in transcribe.call_args_list] == [ClientKind.PENNY] * 3
+    assert len(list((tmp_path / 'recovery' / '120-penny' / staged.audio_sha256).glob('*.json'))) == 3
+    transcribe.reset_mock()
+    transcribe_historical(
+        staged, duration_seconds=250, model='local', transcribe=transcribe,
+        checkpoint_root=tmp_path / 'recovery', chunk_seconds=120,
+        client_kind=ClientKind.PENNY,
+    )
+    transcribe.assert_not_called()
