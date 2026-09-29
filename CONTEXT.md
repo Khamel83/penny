@@ -3,6 +3,12 @@ and private audio-hash-bound chunk checkpoints. Historical backfill uses its
 separate backfill priority and existing checkpoint location. Chunk completion
 does not prove a canonical ledger link, archive, backup or downstream effect.
 
+OCI owns the scheduled, read-only Mac Doctor observation through its native
+`penny-health.timer` and private receipt. A public Penny GitHub Actions worker
+is not an authorized health-check execution path. Doctor `degraded` remains a
+valid observed capability state; it does not authorize delivery of a
+`needs_review` transcript.
+
 <!-- janitor:begin:branches -->
 ## Branch and Worktree Review
 Base: refs/remotes/origin/main @ c3d517c2fee291c2e066e69ece2fb5ac55894de7

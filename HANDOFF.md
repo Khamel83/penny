@@ -1,18 +1,39 @@
 # Penny handoff
 
-## Current checkpoint — long Voice Memo failure — September 29, 2026
+## Current checkpoint — Voice Memo recovery and OCI health — September 29, 2026
 
-Mac Doctor reports one current terminal Voice Memo and an unhealthy watcher.
-The exact source row is PK 440, about 93 minutes long, with eight failed
-attempts ending September 27. Safe logs show one shared-Whisper unavailable
-response and seven busy responses. The live path submitted the whole audio
-through a 90-second client timeout; the historical path already used private
-chunks and checkpoints. The source candidate routes live recordings longer
-than 120 seconds through 120-second chunks with Penny priority, preserving
-historical backfill checkpoints. This is source and test evidence only.
-Next: merge, deploy from exact clean main, verify watcher and Doctor, then
-locally recover PK 440 without downstream delivery and inspect its durable
-ledger/backup result. Keep audio and transcript content private.
+PR #57 merged at `61f88908`; the Mac checkout fast-forwarded to that main
+without changing its unrelated dirty `LLM-OVERVIEW.md` or untracked
+`CLAUDE.md`. The watcher-only launchd reload reports revision `61f88908`
+and a private receipt under `~/.penny/deployments/20260929T184354Z-watcher-only/`.
+Source verification was 91 watcher/historical tests with 10 subtests, Ruff,
+the hosted Python 3.11/3.12 checks, exact-head reviewer pass, and the
+installed-source trust check (491 tests, two skipped).
+
+Exact Voice Memo PK 440, about 93 minutes, had a terminal failure after a
+whole-file shared-Whisper request and retries. A first local-only recovery
+attempt used a shell without the installed Whisper token and failed with a
+protocol error; the token mismatch was then confirmed from the installed
+launchd environment. It did not create a transcript or downstream row. With
+the installed watcher
+environment, a second scoped local-only pass completed 19 private 300-second
+checkpoints and linked transcript row 769. Fifteen chunks failed the
+consecutive-token-repetition quality rule, so row 769 remains `needs_review`
+with routing suppressed. The archive is published and valid with receipt
+`64f18bc8`; a fresh installed backup includes max transcript ID 769 and 517
+rows. No Drop, Slack, quality-alert or Maya delivery was queued for that row.
+No audio or transcript text was printed or sent.
+
+Mac Doctor now exits 1 `degraded`, with services, transcription, backup and
+archive ready and zero current Voice Memo terminal failures. OCI's supervised
+`penny-health.service` ended success/exit 0 with mode-0600 receipt
+`20260929T185944.154146+0000-3527be8927474e7a90f06c7fb3c2ec58.json`,
+also `degraded`. Historical absences, Apple quarantine and old Maya dead
+letters remain visible; this is not an all-ready claim. The obsolete GitHub
+`health-check.yml` still queues on `oci-dev` in public Penny; this branch
+removes it after native timer proof. Next: merge this deletion, verify the
+next natural OCI timer after recovery, and keep row 769 private for quality
+review. Preserve the owner's dirty root files.
 
 ## OCI review and Mac Doctor checkpoint — 2026-09-29
 
