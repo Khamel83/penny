@@ -46,11 +46,12 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-- `787fc70e935a176643b0b7383cb14e87f4daf06e`: Recorded Penny production handoff and delivery verification.
-- `b9c3158802beafb174a2807b8515ac0f096759cd`: Distinguished live capture health from retained historical failures.
-- `84e5e3eb7ce181ec363051d6ac6a5b1f5890f7cd`: Recorded verified Maya search and durable transcript reads.
-- `d33580feda63d9bf461bbbe7e0019d1766c03288`: Preserved installed SSD guard and backup placement during deployment.
-- `c6bdc7152c2896bbfd6a84b4b0a473133bf2a2f4`: Recorded verified Drop cutover and quiet Maya history import.
+# OCI review and Mac health boundary — 2026-09-29
+
+- The legacy `AI Review` workflow was retired in commit `3068fe0904aebaa0f6348b5e6dc72cd2fdd9fd07`; the change was merged as `37f338e355b9ee05983b3d46f12ec9e9270df6e7`.
+- Fork pull-request reviews remain off private runners, as recorded in `0b73a383ab0f07a8b3a0a9e20317c5ce74edb764`. The separate OCI PR reviewer reviewed Penny PR #53.
+- Public fork code remains on GitHub-hosted CI; the private OCI runner fleet does not enroll public repositories.
+- OCI may reach the Mac through the current `macmini` MagicDNS alias for a bounded native Doctor check. SSH reachability does not assign Penny's GitHub job or prove Doctor readiness.
 <!-- janitor:end:recent -->
 # OCI review and Mac health boundary — 2026-09-29
 
