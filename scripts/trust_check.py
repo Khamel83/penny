@@ -46,21 +46,12 @@ REQUIRED_LAUNCHD_KEYS = (
     "<key>SoftResourceLimits</key>",
 )
 
-# Health automation may transport a Doctor report, but it may not mutate or
-# inspect runtime state through ad-hoc commands.
+# Public repository workflows must use hosted runners. Penny Doctor runs on
+# the Mac mini and its bounded OCI observer, not a GitHub runner on the tailnet.
 FORBIDDEN_WORKFLOW_TOKENS = (
-    "launchctl list",
-    "launchctl kickstart",
-    "launchctl bootstrap",
-    "launchctl bootout",
-    "pgrep",
-    "tail ",
-    "open -a",
-    "rm -",
-    "reset",
-    "delete",
-    "replay",
-    "repair",
+    "self-hosted",
+    "oci-dev",
+    "oci-ts",
 )
 
 
@@ -286,13 +277,17 @@ def check_phase_a_contracts() -> None:
         if not str(export.get(key, "")).strip():
             raise SystemExit(f"FAIL: export template is missing {key}")
 
-    workflow = _read_text(ROOT / ".github" / "workflows" / "health-check.yml")
-    if "scripts/penny_doctor.py --json" not in workflow:
-        raise SystemExit("FAIL: health-check workflow must run the read-only Penny Doctor")
-    workflow_lower = workflow.lower()
-    for token in FORBIDDEN_WORKFLOW_TOKENS:
-        if token in workflow_lower:
-            raise SystemExit(f"FAIL: health-check workflow contains forbidden token {token!r}")
+    workflow_root = ROOT / ".github" / "workflows"
+    if (workflow_root / "health-check.yml").exists():
+        raise SystemExit("FAIL: obsolete private health-check workflow remains")
+    workflows = list(workflow_root.glob("*.yml"))
+    if not workflows:
+        raise SystemExit("FAIL: no GitHub workflows found")
+    for path in workflows:
+        workflow_lower = _read_text(path).lower()
+        for token in FORBIDDEN_WORKFLOW_TOKENS:
+            if token in workflow_lower:
+                raise SystemExit(f"FAIL: {path.name} contains private runner token {token!r}")
 
     docs = {
         "README.md": _read_text(ROOT / "README.md"),

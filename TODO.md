@@ -1,7 +1,9 @@
 ## Current Voice Memo recovery — September 29, 2026
 
-- [ ] Merge and deploy the long live memo chunk path, then verify the installed watcher revision and a fresh Doctor receipt.
-- [ ] Recover exact failed Voice Memo PK 440 through local-only replay. Verify ledger link, quality, archive and backup without downstream delivery. Recheck watcher and OCI Doctor readiness.
+- [x] Merge and deploy the long live memo chunk path. PR #57 merged at `61f88908`; the installed Mac watcher reports that exact revision. Focused and hosted tests passed.
+- [x] Recover exact failed Voice Memo PK 440 locally. Transcript row 769 is linked, routing suppressed, archived and included in a verified backup; there are zero Drop, Slack, quality-alert, or Maya delivery rows for it. Mac Doctor is `degraded`, with no current terminal source failure; supervised OCI Doctor receipt is also `degraded` and its service succeeds.
+- [ ] Keep transcript row 769 in private `needs_review`: 15 of 19 chunks triggered consecutive-token repetition. Do not send it downstream on source recovery alone. Verify the next natural OCI health timer after this recovery.
+- [ ] Retire the queued public-repository `oci-dev` GitHub health workflow now that OCI's native timer owns the bounded daily check. This source change needs exact-head review and merge.
 
 ## Active synchronized task: Atlas/MinusPod shared-Whisper cutover
 

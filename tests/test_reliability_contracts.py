@@ -75,15 +75,15 @@ class ReliabilityContractTests(unittest.TestCase):
         )["EnvironmentVariables"]
         self.assertNotIn("PENNY_WEBHOOK_SECRET", watcher)
 
-    def test_doctor_workflow_is_read_only_and_uses_only_bounded_projection(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "health-check.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("scripts/penny_doctor.py --json", workflow)
-        self.assertNotIn("launchctl list", workflow)
-        self.assertNotIn("launchctl kickstart", workflow)
-        self.assertNotIn("pgrep", workflow)
-        self.assertNotRegex(workflow.lower(), r"\b(?:open|reset|delete|replay|repair|tail)\b")
+    def test_public_workflows_do_not_request_private_runners(self) -> None:
+        workflows = list((ROOT / ".github" / "workflows").glob("*.yml"))
+        self.assertTrue(workflows)
+        self.assertFalse((ROOT / ".github" / "workflows" / "health-check.yml").exists())
+        for workflow in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            self.assertNotIn("self-hosted", text)
+            self.assertNotIn("oci-dev", text)
+            self.assertNotIn("oci-ts", text)
 
     def test_trust_check_enforces_the_phase_a_contract(self) -> None:
         trust_check = (ROOT / "scripts" / "trust_check.py").read_text(encoding="utf-8")
@@ -92,7 +92,7 @@ class ReliabilityContractTests(unittest.TestCase):
         self.assertIn("PENNY_HERMES_WEBHOOK_SECRET", trust_check)
         self.assertIn("PENNY_SOURCE_REVISION", trust_check)
         self.assertIn("PENNY_ARCHIVE_OBJECT_ROOT", trust_check)
-        self.assertIn("scripts/penny_doctor.py", trust_check)
+        self.assertIn("obsolete private health-check workflow remains", trust_check)
         self.assertNotIn("check_health_check_sync", trust_check)
         self.assertIn("FORBIDDEN_WORKFLOW_TOKENS", trust_check)
 
