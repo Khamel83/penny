@@ -52,3 +52,11 @@ Detached worktrees:
 - `d33580feda63d9bf461bbbe7e0019d1766c03288`: Preserved installed SSD guard and backup placement during deployment.
 - `c6bdc7152c2896bbfd6a84b4b0a473133bf2a2f4`: Recorded verified Drop cutover and quiet Maya history import.
 <!-- janitor:end:recent -->
+# OCI review and Mac health boundary — 2026-09-29
+
+The old `AI Review` workflow requested the retired `oci-ts` runner lane. The
+separate OCI PR reviewer reviewed Penny PR #53. Public fork code remains on
+GitHub-hosted CI; the private OCI runner fleet does not enroll public repos.
+OCI may reach the Mac by the current `macmini` MagicDNS alias for a bounded
+native Doctor check. SSH reachability does not assign Penny's GitHub job or
+prove Doctor readiness.

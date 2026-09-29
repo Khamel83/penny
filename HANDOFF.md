@@ -1,5 +1,20 @@
 # Penny handoff
 
+## OCI review and Mac Doctor checkpoint — 2026-09-29
+
+This branch removes the legacy `AI Review` workflow that requested the
+retired `oci-ts` runner. The separate OCI PR reviewer passed Penny PR #53 at
+its exact head. The old issue-triage job has no replacement proof.
+
+OCI's live `macmini` and `macmini-ts` SSH aliases now target the current Mac
+MagicDNS name; the verified host key matched the Mac and both aliases logged
+in. A direct OCI-to-Mac invocation of the workflow's read-only Doctor command
+ran, but returned `overall=unready`, `source_revision=unknown`, services
+`launchd_unavailable`, and Voice Memos `terminal_failure`. GitHub scheduled
+run 36457387408 remains queued on `self-hosted, oci-dev` with no matching
+public runner. Next: move the scheduled check to a safe OCI-owned path, fix
+Doctor readiness separately, and prove a natural receipt.
+
 ## Production closeout — 2026-09-22
 
 The current Voice Memo path is local capture -> SQLite -> local shared Whisper
