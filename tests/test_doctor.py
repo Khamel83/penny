@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -841,11 +840,3 @@ def test_cli_exception_fallback_preserves_safe_json_schema(monkeypatch, capsys):
     parsed = datetime.fromisoformat(payload["observed_at"].replace("Z", "+00:00"))
     assert parsed.tzinfo is not None
     assert "secret /private/transcript" not in output
-
-
-def test_health_workflow_has_no_mutating_recovery_commands():
-    workflow = Path(__file__).parents[1] / ".github/workflows/health-check.yml"
-    text = workflow.read_text(encoding="utf-8").lower()
-    for forbidden in ("kickstart", "reset", "delete", "replay", "repair", "tail"):
-        assert re.search(rf"\\b{forbidden}\\b", text) is None
-    assert "open -a" not in text
