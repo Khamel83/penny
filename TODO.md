@@ -54,3 +54,14 @@ override this active shared-Whisper cutover queue.
 
 The remaining shared-Whisper cutover items were recorded as completed in the synchronized queue.
 <!-- janitor:end:todo -->
+## OCI GitHub worker path — 2026-09-29
+
+- [ ] Retire the queued legacy `oci-ts` AI Review workflow after exact-head
+  review. The separate OCI reviewer handled Penny PR #53; the old lane is
+  retired. Its issue-triage job has no replacement receipt here.
+- [ ] Move the scheduled Mac Doctor check off its unmatched public-repository
+  `oci-dev` runner label. OCI's SSH alias now reaches the Mac with a verified
+  host key, but GitHub run 36457387408 remains queued. A direct OCI-to-Mac
+  Doctor run returned `unready` (`launchd_unavailable`, Voice Memos
+  `terminal_failure`); restore the Doctor path and prove a natural schedule
+  before calling it healthy.
