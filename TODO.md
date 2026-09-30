@@ -126,3 +126,9 @@ override this active shared-Whisper cutover queue.
   Doctor run returned `unready` (`launchd_unavailable`, Voice Memos
   `terminal_failure`); restore the Doctor path and prove a natural schedule
   before calling it healthy.
+- [x] Align native runtime with reviewed main `ce48505f`: controlled deployment,
+  verified backup, five loaded revisions and follow-up current check passed
+  September 30. `/ready` reports the same revision and remains degraded.
+- [ ] Verify Homelab's corrected Penny monitoring observes real Doctor/readiness
+  degradation and the next natural OCI Doctor receipt; source alignment alone
+  does not close health or downstream delivery acceptance.
