@@ -1,3 +1,7 @@
+# Shared Whisper RAM checkpoint — September 30, 2026
+
+Isolated branch starts at fetched origin/main `4fe4f54`. The existing Mac checkout and its dirty documentation remain preserved. Cache limit/cleanup source and regression are implemented; focused tests pass. Deployment and real memory reduction are pending. Next: exact-head PR checks, merge, installed-source deployment, serial local canary and process footprint measurement. Internal simulator deletion is blocked by macOS restricted assets despite administrator authentication; do not claim reclaimed internal space.
+
 # Penny handoff
 
 ## Verified runtime alignment — September 30, 2026 UTC

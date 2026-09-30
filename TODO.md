@@ -1,3 +1,9 @@
+## Shared Whisper memory acceptance — September 30, 2026
+
+- [x] Identify Penny ownership and implement unchanged-model cache retention fix with regression coverage.
+- [ ] Merge reviewed PR, deploy installed shared worker and verify repeated real transcription memory plus natural Atlas/Penny completion.
+- [ ] Complete approved simulator deletion through Apple management path; protected internal assets remain.
+
 ## Current Voice Memo recovery — September 29, 2026
 
 - [x] Merge and deploy the long live memo chunk path. PR #57 merged at `61f88908`; the installed Mac watcher reports that exact revision. Focused and hosted tests passed.
