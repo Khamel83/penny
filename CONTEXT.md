@@ -1,3 +1,7 @@
+# Shared Whisper memory work — September 30, 2026
+
+Penny owns the shared MLX worker; Atlas calls its API. The owner authorized a memory fix, PR and live verification while retaining transcription quality. The first change bounds free GPU cache to 100 MiB and clears it after each request with the same pinned FP16 turbo model. See `docs/research/2026-09-30-shared-whisper-memory.md`. Source tests do not establish runtime memory reduction.
+
 Long live Voice Memos use the local shared-Whisper owner with Penny priority
 and private audio-hash-bound chunk checkpoints. Historical backfill uses its
 separate backfill priority and existing checkpoint location. Chunk completion

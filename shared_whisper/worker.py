@@ -14,6 +14,10 @@ from typing import Any
 from .protocol import WhisperResult, WhisperUnavailable
 
 
+# Bound reusable Metal buffers without changing model weights or decoding.
+MLX_CACHE_LIMIT_BYTES = 100 * 1024 * 1024
+
+
 _FREE_PERCENT_RE = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 _LARGE_OWNER_MARKERS = (
     "agent-cli-whisper-mlx",
@@ -203,7 +207,10 @@ def _worker_main(
         return
 
     try:
+        import mlx.core as mx
         import mlx_whisper
+
+        mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
     except Exception:
         results.put(("error", "mlx_import_failed"))
         return
@@ -213,7 +220,9 @@ def _worker_main(
         if request is None:
             return
         try:
-            response = mlx_whisper.transcribe(
+            response = _transcribe_and_release_cache(
+                mx,
+                mlx_whisper,
                 str(request["audio_path"]),
                 path_or_hf_repo=model_path,
                 **prepare_transcription_options(request.get("options") or {}),
@@ -228,6 +237,19 @@ def _worker_main(
             results.put(("error", "transcription_failed"))
             continue
         results.put(("ok", result))
+
+
+def _transcribe_and_release_cache(mx: Any, mlx_whisper: Any, *args: Any, **kwargs: Any):
+    """Release completed GPU work on success and failure, retaining live weights.
+
+    The allocator limit governs free buffers only; it is not a RAM ceiling.
+    Synchronize pending work before reclaiming reusable Metal allocations.
+    """
+    try:
+        return mlx_whisper.transcribe(*args, **kwargs)
+    finally:
+        mx.synchronize()
+        mx.clear_cache()
 
 
 def _read_processes() -> str | None:
