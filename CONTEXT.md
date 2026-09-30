@@ -1,3 +1,7 @@
+## Shared Whisper memory deployment — September 30, 2026
+
+PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.
+
 # Shared Whisper memory work — September 30, 2026
 
 Penny owns the shared MLX worker; Atlas calls its API. The owner authorized a memory fix, PR and live verification while retaining transcription quality. The first change bounds free GPU cache to 100 MiB and clears it after each request with the same pinned FP16 turbo model. See `docs/research/2026-09-30-shared-whisper-memory.md`. Source tests do not establish runtime memory reduction.

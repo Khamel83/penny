@@ -1,3 +1,7 @@
+## Shared Whisper memory deployment — September 30, 2026
+
+PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.
+
 # Shared Whisper RAM checkpoint — September 30, 2026
 
 Isolated branch starts at fetched origin/main `4fe4f54`. The existing Mac checkout and its dirty documentation remain preserved. Cache limit/cleanup source and regression are implemented; focused tests pass. Deployment and real memory reduction are pending. Next: exact-head PR checks, merge, installed-source deployment, serial local canary and process footprint measurement. Internal simulator deletion is blocked by macOS restricted assets despite administrator authentication; do not claim reclaimed internal space.
