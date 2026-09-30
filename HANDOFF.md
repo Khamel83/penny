@@ -1,5 +1,21 @@
 # Penny handoff
 
+## Verified runtime alignment — September 30, 2026 UTC
+
+The approved infrastructure health work deployed reviewed remote main
+`ce48505f1f2e81a924443e5cf878e41dd761fb46` with
+`venv/bin/python scripts/deploy_penny.py --apply`. Trust checks and verified
+backup passed; all five installed launchd labels report that revision. The
+follow-up deployment check reports current. Private deployment receipt/plist
+backups are under `~/.penny/deployments/20260930T061905Z`. Existing dirty
+LLM-OVERVIEW.md and untracked CLAUDE.md were privately copied and stashed
+temporarily, then restored with identical SHA-256 hashes; the stash is retained.
+At 06:20 UTC, `/ready` reported the deployed revision and overall degraded.
+This closes runtime revision drift, not application degradation or downstream
+delivery. Homelab is implementing bounded monitoring from existing OCI Doctor
+receipts. Next: verify natural 09:00 UTC receipt and truthful monitoring of
+degradation; keep private transcript quality and historical items separate.
+
 ## Current checkpoint — Voice Memo recovery and OCI health — September 29, 2026
 
 PR #57 merged at `61f88908`; the Mac checkout fast-forwarded to that main

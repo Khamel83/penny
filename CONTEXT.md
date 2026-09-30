@@ -72,3 +72,5 @@ GitHub-hosted CI; the private OCI runner fleet does not enroll public repos.
 OCI may reach the Mac by the current `macmini` MagicDNS alias for a bounded
 native Doctor check. SSH reachability does not assign Penny's GitHub job or
 prove Doctor readiness.
+
+Runtime pins, retained Doctor observation, backup receipt and downstream delivery are separate evidence. Doctor source identity may remain unknown when its checkout is dirty; that does not erase independently verified installed pins. Monitoring observes degradation and has no capture replay or delivery authority.
