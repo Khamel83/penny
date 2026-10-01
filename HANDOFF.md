@@ -1,3 +1,9 @@
+## Shared Parakeet implementation authorized — October 1, 2026
+
+Owner approved one shared Parakeet primary, selective Whisper retries of only affected audio, serial model loading/unloading, and a build/test-before-cutover workflow. Source implementation is in isolated feat/shared-parakeet-20261001 from fetched e997211; Atlas consumer work starts at fetched9d71cdc in its own isolated worktree. Dirty primary checkouts remain protected. No live backend change yet.
+
+Completed source so far: pinned local Parakeet child in staged Python3.12 environment, native overlap/timing adapter, one-owner model switching, bounded structural-quality retry, actual-model response/Penny metadata, backend-bound checkpoints, local excerpt second-opinion command. Focused service/quality/watcher regressions pass; live adapter/cutover receipts are pending. Staged model hashes verified under /Volumes/2TB_SSD/penny-asr-runtime. Next: finish targeted regressions, source review, authenticated staging canaries, then coordinated producer pause/rollback-capable deployment and normal Penny/Atlas acceptance. No private replay or downstream re-delivery.
+
 ## Apple pilot paused by owner — October 1, 2026
 
 All 32 held Penny recordings completed (43.2 hours), plus seven historical Atlas and ten natural Atlas inputs. Owner stopped further recognition. Sidecar is unloaded, autostart plist retained with .paused suffix, live capture disabled and normal five-label runtime verified at ec0f51a. All canonical Penny baseline text/status pairs remain unchanged. Binary repetition flags are not accuracy measurements: Apple repeated-run token share was 0.285% versus Whisper 0.725%, and severe runs were fewer. No first-party or independent reference comparison has been performed. Next is evaluation of existing outputs against references and flagged context, not more transcription; issue #70 owns the conditional primary gate. See docs/apple-pilot-live-receipt-20261001.md.

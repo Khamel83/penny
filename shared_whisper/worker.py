@@ -23,6 +23,8 @@ _LARGE_OWNER_MARKERS = (
     "agent-cli-whisper-mlx",
     "mlx_whisper",
     "penny shared whisper worker",
+    "penny shared parakeet worker",
+    "shared_whisper.parakeet_worker",
 )
 
 

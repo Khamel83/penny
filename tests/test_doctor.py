@@ -840,3 +840,22 @@ def test_cli_exception_fallback_preserves_safe_json_schema(monkeypatch, capsys):
     parsed = datetime.fromisoformat(payload["observed_at"].replace("Z", "+00:00"))
     assert parsed.tzinfo is not None
     assert "secret /private/transcript" not in output
+
+
+def test_shared_probe_accepts_configured_parakeet_and_counts_both_engines(monkeypatch, tmp_path):
+    import doctor
+    from shared_whisper.backends import PARAKEET_ID, PARAKEET_REVISION
+    class Response:
+        status=200
+        def __enter__(self): return self
+        def __exit__(self,*args): return False
+        def read(self): return json.dumps({'service':'penny-shared-whisper','model_id':PARAKEET_ID,
+            'model_revision':PARAKEET_REVISION,'worker_count':1,'resident_backend':'whisper'}).encode()
+    cfg = _config(tmp_path)
+    cfg.shared_whisper.backend = 'parakeet'
+    monkeypatch.setattr(doctor,'urlopen',lambda *a,**k:Response())
+    monkeypatch.setattr(doctor,'_shared_whisper_process_snapshot',lambda:'1 Penny Shared Parakeet Worker\n2 Penny Shared Whisper Worker')
+    monkeypatch.setattr(doctor,'_shared_whisper_memory_pressure_ok',lambda:True)
+    probe=doctor._default_probe_shared_whisper(cfg)
+    assert probe['model_verified'] is True
+    assert probe['memory_pressure_ok'] is False

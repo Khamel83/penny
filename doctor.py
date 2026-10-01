@@ -598,6 +598,10 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
         f"{getattr(voice, 'whisper_model_repository', '')}"
         f"@{getattr(voice, 'whisper_model_revision', '')}"
     )
+    expected_revision = getattr(voice, "whisper_model_revision", "")
+    if getattr(shared, "backend", "whisper") == "parakeet":
+        from shared_whisper.backends import PARAKEET_ID, PARAKEET_REVISION
+        expected_model, expected_revision = PARAKEET_ID, PARAKEET_REVISION
     service_ok = False
     model_verified = False
     worker_count = 0
@@ -614,7 +618,7 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
                     service_ok
                     and payload.get("model_id") == expected_model
                     and payload.get("model_revision")
-                    == getattr(voice, "whisper_model_revision", "")
+                    == expected_revision
                 )
                 worker_count = max(0, int(payload.get("worker_count", 0) or 0))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -632,7 +636,7 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
         }
     lines = snapshot.splitlines()
     legacy_markers = ("com.wyoming.whisper", "--wyoming-port 10300", "--port 10301")
-    worker_lines = [line for line in lines if "Penny Shared Whisper Worker" in line]
+    worker_lines = [line for line in lines if any(marker in line for marker in ("Penny Shared Whisper Worker", "Penny Shared Parakeet Worker", "shared_whisper.parakeet_worker"))]
     return {
         "service_ok": service_ok,
         "model_verified": model_verified,

@@ -31,3 +31,18 @@ and a fresh pilot completion receipt separately.
 Verified October 1: corrected activation at `ec0f51a4b86c4649ab063a83377891c4ef513686`; all six installed labels report that source. Pilot health is fresh, Apple assets are installed, and natural Atlas input produced durable shadow results. Private activation receipt: `~/.penny/deployments/20261001T200031Z-apple-pilot/receipt.json`. No new port or downstream consumer registration was introduced.
 
 Owner-directed pause later October 1: Apple sidecar unloaded and its plist retained with `.plist.paused` suffix. Shared pilot environment removed and five-label normal deployment reverified; health reports `apple_pilot_enabled=false`. Keep private queue/results. No automatic resume is authorized. See live receipt and issue #70.
+
+## Shared Parakeet runtime staged — October 1, 2026
+
+Owner approved replacement of the shared primary with selective local Whisper
+fallback. Staged Python 3.12 environment: `/Volumes/2TB_SSD/penny-asr-runtime/venv`.
+Pinned MLX/audio/runtime dependencies: `requirements-asr.lock`. Approved model
+bytes: `/Volumes/2TB_SSD/penny-asr-runtime/models/parakeet-tdt-0.6b-v3/ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`.
+No root-venv or Whisper-weight migration. `PENNY_SHARED_ASR_BACKEND=parakeet`,
+`PENNY_PARAKEET_PYTHON` and `PENNY_PARAKEET_MODEL_PATH` will select the staged
+child at cutover. Existing port 10311 and launchd label are retained; both
+engines share one supervisor slot and never load concurrently. Retry audio and
+both model results remain owner-only under `~/.penny/asr-retries`, separate
+from canonical ledger/archive/delivery. Source/staging is not deployment proof.
+See `docs/shared-parakeet.md`; current live primary remains Whisper pending
+review, canaries and coordinated cutover.
