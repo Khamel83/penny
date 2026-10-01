@@ -7,6 +7,11 @@ Durable private receipts: `~/.penny/deployments/20261001T234710Z/receipt.json` a
 - [x] Reviewed/merged implementation and loader correction; live Penny adapter and serial fallback canaries passed.
 - [ ] Verify next natural Penny ledger/archive and independently observe downstream effect; monitor sustained memory.
 
+
+Atlas/MinusPod are now healthy and resumed: reviewed consumer source `3f7bd51e233d13aa097daec2cc0fda86b3f72d97` is merged in Atlas PR164; image `atlas-minuspod:3f7bd51e-parakeet` and final legacy drain select the pinned Parakeet primary. Admission returned to its original false pause value; drain/watchdog/readiness timers are active. Homelab private receipt: `/mnt/fast-storage/appdata/minuspod/shared-parakeet-deploy-20261001.json` (`healthy_admissions_resumed`). A cold database read delayed readiness; graceful clean shutdown and post-stop transaction fence preserved the queue. Native completion under the new selector remains an independent acceptance item.
+
+Doctor confirms shared ASR/transcription ready, actual model verified, one owner and safe memory. Overall Doctor remains unready from Apple effect provider failure, with Maya dead-letter and historical Voice Memos degraded; no delivery repair or replay was performed in this ASR task.
+
 ## Apple pilot paused by owner — October 1, 2026
 
 All 32 held Penny recordings completed (43.2 hours), plus seven historical Atlas and ten natural Atlas inputs. Owner stopped further recognition. Sidecar is unloaded, autostart plist retained with .paused suffix, live capture disabled and normal five-label runtime verified at ec0f51a. All canonical Penny baseline text/status pairs remain unchanged. Binary repetition flags are not accuracy measurements: Apple repeated-run token share was 0.285% versus Whisper 0.725%, and severe runs were fewer. No first-party or independent reference comparison has been performed. Next is evaluation of existing outputs against references and flagged context, not more transcription; issue #70 owns the conditional primary gate. See docs/apple-pilot-live-receipt-20261001.md.
