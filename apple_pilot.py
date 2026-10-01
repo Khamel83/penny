@@ -22,7 +22,7 @@ from transcript_quality import evaluate_transcript
 
 _STOP = threading.Event()
 _PROCESSES: dict[int, subprocess.Popen] = {}
-_PROCESS_LOCK = threading.Lock()
+_PROCESS_LOCK = threading.RLock()
 
 
 def stop_worker(_signum, _frame) -> None:
@@ -125,7 +125,12 @@ class PilotStore:
         source_ref: str | None = None,
     ) -> str:
         """Immutable snapshot + durable admission; bounded and deduplicated."""
-        stat = path.stat()
+        with path.open("rb") as original:
+            return self.capture_stream(original, path.suffix, client, baseline, source_ref)
+
+    def capture_stream(self, original, suffix, client, baseline=None, source_ref=None):
+        """Snapshot an owned descriptor even after its upload pathname is removed."""
+        stat = os.fstat(original.fileno())
         if not 0 < stat.st_size <= 512 * 1024**2:
             raise ValueError("pilot_file_size_limit")
         with self.connect() as db:
@@ -139,13 +144,12 @@ class PilotStore:
                 temporary = Path(f.name)
                 os.chmod(temporary, 0o600)
                 try:
-                    with path.open("rb") as original:
-                        for chunk in iter(lambda: original.read(1024 * 1024), b""):
-                            digest.update(chunk)
-                            f.write(chunk)
+                    for chunk in iter(lambda: original.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                        f.write(chunk)
                     f.flush()
                     os.fsync(f.fileno())
-                    after = path.stat()
+                    after = os.fstat(original.fileno())
                     if (stat.st_size, stat.st_mtime_ns) != (
                         after.st_size,
                         after.st_mtime_ns,
@@ -155,7 +159,7 @@ class PilotStore:
                     job_id = hashlib.sha256(
                         f"{client}:{audio_hash}".encode()
                     ).hexdigest()
-                    destination = self.objects / (audio_hash + path.suffix[:12])
+                    destination = self.objects / (audio_hash + suffix[:12])
                     if not destination.exists():
                         os.replace(temporary, destination)
                     db.execute(
@@ -246,17 +250,56 @@ class PilotStore:
             db.close()
 
 
+class AsyncPilotCapture:
+    """Best-effort live admission; disk work never runs on the response thread.
+
+    At most two descriptors and daemon threads can be retained. A stalled disk
+    occupies a slot; subsequent live admissions are refused without waiting.
+    Only a committed PilotStore job is a durable receipt.
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self.slots = threading.BoundedSemaphore(2)
+
+    def capture(self, path, client, baseline=None):
+        if not self.slots.acquire(blocking=False):
+            raise RuntimeError("pilot_admission_busy")
+        original = None
+        try:
+            original = path.open("rb")
+            def snapshot():
+                try:
+                    with original:
+                        self.store.capture_stream(original, path.suffix, client, baseline)
+                except Exception:  # noqa: BLE001 - best-effort shadow; no private error logs
+                    pass
+                finally:
+                    self.slots.release()
+            threading.Thread(target=snapshot, name="apple-pilot-admission", daemon=True).start()
+        except BaseException:
+            if original is not None:
+                original.close()
+            self.slots.release()
+            raise
+
+
 def run_bounded(args: list[str], timeout: float) -> str:
     """Kill the whole subprocess group on deadline; never include private stderr."""
-    process = subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
     with _PROCESS_LOCK:
+        if _STOP.is_set():
+            raise RuntimeError("worker_stopping")
+        process = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
         _PROCESSES[process.pid] = process
+        # A signal handler can re-enter this lock during Popen on the main thread.
+        if _STOP.is_set():
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     try:
         try:
             stdout, _ = process.communicate(timeout=timeout)

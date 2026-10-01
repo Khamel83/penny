@@ -1,3 +1,5 @@
+Apple pilot review fixes (October 1): live snapshot disk work now runs in at most two daemon admission threads; overflow is refused without waiting. Only committed queue rows prove durability. Subprocess launch/register is synchronized with shutdown, including signal re-entry. Regression tests cover stalled storage and shutdown races. Deployment remains pending.
+
 ## Apple pilot in flight — October 1, 2026
 
 The owner approved a real Apple workflow pilot. Work is isolated in `pilot/apple-speech-20261001`, started from fetched default `origin/main` `c1b0b1d`; production checkout's dirty documents remain preserved. Implemented modern native Apple CLI, bounded private queue, two sessions, real-request shadow hook, cohort seeder and source-bound deploy script. Focused tests and trust check pass; an 84.46-second generated recording completed through the pilot ledger and private result file. This is development execution, not launchd activation.

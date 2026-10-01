@@ -11,7 +11,11 @@ The opt-in shadow hook captures authorized real requests from Penny, Atlas and
 historical backfill at the existing shared ASR boundary. The canonical response
 remains pinned MLX Whisper. Apple receives a private immutable audio snapshot
 and runs independently through the modern on-device SpeechTranscriber API.
-Capture failure must not alter the primary HTTP response or service startup.
+Live admission is best effort: at most two daemon admission threads retain open
+upload descriptors. Copying, hashing and fsync run outside the response thread;
+stalled storage fills these slots and later admissions are refused immediately.
+An uncommitted admission can be lost on service restart. Only a committed queue
+row proves durable admission. Capture failure must not alter the primary HTTP response or service startup.
 Existing clients and Atlas's retry, ad-cutting and publication behavior are
 unchanged. There is no cloud fallback.
 

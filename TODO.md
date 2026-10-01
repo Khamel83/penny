@@ -1,3 +1,5 @@
+Apple pilot review fixes (October 1): live snapshot disk work now runs in at most two daemon admission threads; overflow is refused without waiting. Only committed queue rows prove durability. Subprocess launch/register is synchronized with shutdown, including signal re-entry. Regression tests cover stalled storage and shutdown races. Deployment remains pending.
+
 ## Apple workflow pilot — October 1, 2026
 
 - [x] Inventory actual work: 32 quality-held Penny recordings with local audio; Atlas live queue two pending/two processing; 264 retained Atlas files are a historical corpus, not live backlog.

@@ -174,3 +174,54 @@ def test_live_jobs_precede_historical_corpus(tmp_path):
         "atlas",
         "penny_backlog",
     ]
+
+
+def test_stop_prevents_next_processing_phase(monkeypatch):
+    apple_pilot._STOP.set()
+    try:
+        monkeypatch.setattr(apple_pilot.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("launched after cancellation"))
+        with pytest.raises(RuntimeError, match="worker_stopping"):
+            apple_pilot.run_bounded(["unused"], 1)
+    finally:
+        apple_pilot._STOP.clear()
+
+
+def test_signal_during_spawn_kills_registered_child(monkeypatch):
+    real_spawn = apple_pilot.subprocess.Popen
+    def spawn(*args, **kwargs):
+        child = real_spawn(*args, **kwargs)
+        apple_pilot.stop_worker(None, None)
+        return child
+    monkeypatch.setattr(apple_pilot.subprocess, "Popen", spawn)
+    try:
+        with pytest.raises(RuntimeError, match="process_failed"):
+            apple_pilot.run_bounded([sys.executable, "-c", "import time; time.sleep(30)"], 1)
+        assert not apple_pilot._PROCESSES
+    finally:
+        apple_pilot._STOP.clear()
+
+
+def test_stalled_shadow_storage_does_not_delay_primary(tmp_path):
+    import threading
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    class SlowStore:
+        def capture_stream(self, original, *args):
+            entered.set()
+            assert release.wait(5)
+            assert original.read() == b"original audio"
+            finished.set()
+    adapter = apple_pilot.AsyncPilotCapture(SlowStore())
+    app = create_app(FakeSupervisor(), auth_token="token", pilot_store=adapter)
+    try:
+        response = app.test_client().post(
+            "/v1/audio/transcriptions",
+            headers={"Authorization": "Bearer token", "X-Whisper-Client": "atlas"},
+            data={"file": (io.BytesIO(b"original audio"), "file.wav")},
+        )
+        assert response.status_code == 200
+        assert response.json["text"] == "hello"
+        assert entered.wait(1)
+        assert not finished.is_set()
+    finally:
+        release.set()
+    assert finished.wait(1)

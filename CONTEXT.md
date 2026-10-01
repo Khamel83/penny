@@ -1,3 +1,5 @@
+Apple pilot review fixes (October 1): live snapshot disk work now runs in at most two daemon admission threads; overflow is refused without waiting. Only committed queue rows prove durability. Subprocess launch/register is synchronized with shutdown, including signal re-entry. Regression tests cover stalled storage and shutdown races. Deployment remains pending.
+
 ## Approved Apple pilot — October 1, 2026
 
 The owner approved Apple as the first workflow pilot after local benchmark research. Sharing Penny and Atlas was only a RAM workaround; separate Apple sessions are valid if total memory and quality acceptance support them. The first deployed step will be a shadow pilot on real requests plus a bounded local cohort. Canonical response and all delivery ownership remain the existing Whisper path during this comparison.

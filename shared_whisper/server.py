@@ -242,9 +242,9 @@ def main() -> None:
     supervisor = build_supervisor_from_environment()
     pilot_store = None
     if pilot_root := os.environ.get("PENNY_APPLE_PILOT_DIR"):
-        from apple_pilot import PilotStore
+        from apple_pilot import AsyncPilotCapture, PilotStore
         try:
-            pilot_store = PilotStore(Path(pilot_root))
+            pilot_store = AsyncPilotCapture(PilotStore(Path(pilot_root)))
         except Exception as exc:  # noqa: BLE001 - optional shadow cannot break primary ASR
             # Optional shadow storage cannot take the primary ASR service down.
             print(f"apple_pilot_initialization_failed:{type(exc).__name__}", flush=True)
