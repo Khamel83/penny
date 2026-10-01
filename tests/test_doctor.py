@@ -851,7 +851,8 @@ def test_shared_probe_accepts_configured_parakeet_and_counts_both_engines(monkey
         def __exit__(self,*args): return False
         def read(self): return json.dumps({'service':'penny-shared-whisper','model_id':PARAKEET_ID,
             'model_revision':PARAKEET_REVISION,'worker_count':1,'resident_backend':'whisper'}).encode()
-    cfg=_config(tmp_path);cfg.shared_whisper.backend='parakeet'
+    cfg = _config(tmp_path)
+    cfg.shared_whisper.backend = 'parakeet'
     monkeypatch.setattr(doctor,'urlopen',lambda *a,**k:Response())
     monkeypatch.setattr(doctor,'_shared_whisper_process_snapshot',lambda:'1 Penny Shared Parakeet Worker\n2 Penny Shared Whisper Worker')
     monkeypatch.setattr(doctor,'_shared_whisper_memory_pressure_ok',lambda:True)
