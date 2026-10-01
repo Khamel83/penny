@@ -36,6 +36,10 @@ is bounded queues, responsive Penny captures, and complete, accurate transcripts
   `--install-assets` completed and returned `installed`. Installed en-US
   locales alone had not established module readiness. Legacy authorization
   remained `notDetermined`; modern file transcription succeeded.
+  A verification build under a second executable filename returned `supported`
+  again despite the locale list; its AssetInventory installation request then
+  completed immediately and returned `installed`. Recheck readiness under the
+  exact installed executable identity; do not infer readiness from locale lists.
 - Public model/language assets were downloaded. Audio was processed locally;
   Phonon inference ran with `HF_HUB_OFFLINE=1`. No audio/transcript upload,
   canonical transcript write, routing, or downstream delivery was performed.
