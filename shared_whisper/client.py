@@ -63,9 +63,21 @@ class SharedWhisperClient:
             raise WhisperUnavailable("shared Whisper service is unreachable") from exc
         except (OSError, ValueError) as exc:
             raise RuntimeError("shared Whisper request could not be prepared") from exc
+        from .backends import PARAKEET_ID
+        from config import WHISPER_MODEL_ID, WHISPER_MODEL_REVISION
+
+        expected_id, expected_revision = self.model_id, self.model_revision
+        if data["model"] == WHISPER_MODEL_ID:
+            expected_id, expected_revision = WHISPER_MODEL_ID, WHISPER_MODEL_REVISION
+        if (
+            self.model_id == PARAKEET_ID
+            and isinstance(payload, dict)
+            and payload.get("model_id") == WHISPER_MODEL_ID
+        ):
+            expected_id, expected_revision = WHISPER_MODEL_ID, WHISPER_MODEL_REVISION
         return decode_response(
             response.status_code,
             payload,
-            expected_model_id=self.model_id,
-            expected_revision=self.model_revision,
+            expected_model_id=expected_id,
+            expected_revision=expected_revision,
         )

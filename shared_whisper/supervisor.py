@@ -76,6 +76,7 @@ class SharedWhisperSupervisor:
         self,
         *,
         worker_factory: WorkerFactory,
+        fallback_worker_factory: WorkerFactory | None = None,
         memory_guard: MemoryGuard,
         grace_seconds: float = 30.0,
         idle_ttl_seconds: float = 300.0,
@@ -84,6 +85,8 @@ class SharedWhisperSupervisor:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._worker_factory = worker_factory
+        self._fallback_worker_factory = fallback_worker_factory
+        self._worker_backend = "primary"
         self._memory_guard = memory_guard
         self._grace_seconds = max(0.0, grace_seconds)
         self._idle_ttl_seconds = max(0.0, idle_ttl_seconds)
@@ -108,6 +111,7 @@ class SharedWhisperSupervisor:
                 "model_revision": self._model_revision,
                 "worker_pid": worker.pid if worker else None,
                 "worker_count": 1 if worker else 0,
+                "resident_backend": self._worker_backend if worker else None,
                 "active_client": self._job.client.value if self._job else None,
                 "preemption_count": self._preemption_count,
             }
@@ -141,7 +145,9 @@ class SharedWhisperSupervisor:
             self._condition.notify_all()
             return True
 
-    def _handle_atlas(self, *, audio_path: str, options: dict[str, Any], client=ClientKind.ATLAS) -> WhisperResult:
+    def _handle_atlas(
+        self, *, audio_path: str, options: dict[str, Any], client=ClientKind.ATLAS
+    ) -> WhisperResult:
         job = self._start_job(
             client,
             audio_path=audio_path,
@@ -149,7 +155,9 @@ class SharedWhisperSupervisor:
         )
         return self._wait_for_job(job)
 
-    def _handle_penny(self, *, audio_path: str, options: dict[str, Any]) -> WhisperResult:
+    def _handle_penny(
+        self, *, audio_path: str, options: dict[str, Any]
+    ) -> WhisperResult:
         with self._condition:
             self._expire_idle_locked()
             active = self._job
@@ -164,7 +172,11 @@ class SharedWhisperSupervisor:
             else:
                 deadline = self._clock() + self._grace_seconds
                 self._state = SupervisorState.ATLAS_GRACE
-                while self._job is active and not active.completed and not active.preempted:
+                while (
+                    self._job is active
+                    and not active.completed
+                    and not active.preempted
+                ):
                     remaining = deadline - self._clock()
                     if remaining <= 0:
                         self._state = SupervisorState.STOPPING_ATLAS
@@ -195,7 +207,9 @@ class SharedWhisperSupervisor:
         options: dict[str, Any],
     ) -> _Job:
         with self._condition:
-            return self._start_job_locked(client, audio_path=audio_path, options=options)
+            return self._start_job_locked(
+                client, audio_path=audio_path, options=options
+            )
 
     def _start_job_locked(
         self,
@@ -206,15 +220,21 @@ class SharedWhisperSupervisor:
     ) -> _Job:
         if self._job is not None:
             raise WhisperBusy("Whisper worker already has an active request")
-        worker = self._ensure_worker_locked()
+        backend = options.pop("_backend", "primary")
+        if backend not in {"primary", "whisper"}:
+            raise WhisperProtocolError("unsupported_backend")
+        worker = self._ensure_worker_locked(backend)
         request_id = str(uuid.uuid4())
         job = _Job(client=client, request_id=request_id, worker=worker)
         self._job = job
         self._state = (
             SupervisorState.PENNY_RUNNING
             if client is ClientKind.PENNY
-            else (SupervisorState.BACKFILL_RUNNING if client is ClientKind.BACKFILL
-                  else SupervisorState.ATLAS_RUNNING)
+            else (
+                SupervisorState.BACKFILL_RUNNING
+                if client is ClientKind.BACKFILL
+                else SupervisorState.ATLAS_RUNNING
+            )
         )
         self._last_used_at = self._clock()
         try:
@@ -233,7 +253,10 @@ class SharedWhisperSupervisor:
         self._condition.notify_all()
         return job
 
-    def _ensure_worker_locked(self) -> WorkerHandle:
+    def _ensure_worker_locked(self, backend="primary") -> WorkerHandle:
+        if backend != self._worker_backend and self._worker is not None:
+            self._stop_worker_locked()
+            self._worker = None
         if self._worker is not None:
             if self._worker.is_alive():
                 return self._worker
@@ -242,7 +265,15 @@ class SharedWhisperSupervisor:
             raise WhisperUnavailable("another large Whisper owner is present")
         if self._memory_guard.pressure_high():
             raise WhisperUnavailable("macOS memory pressure is too high")
-        worker = self._worker_factory()
+        factory = (
+            self._worker_factory
+            if backend == "primary"
+            else self._fallback_worker_factory
+        )
+        if factory is None:
+            raise WhisperProtocolError("fallback_not_configured")
+        worker = factory()
+        self._worker_backend = backend
         if not worker.is_alive():
             raise WhisperUnavailable("Whisper worker failed to start")
         self._worker = worker
@@ -258,7 +289,9 @@ class SharedWhisperSupervisor:
                     if job.error is not None:
                         raise job.error
                     if job.result is None:
-                        raise WhisperProtocolError("Whisper worker completed without a result")
+                        raise WhisperProtocolError(
+                            "Whisper worker completed without a result"
+                        )
                     return job.result
                 worker = job.worker
 

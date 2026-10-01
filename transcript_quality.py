@@ -122,6 +122,7 @@ class TranscriptionResult:
     quality: QualityResult
     attempts: int
     quality_detail: str | None = None
+    model_id: str | None = None
 
 
 def _model_error(reason: str) -> ModelUnavailableError:
@@ -351,7 +352,9 @@ def verify_pinned_model(
         if len(candidates) != 1:
             raise _model_error("model_weights_ambiguous")
         weights_path = candidates[0]
-    if Path(weights_path).name not in _WEIGHT_FILENAMES and Path(weights_path).suffix.lower() not in {
+    if Path(weights_path).name not in _WEIGHT_FILENAMES and Path(
+        weights_path
+    ).suffix.lower() not in {
         ".npz",
         ".safetensors",
     }:
@@ -416,7 +419,9 @@ def resolve_whisper_model(
     model_path = _absolute_model_path(Path(value))
     cache_key = (str(model_path), expected_repository, expected_revision)
     for key, (signature, receipt) in tuple(_MODEL_VERIFICATION_CACHE.items()):
-        if key == cache_key and signature == _model_cache_signature(model_path, receipt):
+        if key == cache_key and signature == _model_cache_signature(
+            model_path, receipt
+        ):
             return receipt.path
     receipt = verify_pinned_model(
         model_path,
@@ -496,29 +501,46 @@ def transcribe_with_quality(
         from shared_whisper.client import SharedWhisperClient
 
         cfg = get_config()
+        from shared_whisper.backends import primary_identity
+
+        active_id, active_revision = primary_identity()
         client = SharedWhisperClient(
             base_url=cfg.shared_whisper.url,
             auth_token=cfg.shared_whisper.auth_token,
-            model_id=WHISPER_MODEL_ID,
-            model_revision=WHISPER_MODEL_REVISION,
+            model_id=active_id,
+            model_revision=active_revision,
             timeout=cfg.shared_whisper.timeout_seconds,
         )
 
     selected_text = ""
+    selected_model = None
     failure_reasons: list[str] = []
     for attempts, options in enumerate(
         (PRIMARY_TRANSCRIBE_OPTIONS, FALLBACK_TRANSCRIBE_OPTIONS), start=1
     ):
-        response = client.transcribe(path, **options)
+        from shared_whisper.backends import PARAKEET_ID
+
+        request_options = dict(options)
+        if attempts == 2 and getattr(client, "model_id", None) == PARAKEET_ID:
+            request_options["model"] = WHISPER_MODEL_ID
+        response = client.transcribe(path, **request_options)
         selected_text = (
             response.text
             if hasattr(response, "text")
             else str(response.get("text", ""))
         )
+        selected_model = getattr(response, "model_id", None)
         quality = evaluate_transcript(selected_text)
         if quality.passed:
-            return TranscriptionResult(selected_text, quality, attempts)
+            return TranscriptionResult(
+                selected_text, quality, attempts, model_id=selected_model
+            )
         failure_reasons.append(quality.reason or "unknown_quality_failure")
+        if (
+            getattr(client, "model_id", None) == PARAKEET_ID
+            and selected_model == WHISPER_MODEL_ID
+        ):
+            break  # The service already performed the different-model retry.
 
     quality_detail = ";".join(
         f"attempt_{index}={reason}"
@@ -529,4 +551,12 @@ def transcribe_with_quality(
         QualityResult(False, "needs_review"),
         attempts,
         quality_detail,
+        model_id=selected_model,
     )
+
+
+def transcription_backend(result) -> str:
+    identity = getattr(result, "model_id", None) or WHISPER_MODEL_ID
+    if "," in identity:
+        return "shared-asr"
+    return "mlx-parakeet" if "parakeet-tdt" in identity else "mlx-whisper"

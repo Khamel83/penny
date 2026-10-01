@@ -37,6 +37,7 @@ from transcript_quality import (
     ModelUnavailableError,
     resolve_whisper_model,
     transcribe_with_quality,
+    transcription_backend,
 )
 from transcript_log import (
     InsertOutcome,
@@ -903,7 +904,7 @@ def _process_audio_file(
         if not recover_migrated_transcript(
             row_id, text=transcription.text, quality_status=quality,
             quality_detail=transcription.quality_detail, staged=staged,
-            metadata=metadata(quality, backend='mlx-whisper', model=cfg.voice_memos.whisper_model),
+            metadata=metadata(quality, backend=transcription_backend(transcription), model=getattr(transcription, 'model_id', None) or cfg.voice_memos.whisper_model),
         ):
             return False
         if recording_pk is not None:
@@ -1007,8 +1008,8 @@ def _process_audio_file(
             archive_staged=staged,
             archive_metadata=metadata(
                 "needs_review",
-                backend="mlx-whisper",
-                model=cfg.voice_memos.whisper_model,
+                backend=transcription_backend(transcription),
+                model=getattr(transcription, "model_id", None) or cfg.voice_memos.whisper_model,
             ),
         )
         if result.outcome is InsertOutcome.FAILED:
@@ -1064,8 +1065,8 @@ def _process_audio_file(
         archive_staged=staged,
         archive_metadata=metadata(
             "passed",
-            backend="mlx-whisper",
-            model=cfg.voice_memos.whisper_model,
+            backend=transcription_backend(transcription),
+            model=getattr(transcription, "model_id", None) or cfg.voice_memos.whisper_model,
         ),
     )
     if result.outcome is InsertOutcome.FAILED:

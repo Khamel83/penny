@@ -25,6 +25,7 @@ from .protocol import (
     WhisperProtocolError,
     WhisperUnavailable,
 )
+from .backends import PARAKEET_ID, primary_identity, parakeet_path
 from .supervisor import SharedWhisperSupervisor
 from .worker import MacMemoryGuard, SubprocessWorker
 
@@ -37,6 +38,7 @@ def create_app(
     model_revision: str = WHISPER_MODEL_REVISION,
     temp_dir: Path | None = None,
     pilot_store: Any = None,
+    allow_whisper_fallback: bool = False,
 ) -> Flask:
     """Create the authenticated OpenAI-compatible shared service."""
 
@@ -49,14 +51,20 @@ def create_app(
 
     @app.get("/health")
     def health():
-        payload = {"service": "penny-shared-whisper", "apple_pilot_enabled": pilot_store is not None,
-                   **supervisor.status()}
+        payload = {
+            "service": "penny-shared-whisper",
+            "apple_pilot_enabled": pilot_store is not None,
+            **supervisor.status(),
+        }
         return jsonify(payload)
 
     @app.get("/ready")
     def ready():
-        payload = {"service": "penny-shared-whisper", "apple_pilot_enabled": pilot_store is not None,
-                   **supervisor.status()}
+        payload = {
+            "service": "penny-shared-whisper",
+            "apple_pilot_enabled": pilot_store is not None,
+            **supervisor.status(),
+        }
         return jsonify(payload)
 
     @app.post("/v1/audio/transcriptions")
@@ -69,7 +77,10 @@ def create_app(
         except ValueError:
             return jsonify({"error": {"code": "invalid_client"}}), 400
         incoming_model = request.form.get("model")
-        if incoming_model and incoming_model != model_id:
+        allowed_models = {model_id}
+        if allow_whisper_fallback:
+            allowed_models.add(WHISPER_MODEL_ID)
+        if incoming_model and incoming_model not in allowed_models:
             return jsonify({"error": {"code": "model_mismatch"}}), 400
         upload = request.files.get("file")
         if upload is None:
@@ -79,11 +90,65 @@ def create_app(
         result = None
         started = time.monotonic()
         try:
-            result = supervisor.handle_request(
-                client,
-                audio_path=str(path),
-                options=_form_options(),
+
+            def whisper_retry():
+                from .retry import audio_duration
+
+                try:
+                    bounded = audio_duration(path) <= 660
+                except Exception as exc:
+                    raise WhisperProtocolError("retry_duration_unverified") from exc
+                if not bounded:
+                    raise WhisperProtocolError(
+                        "quality_review_requires_bounded_excerpt"
+                    )
+                from .retry_receipt import begin, save
+                from dataclasses import asdict
+
+                try:
+                    receipt_path, retry_receipt = begin(path, result, client.value)
+                except Exception as exc:
+                    raise WhisperProtocolError("retry_receipt_failed") from exc
+                try:
+                    retried = supervisor.handle_request(
+                        client,
+                        audio_path=str(path),
+                        options={**_form_options(), "_backend": "whisper"},
+                    )
+                except Exception:
+                    retry_receipt["state"] = "retry_failed"
+                    save(receipt_path, retry_receipt)
+                    raise
+                retry_receipt.update(fallback=asdict(retried), state="retry_completed")
+                save(receipt_path, retry_receipt)
+                return retried
+
+            explicit_fallback = (
+                allow_whisper_fallback and incoming_model == WHISPER_MODEL_ID
             )
+            try:
+                result = supervisor.handle_request(
+                    client,
+                    audio_path=str(path),
+                    options={
+                        **_form_options(),
+                        **({"_backend": "whisper"} if explicit_fallback else {}),
+                    },
+                )
+            except WhisperProtocolError as exc:
+                if (
+                    allow_whisper_fallback
+                    and not explicit_fallback
+                    and exc.code == "quality_review"
+                ):
+                    result = whisper_retry()
+                else:
+                    raise
+            if allow_whisper_fallback and result.model_id == PARAKEET_ID:
+                from transcript_quality import evaluate_transcript
+
+                if not evaluate_transcript(result.text).passed:
+                    result = whisper_retry()
         except WhisperPreempted as exc:
             return _error_response(exc, 409)
         except (WhisperBusy, WhisperUnavailable) as exc:
@@ -93,15 +158,23 @@ def create_app(
         finally:
             if pilot_store is not None:
                 try:
-                    baseline = None if result is None else {
-                        "text": result.text, "segments": result.segments,
-                        "model_id": result.model_id, "model_revision": result.model_revision,
-                        "elapsed_seconds": time.monotonic() - started,
-                    }
+                    baseline = (
+                        None
+                        if result is None
+                        else {
+                            "text": result.text,
+                            "segments": result.segments,
+                            "model_id": result.model_id,
+                            "model_revision": result.model_revision,
+                            "elapsed_seconds": time.monotonic() - started,
+                        }
+                    )
                     pilot_store.capture(path, client.value, baseline)
                 except Exception as exc:  # noqa: BLE001 - optional shadow cannot break primary ASR
                     # Shadow admission never changes the production response.
-                    app.logger.warning("apple_pilot_admission_failed:%s", type(exc).__name__)
+                    app.logger.warning(
+                        "apple_pilot_admission_failed:%s", type(exc).__name__
+                    )
             path.unlink(missing_ok=True)
 
         return jsonify(
@@ -142,7 +215,7 @@ def _save_upload(filename: str | None, stream: Any, temp_dir: Path | None) -> Pa
 def _form_options() -> dict[str, Any]:
     options: dict[str, Any] = {}
     for key in request.form:
-        if key in {"model", "response_format"}:
+        if key in {"model", "response_format"} or key.startswith("_"):
             continue
         values = request.form.getlist(key)
         value: Any = values if len(values) > 1 else values[0]
@@ -167,11 +240,7 @@ def _error_response(error: WhisperProtocolError, status: int):
                     "code": error.code,
                     "message": str(error),
                     "retryable": error.retryable,
-                    **(
-                        {"request_id": error.request_id}
-                        if error.request_id
-                        else {}
-                    ),
+                    **({"request_id": error.request_id} if error.request_id else {}),
                 }
             }
         ),
@@ -197,22 +266,34 @@ def build_supervisor_from_environment() -> SharedWhisperSupervisor:
         lower=0.0,
         upper=3600.0,
     )
+    model_id, model_revision = primary_identity()
     guard = MacMemoryGuard(min_free_percent=min_free_percent)
 
-    def worker_factory():
+    def whisper_factory():
         return SubprocessWorker(
             model_path=model_path,
             model_id=WHISPER_MODEL_ID,
             model_revision=WHISPER_MODEL_REVISION,
         )
 
+    def worker_factory():
+        if model_id == PARAKEET_ID:
+            from .parakeet_process import ParakeetWorker
+
+            python_path = os.environ.get("PENNY_PARAKEET_PYTHON", "")
+            if not Path(python_path).is_absolute() or not Path(python_path).is_file():
+                raise ValueError("parakeet_python_unavailable")
+            return ParakeetWorker(model_path=parakeet_path(), python_path=python_path)
+        return whisper_factory()
+
     return SharedWhisperSupervisor(
         worker_factory=worker_factory,
+        fallback_worker_factory=whisper_factory if model_id == PARAKEET_ID else None,
         memory_guard=guard,
         grace_seconds=30.0,
         idle_ttl_seconds=idle_ttl,
-        model_id=WHISPER_MODEL_ID,
-        model_revision=WHISPER_MODEL_REVISION,
+        model_id=model_id,
+        model_revision=model_revision,
     )
 
 
@@ -243,6 +324,7 @@ def main() -> None:
     pilot_store = None
     if pilot_root := os.environ.get("PENNY_APPLE_PILOT_DIR"):
         from apple_pilot import AsyncPilotCapture, PilotStore
+
         try:
             pilot_store = AsyncPilotCapture(PilotStore(Path(pilot_root)))
         except Exception as exc:  # noqa: BLE001 - optional shadow cannot break primary ASR
@@ -252,6 +334,9 @@ def main() -> None:
         supervisor,
         auth_token=os.environ.get("PENNY_SHARED_WHISPER_TOKEN", ""),
         pilot_store=pilot_store,
+        model_id=primary_identity()[0],
+        model_revision=primary_identity()[1],
+        allow_whisper_fallback=primary_identity()[0] == PARAKEET_ID,
     )
     stop = threading.Event()
 
@@ -259,7 +344,9 @@ def main() -> None:
         while not stop.wait(1.0):
             supervisor.expire_idle()
 
-    threading.Thread(target=reap_idle, name="shared-whisper-idle-reaper", daemon=True).start()
+    threading.Thread(
+        target=reap_idle, name="shared-whisper-idle-reaper", daemon=True
+    ).start()
     app.run(
         host=os.environ.get("PENNY_SHARED_WHISPER_HOST", "0.0.0.0"),
         port=_bounded_int(
