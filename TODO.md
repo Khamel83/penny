@@ -1,3 +1,11 @@
+## Official-reference comparison complete — October 1, 2026
+
+Owner authorized a bounded three-episode public reference check; the background cohort remains paused. Identical audio was recognized once per engine. Apple was about 5x faster, but normalized reference disagreement was 8.23% versus pinned shared Whisper 5.56%, higher for Apple on all three excerpts. Cosmetic/stutter sensitivity did not reverse the ranking; published text is edited and not independently adjudicated ground truth. No blanket switch: the requested accuracy condition is not met. Total Apple model RAM/energy remains unmeasured, and speaker labels/names/TTS are separate capabilities. Report: docs/research/2026-10-01-apple-reference-results.md. Next: adjudicate consequential existing disagreements or a separately authorized domain experiment; do not restart bulk recognition. GitHub #70 owns the conditional adoption gate. The research utility ran on the Mac; primary runtime and all delivery ownership are unchanged.
+
+## Bounded public reference comparison — October 1, 2026
+
+Owner authorized a few official-transcript comparisons and conditional Apple adoption if accuracy and resource acceptance support it. The background cohort remains paused. Isolated worktree research/apple-reference-check-20261001 starts from fetched e997211. Three first-party Lex audio/reference pairs are verified; scoring distinguishes transcript agreement from adjudicated accuracy. Artifacts stay local under /Volumes/2TB_SSD/penny-asr-reference-20261001. Next: prepare identical short clips, run deployed Apple binary and pinned shared Whisper as low-priority backfill, quantify reference edits and resource limits, then document the decision. Canonical capture/delivery remains unchanged.
+
 ## Apple pilot paused by owner — October 1, 2026
 
 All 32 held Penny recordings completed (43.2 hours), plus seven historical Atlas and ten natural Atlas inputs. Owner stopped further recognition. Sidecar is unloaded, autostart plist retained with .paused suffix, live capture disabled and normal five-label runtime verified at ec0f51a. All canonical Penny baseline text/status pairs remain unchanged. Binary repetition flags are not accuracy measurements: Apple repeated-run token share was 0.285% versus Whisper 0.725%, and severe runs were fewer. No first-party or independent reference comparison has been performed. Next is evaluation of existing outputs against references and flagged context, not more transcription; issue #70 owns the conditional primary gate. See docs/apple-pilot-live-receipt-20261001.md.
@@ -11,7 +19,8 @@ Apple pilot review fixes (October 1): live snapshot disk work now runs in at mos
 - [x] Inventory actual work: 32 quality-held Penny recordings with local audio; Atlas live queue two pending/two processing; 264 retained Atlas files are a historical corpus, not live backlog.
 - [x] Implement opt-in real-request shadow capture, private bounded queue, two Apple sessions, native modern API, deadlines and source-bound deployment. Focused tests and trust check pass; real generated-audio pilot receipt completed locally.
 - [x] Review and merge PR #68 plus launchd correction #69; deploy ec0f51a to all six labels, admit all 32 held Penny plus eight historical Atlas recordings, and verify fresh health and natural Atlas shadow completion. No canonical replacement or candidate delivery. See docs/apple-pilot-live-receipt-20261001.md.
-- [ ] Assess existing outputs against a reference and flagged context (#70). Natural Penny shadow capture remains unobserved; recognition is paused by the owner.
+- [x] Run bounded official-reference check with three public Lex clips; evidence and limits are in docs/research/2026-10-01-apple-reference-results.md.
+- [ ] Adjudicate consequential reference disagreements / verify broader domain and total resource gate before conditional primary ownership (#70). Bulk recognition remains paused.
 - [ ] Validate representative transcript quality, Atlas timing semantics and sustained total system memory before primary Apple ownership. See `docs/apple-speech-pilot.md`.
 
 ## Shared Whisper memory acceptance — September 30, 2026
