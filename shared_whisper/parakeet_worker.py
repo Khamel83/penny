@@ -82,7 +82,7 @@ def main() -> None:
 
     mx.set_cache_limit(100 * 1024**2)
     with contextlib.redirect_stdout(sys.stderr):
-        model = load(path, lazy=True)
+        model = load(path, lazy=True, model_type="parakeet")
     model.set_dtype(mx.bfloat16)
     mx.eval(model.parameters())
     for line in sys.stdin:
