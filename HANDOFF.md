@@ -1,3 +1,9 @@
+## Apple pilot in flight — October 1, 2026
+
+The owner approved a real Apple workflow pilot. Work is isolated in `pilot/apple-speech-20261001`, started from fetched default `origin/main` `c1b0b1d`; production checkout's dirty documents remain preserved. Implemented modern native Apple CLI, bounded private queue, two sessions, real-request shadow hook, cohort seeder and source-bound deploy script. Focused tests and trust check pass; an 84.46-second generated recording completed through the pilot ledger and private result file. This is development execution, not launchd activation.
+
+Next: review/merge exact source, preserve dirty production files, deploy using `venv/bin/python scripts/deploy_apple_pilot.py --apply`, seed the bounded 32 Penny + eight historical Atlas cohort, and verify fresh installed receipts and natural live Atlas/Penny admission. Current canonical row 769 stays held. Production response remains Whisper while Apple is evaluated. No pilot text may be replayed or delivered. See `docs/apple-speech-pilot.md` for private status commands, bounds and rollback.
+
 ## Shared Whisper memory deployment — September 30, 2026
 
 PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.

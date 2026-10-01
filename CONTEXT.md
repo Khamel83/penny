@@ -1,3 +1,11 @@
+## Approved Apple pilot — October 1, 2026
+
+The owner approved Apple as the first workflow pilot after local benchmark research. Sharing Penny and Atlas was only a RAM workaround; separate Apple sessions are valid if total memory and quality acceptance support them. The first deployed step will be a shadow pilot on real requests plus a bounded local cohort. Canonical response and all delivery ownership remain the existing Whisper path during this comparison.
+
+Verified inventory: 32 held Penny recordings have local audio, with no ordinary waiting Penny queue. Atlas's live auto-process queue has two pending and two processing episodes; its large discovered catalog is not queued transcription work. Retained Mac Atlas audio is a separate 264-file historical corpus. The initial pilot cohort selects all 32 held Penny recordings and eight recent retained Atlas MP3s without modifying either application queue.
+
+Implementation/test evidence precedes deployment. `docs/apple-speech-pilot.md` owns the workflow/acceptance contract; `INFRA.md` records proposed placement. Candidate quality-rule passes do not establish word accuracy or permission to release held rows.
+
 ## Shared Whisper memory deployment — September 30, 2026
 
 PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.

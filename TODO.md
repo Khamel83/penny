@@ -1,3 +1,10 @@
+## Apple workflow pilot — October 1, 2026
+
+- [x] Inventory actual work: 32 quality-held Penny recordings with local audio; Atlas live queue two pending/two processing; 264 retained Atlas files are a historical corpus, not live backlog.
+- [x] Implement opt-in real-request shadow capture, private bounded queue, two Apple sessions, native modern API, deadlines and source-bound deployment. Focused tests and trust check pass; real generated-audio pilot receipt completed locally.
+- [ ] Exact-source review/merge and deploy; seed 32 held Penny recordings plus eight retained Atlas inputs; verify installed fresh receipts and natural live-client admissions. No canonical replacement or delivery from pilot text.
+- [ ] Validate representative transcript quality, Atlas timing semantics and sustained total system memory before primary Apple ownership. See `docs/apple-speech-pilot.md`.
+
 ## Shared Whisper memory acceptance — September 30, 2026
 
 - [x] Identify Penny ownership and implement unchanged-model cache retention fix with regression coverage.
