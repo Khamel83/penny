@@ -169,3 +169,33 @@ def test_quality_retry_returns_actual_whisper_identity(monkeypatch, tmp_path):
     assert response.json["model_id"] == WHISPER_MODEL_ID
     assert len(calls) == 2
     assert calls[1]["_backend"] == "whisper"
+
+
+def test_explicit_whisper_cannot_bypass_excerpt_bound(monkeypatch):
+    class Supervisor:
+        def expire_idle(self):
+            pass
+
+        def handle_request(self, *args, **kwargs):
+            pytest.fail("long recording admitted")
+
+    monkeypatch.setattr("shared_whisper.retry.audio_duration", lambda path: 14400)
+    app = create_app(
+        Supervisor(),
+        auth_token="secret",
+        model_id=PARAKEET_ID,
+        model_revision=PARAKEET_REVISION,
+        allow_whisper_fallback=True,
+    )
+    response = app.test_client().post(
+        "/v1/audio/transcriptions",
+        headers={"Authorization": "Bearer secret", "X-Whisper-Client": "backfill"},
+        data={
+            "model": WHISPER_MODEL_ID,
+            "file": (io.BytesIO(b"audio"), "full-podcast.mp3"),
+        },
+    )
+    assert response.status_code == 502
+    assert (
+        response.json["error"]["message"] == "quality_review_requires_bounded_excerpt"
+    )

@@ -127,14 +127,12 @@ def create_app(
                 allow_whisper_fallback and incoming_model == WHISPER_MODEL_ID
             )
             try:
-                result = supervisor.handle_request(
-                    client,
-                    audio_path=str(path),
-                    options={
-                        **_form_options(),
-                        **({"_backend": "whisper"} if explicit_fallback else {}),
-                    },
-                )
+                if explicit_fallback:
+                    result = whisper_retry()
+                else:
+                    result = supervisor.handle_request(
+                        client, audio_path=str(path), options=_form_options()
+                    )
             except WhisperProtocolError as exc:
                 if (
                     allow_whisper_fallback
