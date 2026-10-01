@@ -212,28 +212,38 @@ class PilotStore:
                 ),
             )
 
-    def status(self) -> dict:
-        with self.connect() as db:
-            states = dict(
-                db.execute("SELECT state,count(*) FROM jobs GROUP BY state").fetchall()
-            )
-            clients = dict(
-                db.execute(
-                    "SELECT client,count(*) FROM jobs GROUP BY client"
-                ).fetchall()
-            )
-            rows = [
-                json.loads(r[0])
-                for r in db.execute("SELECT metadata FROM jobs WHERE state='completed'")
-            ]
+    @staticmethod
+    def _counts(db) -> dict:
+        states = dict(
+            db.execute("SELECT state,count(*) FROM jobs GROUP BY state").fetchall()
+        )
+        clients = dict(
+            db.execute("SELECT client,count(*) FROM jobs GROUP BY client").fetchall()
+        )
+        rows = [
+            json.loads(r[0])
+            for r in db.execute("SELECT metadata FROM jobs WHERE state='completed'")
+        ]
         return {
             "states": states,
             "clients": clients,
             "completed_audio_seconds": sum(r["audio_seconds"] for r in rows),
             "quality_passed": sum(r["quality_passed"] for r in rows),
-            "max_jobs": self.max_jobs,
-            "max_bytes": self.max_bytes,
         }
+
+    def status(self) -> dict:
+        with self.connect() as db:
+            counts = self._counts(db)
+        return {**counts, "max_jobs": self.max_jobs, "max_bytes": self.max_bytes}
+
+    @classmethod
+    def read_status(cls, root: Path) -> dict:
+        """Observe an existing queue without creating or repairing any files."""
+        db = sqlite3.connect((root / "pilot.sqlite3").as_uri() + "?mode=ro", uri=True)
+        try:
+            return cls._counts(db)
+        finally:
+            db.close()
 
 
 def run_bounded(args: list[str], timeout: float) -> str:
@@ -379,10 +389,10 @@ def main() -> None:
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--status", action="store_true")
     args = parser.parse_args()
-    store = PilotStore(args.root)
     if args.status:
-        print(json.dumps(store.status(), sort_keys=True))
+        print(json.dumps(PilotStore.read_status(args.root), sort_keys=True))
         return
+    store = PilotStore(args.root)
     if args.binary is None:
         parser.error("--binary is required for worker")
     signal.signal(signal.SIGTERM, stop_worker)

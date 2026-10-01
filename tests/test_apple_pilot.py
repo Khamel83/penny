@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -128,7 +129,10 @@ def test_valid_result_stays_private_and_records_quality_hold(tmp_path, monkeypat
         [None],
         [{"start": 5, "end": 2, "text": "hello"}],
         [{"start": 0, "end": float("nan"), "text": "hello"}],
-        [{"start": 0, "end": 11, "text": "hello"}, {"start": 2, "end": 3, "text": "hello"}],
+        [
+            {"start": 0, "end": 11, "text": "hello"},
+            {"start": 2, "end": 3, "text": "hello"},
+        ],
     ],
 )
 def test_invalid_timestamps_are_not_accepted(segments):
@@ -149,3 +153,24 @@ def test_real_process_deadline_is_enforced():
             [sys.executable, "-c", "import time; time.sleep(10)"], 0.05
         )
     assert not apple_pilot._PROCESSES
+
+
+def test_status_never_creates_a_missing_queue(tmp_path):
+    root = tmp_path / "missing-pilot"
+    with pytest.raises(sqlite3.OperationalError):
+        apple_pilot.PilotStore.read_status(root)
+    assert not root.exists()
+
+
+def test_live_jobs_precede_historical_corpus(tmp_path):
+    store = apple_pilot.PilotStore(tmp_path / "pilot")
+    source = tmp_path / "file.wav"
+    source.write_bytes(b"test")
+    store.capture(source, "penny_backlog")
+    store.capture(source, "atlas")
+    store.capture(source, "penny")
+    assert [store.claim()["client"] for _ in range(3)] == [
+        "penny",
+        "atlas",
+        "penny_backlog",
+    ]
