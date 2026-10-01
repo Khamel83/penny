@@ -21,6 +21,24 @@ def digest(path):
     return h.hexdigest()
 
 
+def sample_footprint(pid):
+    r = subprocess.run(
+        ["vmmap", "-summary", str(pid)], capture_output=True, text=True, timeout=10
+    )
+    if r.returncode:
+        raise RuntimeError("vmmap_failed")
+    values = {}
+    for key, label in [
+        ("footprint", "Physical footprint:"),
+        ("process_lifetime_peak", "Physical footprint (peak):"),
+    ]:
+        match = re.search(re.escape(label) + r"\s*([\d.]+)([KMG])", r.stdout)
+        if not match:
+            raise RuntimeError("vmmap_missing_physical_measurement")
+        values[key] = float(match[1]) * 1024 ** ("KMG".index(match[2]) + 1)
+    return values
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, required=True)
@@ -49,31 +67,35 @@ def main():
         raise RuntimeError("partial_run_refused_before_model_load")
     samples = []
     done = threading.Event()
+    ready = threading.Event()
 
     def monitor():
         while not done.is_set():
-            r = subprocess.run(
-                ["vmmap", "-summary", str(os.getpid())],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            values = {}
-            for key, label in [
-                ("footprint", "Physical footprint:"),
-                ("process_lifetime_peak", "Physical footprint (peak):"),
-            ]:
-                m = re.search(re.escape(label) + r"\s*([\d.]+)([KMG])", r.stdout)
-                if m:
-                    values[key] = float(m[1]) * 1024 ** ("KMG".index(m[2]) + 1)
+            try:
+                values = sample_footprint(os.getpid())
+            except Exception as error:
+                (
+                    a.root / (a.engine + "-" + a.case + "-monitor-failure.json")
+                ).write_text(
+                    json.dumps(
+                        {
+                            "error": type(error).__name__ + ": " + str(error),
+                            "samples": samples,
+                        }
+                    )
+                )
+                os._exit(3)
             samples.append({"monotonic": time.monotonic(), **values})
             if values.get("footprint", 0) > 5 * 1024**3:
                 (a.root / "memory-abort.json").write_text(json.dumps(samples))
                 os._exit(2)
+            ready.set()
             done.wait(1)
 
     watcher = threading.Thread(target=monitor, daemon=True)
     watcher.start()
+    if not ready.wait(12):
+        raise RuntimeError("physical_monitor_not_ready")
     from fermion.transcribe import _resolve
     from fermion._speech import backends
     import mlx.core as mx
@@ -163,12 +185,8 @@ def main():
         configuration=configuration,
         runs=runs,
         model_files={p.name: digest(p) for p in model_dir.iterdir() if p.is_file()},
-        sampled_peak_physical_bytes=max(
-            (s.get("footprint", 0) for s in samples), default=0
-        ),
-        lifetime_peak_physical_bytes=max(
-            (s.get("process_lifetime_peak", 0) for s in samples), default=0
-        ),
+        sampled_peak_physical_bytes=max(s["footprint"] for s in samples),
+        lifetime_peak_physical_bytes=max(s["process_lifetime_peak"] for s in samples),
     )
     (a.root / manifest_name).write_text(json.dumps(metadata, indent=2))
     print(
