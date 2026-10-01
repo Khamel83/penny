@@ -71,6 +71,7 @@ class SharedWhisperConfig:
     url: str
     auth_token: str
     timeout_seconds: float = 90.0
+    backend: str = "whisper"
 
 
 @dataclass
@@ -283,6 +284,9 @@ def get_config() -> Config:
         raise ValueError("PENNY_WHISPER_MODEL_PATH must be an absolute path")
 
     shared_whisper_section = raw.get("shared_whisper", {})
+    shared_backend = os.environ.get("PENNY_SHARED_ASR_BACKEND", str(shared_whisper_section.get("backend", "whisper")))
+    if shared_backend not in {"whisper", "parakeet"}:
+        raise ValueError("unsupported_shared_asr_backend")
     shared_whisper_url = os.environ.get(
         "PENNY_SHARED_WHISPER_URL",
         str(shared_whisper_section.get("url", "http://127.0.0.1:10311/v1")),
@@ -325,6 +329,7 @@ def get_config() -> Config:
             url=shared_whisper_url,
             auth_token=os.environ.get("PENNY_SHARED_WHISPER_TOKEN", ""),
             timeout_seconds=shared_timeout,
+            backend=shared_backend,
         ),
         webhook=WebhookConfig(
             port=raw["webhook"]["port"],
