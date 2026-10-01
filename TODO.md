@@ -1,12 +1,17 @@
-Apple launchd correction (October 1): first activation registered all six labels, but the pilot and optional capture correctly refused startup because launchd PATH excludes /usr/sbin. Bind volume identity checks to /usr/sbin/diskutil rather than relying on shell PATH. Canonical Whisper remained healthy; cohort not yet loaded. Re-deploy corrected source and verify fresh receipts before seeding.
+## Apple pilot paused by owner — October 1, 2026
 
-Apple pilot review fixes (October 1): live snapshot disk work now runs in at most two daemon admission threads; overflow is refused without waiting. Only committed queue rows prove durability. Subprocess launch/register is synchronized with shutdown, including signal re-entry. Regression tests cover stalled storage and shutdown races. Deployment remains pending.
+All 32 held Penny recordings completed (43.2 hours), plus seven historical Atlas and ten natural Atlas inputs. Owner stopped further recognition. Sidecar is unloaded, autostart plist retained with .paused suffix, live capture disabled and normal five-label runtime verified at ec0f51a. All canonical Penny baseline text/status pairs remain unchanged. Binary repetition flags are not accuracy measurements: Apple repeated-run token share was 0.285% versus Whisper 0.725%, and severe runs were fewer. No first-party or independent reference comparison has been performed. Next is evaluation of existing outputs against references and flagged context, not more transcription; issue #70 owns the conditional primary gate. See docs/apple-pilot-live-receipt-20261001.md.
+
+Apple launchd correction resolved (October 1): PR #69 binds diskutil to /usr/sbin. Corrected source ec0f51a activated all six labels, fresh pilot health and optional live capture. All 40 historical cohort inputs were admitted without errors, and natural Atlas requests have produced private Apple/Whisper comparison receipts. The first activation failure did not affect canonical Whisper. See docs/apple-pilot-live-receipt-20261001.md for acceptance facts.
+
+Apple pilot review fixes (October 1): live snapshot disk work now runs in at most two daemon admission threads; overflow is refused without waiting. Only committed queue rows prove durability. Subprocess launch/register is synchronized with shutdown, including signal re-entry. Regression tests cover stalled storage and shutdown races. Corrected activation and real cohort admission are verified; recognition-quality acceptance remains open.
 
 ## Apple workflow pilot — October 1, 2026
 
 - [x] Inventory actual work: 32 quality-held Penny recordings with local audio; Atlas live queue two pending/two processing; 264 retained Atlas files are a historical corpus, not live backlog.
 - [x] Implement opt-in real-request shadow capture, private bounded queue, two Apple sessions, native modern API, deadlines and source-bound deployment. Focused tests and trust check pass; real generated-audio pilot receipt completed locally.
-- [ ] Exact-source review/merge and deploy; seed 32 held Penny recordings plus eight retained Atlas inputs; verify installed fresh receipts and natural live-client admissions. No canonical replacement or delivery from pilot text.
+- [x] Review and merge PR #68 plus launchd correction #69; deploy ec0f51a to all six labels, admit all 32 held Penny plus eight historical Atlas recordings, and verify fresh health and natural Atlas shadow completion. No canonical replacement or candidate delivery. See docs/apple-pilot-live-receipt-20261001.md.
+- [ ] Assess existing outputs against a reference and flagged context (#70). Natural Penny shadow capture remains unobserved; recognition is paused by the owner.
 - [ ] Validate representative transcript quality, Atlas timing semantics and sustained total system memory before primary Apple ownership. See `docs/apple-speech-pilot.md`.
 
 ## Shared Whisper memory acceptance — September 30, 2026
