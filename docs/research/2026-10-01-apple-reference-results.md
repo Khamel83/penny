@@ -55,7 +55,7 @@ spacing variants spacetime / BattleBots are normalized equally for all texts.
 The latter cosmetic normalizations were added after inspecting mismatches;
 raw initial scores are retained in the execution history and the ranking did
 not reverse. None of the normalizations corrects a mistaken technical term or
-name. Outer clip padding is not scored. Seven regression tests verify edits,
+name. Outer clip padding is not scored. Nine regression tests verify artifact identity, refusal of partial cached runs, edits,
 missing speech, padding and formatting behavior.
 
 A secondary score also removes simple hesitation tokens and repeated adjacent
@@ -116,3 +116,10 @@ adjudication of consequential existing disagreements or a separately approved
 vocabulary/domain experiment, not more bulk recognition. A switch still needs
 representative accuracy, timestamp compatibility, resource evidence and reviewed
 integration with a normal capture/archive receipt.
+
+The utility refuses recognition reuse and requires a fresh campaign for changed inputs.
+Rescoring verifies SHA-256 hashes for source media, references, clips and outputs,
+the Apple binary, case definitions and the pinned Whisper model revision. This
+completed run preceded the guard: every required artifact was verified against
+the observed-run hash manifest before binding the recognition manifest. Only
+rescoring followed; no additional recognition occurred.

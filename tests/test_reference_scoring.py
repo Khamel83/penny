@@ -42,3 +42,42 @@ def test_number_ordinal_and_compound_formatting():
 def test_real_technical_substitution_is_not_corrected():
     assert normalize("qubits") != normalize("cubits")
     assert normalize("Bostrom") != normalize("Boston")
+
+
+def test_completed_campaign_manifest_rejects_changed_inputs_and_binary(tmp_path):
+    from scripts.benchmark_apple_references import (
+        required_artifacts,
+        record_manifest,
+        verify_manifest,
+    )
+    import pytest
+
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"original binary")
+    for artifact in required_artifacts(tmp_path):
+        artifact.write_bytes(b"original artifact")
+    record_manifest(tmp_path, binary)
+    verify_manifest(tmp_path, binary)
+    for name in [
+        "musk-clip.wav",
+        "musk-reference.txt",
+        "musk-apple.json",
+        "musk-scope.json",
+    ]:
+        p = tmp_path / name
+        p.write_bytes(b"changed")
+        with pytest.raises(RuntimeError, match="recognition_artifact_changed"):
+            verify_manifest(tmp_path, binary)
+        p.write_bytes(b"original artifact")
+    binary.write_bytes(b"changed binary")
+    with pytest.raises(RuntimeError, match="recognition_identity_mismatch"):
+        verify_manifest(tmp_path, binary)
+
+
+def test_recognition_never_silently_reuses_partial_results(tmp_path):
+    from scripts.benchmark_apple_references import recognize
+    import pytest
+
+    (tmp_path / "musk-apple.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="existing_recognition_use_verified_score"):
+        recognize(tmp_path, tmp_path / "unused-binary")

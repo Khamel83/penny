@@ -48,6 +48,74 @@ def save(path, value):
     path.chmod(0o600)
 
 
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def recognition_exists(root):
+    return any(
+        (root / f"{name}-{engine}.json").exists()
+        for name in CASES
+        for engine in ("apple", "whisper")
+    )
+
+
+def required_artifacts(root):
+    files = []
+    for name in CASES:
+        files.extend(
+            root / (name + suffix)
+            for suffix in (
+                ".mp3",
+                "-clip.wav",
+                "-reference.txt",
+                "-scope.json",
+                "-apple.json",
+                "-whisper.json",
+            )
+        )
+        files.extend(
+            [root / "musk.pdf", root / "musk.txt"]
+            if name == "musk"
+            else [root / (name + ".html")]
+        )
+    return files
+
+
+def record_manifest(root, binary):
+    save(
+        root / "recognition-manifest.json",
+        {
+            "observed_at": time.time(),
+            "cases": CASES,
+            "apple_binary_sha256": digest(binary),
+            "whisper_model_id": WHISPER_MODEL_ID,
+            "whisper_model_revision": WHISPER_MODEL_REVISION,
+            "files": {p.name: digest(p) for p in required_artifacts(root)},
+        },
+    )
+
+
+def verify_manifest(root, binary):
+    manifest = json.loads((root / "recognition-manifest.json").read_text())
+    if (
+        manifest.get("apple_binary_sha256") != digest(binary)
+        or manifest.get("whisper_model_id") != WHISPER_MODEL_ID
+        or manifest.get("whisper_model_revision") != WHISPER_MODEL_REVISION
+        or manifest.get("cases") != json.loads(json.dumps(CASES))
+    ):
+        raise RuntimeError("recognition_identity_mismatch")
+    if any(
+        manifest.get("files", {}).get(p.name) != digest(p)
+        for p in required_artifacts(root)
+    ):
+        raise RuntimeError("recognition_artifact_changed")
+
+
 def turns(root, name):
     if name == "musk":
         text = (root / "musk.txt").read_text()
@@ -87,6 +155,11 @@ def turns(root, name):
 
 
 def prepare(root):
+    if recognition_exists(root) or any(
+        (root / (name + "-clip.wav")).exists() for name in CASES
+    ):
+        raise RuntimeError("existing_campaign_use_fresh_root")
+
     def fetch(item):
         name, (url, _, _) = item
         path = root / (name + ".mp3")
@@ -167,6 +240,8 @@ def prepare(root):
 
 
 def recognize(root, binary):
+    if recognition_exists(root):
+        raise RuntimeError("existing_recognition_use_verified_score")
     plist = plistlib.loads(
         (
             Path.home() / "Library/LaunchAgents/com.penny.shared-whisper.plist"
@@ -254,6 +329,8 @@ def recognize(root, binary):
                 time.sleep(5)
         else:
             raise RuntimeError("whisper_busy_bound")
+
+    record_manifest(root, binary)
 
 
 def integer_words(n):
@@ -434,7 +511,8 @@ def align(reference, hypothesis):
     }
 
 
-def score(root):
+def score(root, binary):
+    verify_manifest(root, binary)
     result = {}
     for name in CASES:
         ref = (root / (name + "-reference.txt")).read_text()
@@ -469,7 +547,9 @@ def main():
             p.error("--binary required")
         recognize(a.root, a.binary)
     else:
-        score(a.root)
+        if not a.binary:
+            p.error("--binary required to verify the completed recognition manifest")
+        score(a.root, a.binary)
 
 
 if __name__ == "__main__":
