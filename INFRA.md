@@ -46,3 +46,5 @@ both model results remain owner-only under `~/.penny/asr-retries`, separate
 from canonical ledger/archive/delivery. Source/staging is not deployment proof.
 See `docs/shared-parakeet.md`; current live primary remains Whisper pending
 review, canaries and coordinated cutover.
+
+Verified October 1 shared Parakeet activation: five installed Penny agents select `PENNY_SHARED_ASR_BACKEND=parakeet`; the shared service uses the pinned SSD Python/model paths above. Port 10311 and bearer/header contract are unchanged. Whisper remains available for bounded serial retries; Apple pilot is disabled. Runtime revision `9b100c5372f13bbfef13442f8c380145415400aa`; see live activation receipts in HANDOFF.md.
