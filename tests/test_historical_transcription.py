@@ -33,6 +33,7 @@ def test_long_recovery_resumes_chunks_and_keeps_quality_failure(tmp_path, monkey
 
 
 def test_live_chunk_policy_is_separate_and_uses_penny_priority(tmp_path, monkeypatch):
+    monkeypatch.setenv('PENNY_SHARED_ASR_BACKEND', 'whisper')
     audio = tmp_path / 'original.m4a'
     audio.write_bytes(b'original')
     staged = stage_audio(audio, tmp_path / 'objects')

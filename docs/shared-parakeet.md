@@ -5,7 +5,7 @@ owns the existing authenticated service on 10311. Atlas and MinusPod remain
 HTTP clients. Existing module/label/header names stay compatible; health and
 responses report the actual pinned model identity.
 
-The deployed `[shared_whisper] backend = "parakeet"` configuration selects
+The checked-in `[shared_whisper] backend = "parakeet"` configuration selects
 Parakeet for ordinary CLI/Doctor callers as well as launch agents.
 `PENNY_SHARED_ASR_BACKEND=whisper` explicitly selects rollback.
 `PENNY_SHARED_ASR_BACKEND=parakeet` selects Parakeet v3 BF16 at
