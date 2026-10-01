@@ -139,8 +139,13 @@ is corrected for future runs; raw observed receipts are preserved.
 The explicit utility is scripts/benchmark_phonon_references.py. It refuses
 completed/partial result reuse and samples physical memory. Research execution
 on the target Mac is proven; no new launchd or production adapter is deployed.
-Ruff and diff checks pass. This is a small live benchmark, not a new unit-test
-campaign. Verified Tyler/Dwarkesh corpus candidates are recorded in the adjacent
+Ruff and diff checks pass. Four focused resource-observation regressions pass.
+A review found that monitor errors could silently remove the sampled abort; the
+utility now stops visibly on failed/missing measurements, requires an initial
+valid sample before model loading, and does not report missing peaks as zero.
+This correction followed the observed runs; their nonzero resource receipts are
+preserved and no additional recognition was run. This is a small live benchmark,
+not a new unit-test campaign. Verified Tyler/Dwarkesh corpus candidates are recorded in the adjacent
 public-asr-corpus-expansion note.
 
 Next useful step: adjudicate a few consequential existing Parakeet/Whisper
