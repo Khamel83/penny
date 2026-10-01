@@ -1,3 +1,6 @@
+## Staging loader correction — October 1, 2026
+Authenticated staging caught MLX architecture inference from the immutable revision directory. The local loader now explicitly selects Parakeet while retaining all five approved model hashes and offline mode. Production producers remain paused; native canary evidence and coordinated deployment are pending. PRs 75/76 and Atlas 164 merged with passing CI; this bounded correction requires review before deployment.
+
 ## Shared Parakeet implementation authorized — October 1, 2026
 
 Owner approved one shared Parakeet primary, selective Whisper retries of only affected audio, serial model loading/unloading, and a build/test-before-cutover workflow. Source implementation is in isolated feat/shared-parakeet-20261001 from fetched e997211; Atlas consumer work starts at fetched9d71cdc in its own isolated worktree. Dirty primary checkouts remain protected. No live backend change yet.
