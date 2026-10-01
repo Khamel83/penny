@@ -225,3 +225,13 @@ def test_stalled_shadow_storage_does_not_delay_primary(tmp_path):
     finally:
         release.set()
     assert finished.wait(1)
+
+
+def test_volume_probe_uses_system_path_without_shell_environment(monkeypatch, tmp_path):
+    import plistlib
+    from types import SimpleNamespace
+    def run(args, **kwargs):
+        assert args == ["/usr/sbin/diskutil", "info", "-plist", str(tmp_path)]
+        return SimpleNamespace(stdout=plistlib.dumps({"VolumeUUID": "test-uuid"}))
+    monkeypatch.setattr(apple_pilot.subprocess, "run", run)
+    assert apple_pilot.volume_uuid(tmp_path) == "test-uuid"
