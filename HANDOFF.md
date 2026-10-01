@@ -1,3 +1,13 @@
+## ASR research checkpoint — October 1, 2026
+
+Research/testing complete in isolated `research/asr-options-20261001`, based on fetched `origin/main` `c1b0b1d`. Production checkout dirty files are preserved. Reports: `docs/research/2026-10-01-asr-local-benchmarks.md` and `docs/research/2026-10-01-asr-backend-primary-research.md`. Standalone probes: `scripts/research/`.
+
+Actual M4 results support Apple as first challenger: real 93-minute memo 61 seconds; two synthetic hours 53 seconds concurrently. Phonon GPU real memo 93 seconds, peak 3.9 GiB with cache controls; Phonon CPU synthetic hour 78 seconds, peak 2.9 GiB. Both memo candidates still fail quality rules. This is research, not an approved/deployed replacement. Owner permits separate Penny/Atlas sessions if measured RAM supports them.
+
+Full audio/text receipts stay local under `/Volumes/2TB_SSD/penny-asr-research-20261001`; `private/` is mode 0700, files 0600. Public models/environment were downloaded to the SSD, Apple assets installed through AssetInventory; production dependencies, launchd and canonical target row 769 were unchanged. No downstream output was created. No research jobs remain running at handoff. Total Apple model RAM and sustained separate-worker performance remain unproven.
+
+Next specific gate: fixed human-checked local reference snippets and candidate omission/repetition review, then sustained Penny+Atlas sessions with total system peak-memory sampling. Recheck source with `git fetch origin`; compile/check probes with `xcrun swiftc -parse-as-library -O -framework Speech -framework AVFoundation scripts/research/apple_speech_probe.swift -o /path/to/private/apple-speech-probe` and `python3 -m compileall -q scripts/research`. Report contains bounded execution commands. Do not replay or publish row 769 from shadow output; it remains `needs_review`.
+
 ## Shared Whisper memory deployment — September 30, 2026
 
 PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.

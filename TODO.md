@@ -1,3 +1,9 @@
+## ASR replacement research — October 1, 2026
+
+- [x] Compare primary Apple/Phonon sources and execute isolated local M4 probes: synthetic hour, two simultaneous Apple hours, four Apple short sessions, Phonon CPU/GPU/cache controls, and private 93-minute memo. See `docs/research/2026-10-01-asr-local-benchmarks.md`.
+- [x] Preserve production, canonical row 769 and existing dirty checkout; no candidate output routed or delivered.
+- [ ] Before any replacement: fixed human-reference quality set, sustained independent Penny/Atlas sessions, total system peak RAM and integration/rollback acceptance. Both candidates still fail repetition checks on the difficult memo. Research completion is not backend acceptance.
+
 ## Shared Whisper memory acceptance — September 30, 2026
 
 - [x] Identify Penny ownership and implement unchanged-model cache retention fix with regression coverage.
