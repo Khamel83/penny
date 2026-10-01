@@ -39,7 +39,7 @@ def volume_uuid(volume: Path) -> str:
     import plistlib
 
     result = subprocess.run(
-        ["diskutil", "info", "-plist", str(volume)],
+        ["/usr/sbin/diskutil", "info", "-plist", str(volume)],
         capture_output=True,
         timeout=10,
         check=True,
