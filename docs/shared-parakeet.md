@@ -5,8 +5,11 @@ owns the existing authenticated service on 10311. Atlas and MinusPod remain
 HTTP clients. Existing module/label/header names stay compatible; health and
 responses report the actual pinned model identity.
 
+The checked-in `[shared_whisper] backend = "parakeet"` configuration selects
+Parakeet for ordinary CLI/Doctor callers as well as launch agents.
+`PENNY_SHARED_ASR_BACKEND=whisper` explicitly selects rollback.
 `PENNY_SHARED_ASR_BACKEND=parakeet` selects Parakeet v3 BF16 at
-`ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`; absent/`whisper` preserves rollback.
+`ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`; the default configuration can be overridden with `whisper`.
 `PENNY_PARAKEET_MODEL_PATH` and `PENNY_PARAKEET_PYTHON` bind a separately staged
 external-SSD model and Python 3.12 runtime. Model/config/tokenizer SHA-256 values
 are verified in the child before any model load. No hub lookup is permitted.
