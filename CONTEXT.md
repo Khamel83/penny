@@ -1,3 +1,9 @@
+## RAM fix and alternatives assessment — October 1, 2026
+
+Cache cleanup reduced measured post-request Whisper physical footprint from 2.3 to 1.7 GiB with the same pinned model. It limits free allocator buffers and clears them after requests; it is not a total-RAM ceiling and does not reduce live weight memory. Existing single ownership and idle unloading avoid duplicate/resident idle models. Long-running stability and active peaks remain unproven. Current live health: idle, one worker, Apple pilot disabled.
+
+Apple reference result does not establish Whisper as the best available engine. Phonon-2 remains the leading next candidate for a bounded comparison; its official 164 MB download expands to a dense FP16 encoder under MLX, so runtime memory is unknown. Publisher M5 speed/accuracy are not local M4 evidence. Quantized Whisper and Parakeet/Core ML are alternatives. Next specific verification: reuse the three public clips/references for Phonon-2 quality, word-time compatibility, peak and retained physical memory, and elapsed time, if testing is undertaken. No new recognition/install/deployment in this assessment; primary Whisper stays unchanged and bulk pilot stays paused.
+
 ## Public reference check recorded — October 1, 2026
 
 Three public Lex samples completed once per engine. Apple processed 18.22 minutes in 18.41s versus shared Whisper 95.77s (5.20x), but normalized first-party reference disagreement was higher on all three: weighted 8.23% versus 5.56%. Case/punctuation and cosmetic variants are ignored; edited references are not independently adjudicated ground truth. The requested non-worse accuracy gate is unproven, so no primary switch. Total Apple system-model RAM/energy remains unknown; speaker diarization, naming and TTS are separate. Bulk recognition remains paused; runtime remains e997211 with the pilot hook disabled.
