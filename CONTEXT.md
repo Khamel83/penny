@@ -65,12 +65,25 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
+## Shared Whisper memory deployment — September 30, 2026
+
+PR #62 merged and deployed `63591bed23f86347a3cf73d7db27a395d9d49836`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.
+
+Documentation was synchronized at `5192654c2490d1500a7583a4413c31c4993cc37c` after recording the deployed memory results and protected simulator blocker in `23cf6f356744a88266f3dc2cef9b94d5f7ebe991`.
+
+# Shared Whisper memory work — September 30, 2026
+
+Penny owns the shared MLX worker; Atlas calls its API. The owner authorized a memory fix, PR and live verification while retaining transcription quality. The first change bounds free GPU cache to 100 MiB and clears it after each request with the same pinned FP16 turbo model. See `docs/research/2026-09-30-shared-whisper-memory.md`. Source tests do not establish runtime memory reduction.
+
+Long live Voice Memos use the local shared-Whisper owner with Penny priority and private audio-hash-bound chunk checkpoints. Historical backfill uses its separate backfill priority and existing checkpoint location. Chunk completion does not prove a canonical ledger link, archive, backup or downstream effect.
+
+OCI owns the scheduled, read-only Mac Doctor observation through its native `penny-health.timer` and private receipt. A public Penny GitHub Actions worker is not an authorized health-check execution path. Doctor `degraded` remains a valid observed capability state; it does not authorize delivery of a `needs_review` transcript.
+
 # OCI review and Mac health boundary — 2026-09-29
 
-- The legacy `AI Review` workflow was retired in commit `3068fe0904aebaa0f6348b5e6dc72cd2fdd9fd07`; the change was merged as `37f338e355b9ee05983b3d46f12ec9e9270df6e7`.
-- Fork pull-request reviews remain off private runners, as recorded in `0b73a383ab0f07a8b3a0a9e20317c5ce74edb764`. The separate OCI PR reviewer reviewed Penny PR #53.
-- Public fork code remains on GitHub-hosted CI; the private OCI runner fleet does not enroll public repositories.
-- OCI may reach the Mac through the current `macmini` MagicDNS alias for a bounded native Doctor check. SSH reachability does not assign Penny's GitHub job or prove Doctor readiness.
+The old `AI Review` workflow requested the retired `oci-ts` runner lane. The separate OCI PR reviewer reviewed Penny PR #53. Public fork code remains on GitHub-hosted CI; the private OCI runner fleet does not enroll public repos. OCI may reach the Mac by the current `macmini` MagicDNS alias for a bounded native Doctor check. SSH reachability does not assign Penny's GitHub job or prove Doctor readiness.
+
+Runtime pins, retained Doctor observation, backup receipt and downstream delivery are separate evidence. Doctor source identity may remain unknown when its checkout is dirty; that does not erase independently verified installed pins. Monitoring observes degradation and has no capture replay or delivery authority.
 <!-- janitor:end:recent -->
 # OCI review and Mac health boundary — 2026-09-29
 
