@@ -457,7 +457,7 @@ def _normalized_tokens(text: str) -> list[str]:
     return TOKEN_RE.findall(normalized)
 
 
-def evaluate_transcript(text: str) -> QualityResult:
+def evaluate_transcript(text: str, *, tolerant_restarts: bool = False) -> QualityResult:
     """Evaluate transcript quality without modifying its content."""
     if not text or not text.strip():
         return QualityResult(False, "empty_output")
@@ -468,10 +468,11 @@ def evaluate_transcript(text: str) -> QualityResult:
     if not tokens:
         return QualityResult(False, "empty_output")
 
+    repetition_limit = 8 if tolerant_restarts else MAX_CONSECUTIVE_TOKEN_REPETITION
     consecutive = 1
     for previous, current in zip(tokens, tokens[1:]):
         consecutive = consecutive + 1 if current == previous else 1
-        if consecutive >= MAX_CONSECUTIVE_TOKEN_REPETITION:
+        if consecutive >= repetition_limit:
             if (
                 consecutive == MAX_CONSECUTIVE_TOKEN_REPETITION
                 and current in NATURAL_EMPHASIS_TRIPLICATE_TOKENS
@@ -530,7 +531,9 @@ def transcribe_with_quality(
             else str(response.get("text", ""))
         )
         selected_model = getattr(response, "model_id", None)
-        quality = evaluate_transcript(selected_text)
+        quality = evaluate_transcript(
+            selected_text, tolerant_restarts=selected_model == PARAKEET_ID
+        )
         if quality.passed:
             return TranscriptionResult(
                 selected_text, quality, attempts, model_id=selected_model

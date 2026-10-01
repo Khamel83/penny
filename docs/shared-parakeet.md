@@ -14,7 +14,10 @@ The root Python environment and existing Whisper weights remain unchanged.
 
 Parakeet uses native 30-second chunks with 2-second overlap and reconstructs
 words from timed wordpieces. No diarization or speaker naming is implied.
-A malformed output or current repetition-quality failure triggers at most one
+For new Parakeet output, brief restarts are accepted; eight consecutive repeated
+tokens or the existing low-diversity suffix signal trigger review. Existing
+Whisper quality-held records/policy are unchanged. A malformed output or severe
+repetition-quality failure triggers at most one
 Whisper retry of a bounded upload (maximum 660 seconds including context).
 Longer flagged uploads return a review error, requiring an excerpt rather than
 silently retranscribing a whole podcast. Fluent missing words/negations cannot
