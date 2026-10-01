@@ -145,8 +145,14 @@ def test_quality_retry_returns_actual_whisper_identity(monkeypatch, tmp_path):
                     "fallback",
                 )
             return WhisperResult(
-                "loop loop loop loop",
-                [{"start": 0, "end": 1, "text": "loop loop loop loop"}],
+                "loop loop loop loop loop loop loop loop",
+                [
+                    {
+                        "start": 0,
+                        "end": 1,
+                        "text": "loop loop loop loop loop loop loop loop",
+                    }
+                ],
                 PARAKEET_ID,
                 PARAKEET_REVISION,
                 "primary",
@@ -199,3 +205,13 @@ def test_explicit_whisper_cannot_bypass_excerpt_bound(monkeypatch):
     assert (
         response.json["error"]["message"] == "quality_review_requires_bounded_excerpt"
     )
+
+
+def test_parakeet_accepts_restart_but_still_flags_long_loop():
+    from transcript_quality import evaluate_transcript
+
+    assert evaluate_transcript(
+        "I I I think this is useful.", tolerant_restarts=True
+    ).passed
+    assert not evaluate_transcript("I I I think this is useful.").passed
+    assert not evaluate_transcript("loop " * 8, tolerant_restarts=True).passed
