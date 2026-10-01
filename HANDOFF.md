@@ -1,6 +1,6 @@
 ## ASR research checkpoint — October 1, 2026
 
-Research/testing complete in isolated `research/asr-options-20261001`, based on fetched `origin/main` `c1b0b1d`. Production checkout dirty files are preserved. Reports: `docs/research/2026-10-01-asr-local-benchmarks.md` and `docs/research/2026-10-01-asr-backend-primary-research.md`. Standalone probes: `scripts/research/`.
+Research/testing complete in isolated `research/asr-options-20261001`, based on fetched `origin/main` `c1b0b1d`. Source and probes are pushed in draft PR #66: https://github.com/Khamel83/penny/pull/66 . Production checkout dirty files are preserved. Reports: `docs/research/2026-10-01-asr-local-benchmarks.md` and `docs/research/2026-10-01-asr-backend-primary-research.md`. Standalone probes: `scripts/research/`.
 
 Actual M4 results support Apple as first challenger: real 93-minute memo 61 seconds; two synthetic hours 53 seconds concurrently. Phonon GPU real memo 93 seconds, peak 3.9 GiB with cache controls; Phonon CPU synthetic hour 78 seconds, peak 2.9 GiB. Both memo candidates still fail quality rules. This is research, not an approved/deployed replacement. Owner permits separate Penny/Atlas sessions if measured RAM supports them.
 
