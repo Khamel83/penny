@@ -1,4 +1,5 @@
 [shared_whisper]
+backend = "parakeet"
 url = "http://127.0.0.1:10311/v1"
 timeout_seconds = 90
 
