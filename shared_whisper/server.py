@@ -6,6 +6,7 @@ import hmac
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ def create_app(
     model_id: str = WHISPER_MODEL_ID,
     model_revision: str = WHISPER_MODEL_REVISION,
     temp_dir: Path | None = None,
+    pilot_store: Any = None,
 ) -> Flask:
     """Create the authenticated OpenAI-compatible shared service."""
 
@@ -47,12 +49,14 @@ def create_app(
 
     @app.get("/health")
     def health():
-        payload = {"service": "penny-shared-whisper", **supervisor.status()}
+        payload = {"service": "penny-shared-whisper", "apple_pilot_enabled": pilot_store is not None,
+                   **supervisor.status()}
         return jsonify(payload)
 
     @app.get("/ready")
     def ready():
-        payload = {"service": "penny-shared-whisper", **supervisor.status()}
+        payload = {"service": "penny-shared-whisper", "apple_pilot_enabled": pilot_store is not None,
+                   **supervisor.status()}
         return jsonify(payload)
 
     @app.post("/v1/audio/transcriptions")
@@ -72,6 +76,8 @@ def create_app(
             return jsonify({"error": {"code": "file_required"}}), 400
 
         path = _save_upload(upload.filename, upload.stream, temp_dir)
+        result = None
+        started = time.monotonic()
         try:
             result = supervisor.handle_request(
                 client,
@@ -85,6 +91,17 @@ def create_app(
         except WhisperProtocolError as exc:
             return _error_response(exc, 502)
         finally:
+            if pilot_store is not None:
+                try:
+                    baseline = None if result is None else {
+                        "text": result.text, "segments": result.segments,
+                        "model_id": result.model_id, "model_revision": result.model_revision,
+                        "elapsed_seconds": time.monotonic() - started,
+                    }
+                    pilot_store.capture(path, client.value, baseline)
+                except Exception as exc:  # noqa: BLE001 - optional shadow cannot break primary ASR
+                    # Shadow admission never changes the production response.
+                    app.logger.warning("apple_pilot_admission_failed:%s", type(exc).__name__)
             path.unlink(missing_ok=True)
 
         return jsonify(
@@ -220,12 +237,21 @@ def main() -> None:
         from setproctitle import setproctitle
 
         setproctitle("Penny Shared Whisper")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - retain optional process-title behavior
         pass
     supervisor = build_supervisor_from_environment()
+    pilot_store = None
+    if pilot_root := os.environ.get("PENNY_APPLE_PILOT_DIR"):
+        from apple_pilot import AsyncPilotCapture, PilotStore
+        try:
+            pilot_store = AsyncPilotCapture(PilotStore(Path(pilot_root)))
+        except Exception as exc:  # noqa: BLE001 - optional shadow cannot break primary ASR
+            # Optional shadow storage cannot take the primary ASR service down.
+            print(f"apple_pilot_initialization_failed:{type(exc).__name__}", flush=True)
     app = create_app(
         supervisor,
         auth_token=os.environ.get("PENNY_SHARED_WHISPER_TOKEN", ""),
+        pilot_store=pilot_store,
     )
     stop = threading.Event()
 
