@@ -27,3 +27,7 @@ review/merge to current pushed main. Private deployment/backups are under
 instructions are in `docs/apple-speech-pilot.md` and the current handoff.
 Source configuration here is not proof of deployment; verify launchd revision
 and a fresh pilot completion receipt separately.
+
+Verified October 1: corrected activation at `ec0f51a4b86c4649ab063a83377891c4ef513686`; all six installed labels report that source. Pilot health is fresh, Apple assets are installed, and natural Atlas input produced durable shadow results. Private activation receipt: `~/.penny/deployments/20261001T200031Z-apple-pilot/receipt.json`. No new port or downstream consumer registration was introduced.
+
+Owner-directed pause later October 1: Apple sidecar unloaded and its plist retained with `.plist.paused` suffix. Shared pilot environment removed and five-label normal deployment reverified; health reports `apple_pilot_enabled=false`. Keep private queue/results. No automatic resume is authorized. See live receipt and issue #70.
