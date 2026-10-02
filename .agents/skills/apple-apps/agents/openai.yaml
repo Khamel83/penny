@@ -1,0 +1,7 @@
+interface:
+  display_name: "Apple App Access"
+  short_description: "Bind projects to native macOS app workflows"
+  default_prompt: "Use $apple-apps to set up this project’s Mac app access and local receipts."
+
+policy:
+  allow_implicit_invocation: true

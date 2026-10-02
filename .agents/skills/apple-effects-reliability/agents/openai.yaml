@@ -1,0 +1,7 @@
+interface:
+  display_name: "Apple App Reliability"
+  short_description: "Diagnose app access and reconcile delivery receipts"
+  default_prompt: "Use $apple-effects-reliability to diagnose this Mac app failure before retrying the operation."
+
+policy:
+  allow_implicit_invocation: true

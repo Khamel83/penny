@@ -70,12 +70,16 @@ Report ledger state, local receipt/archive state, runtime state, provider state,
 and each downstream delivery state separately. Stop when a required permission,
 receipt, or downstream effect is not proven.
 
-## Apple Notes and Reminders reliability
+## Reusable macOS app skills
 
-When diagnosing Apple Events, Notes/Reminders delivery, or Apple-effect readiness,
-read [apple-effects-reliability](.agents/skills/apple-effects-reliability/SKILL.md).
-Separate live provider probes from historical ledger failures and verified item
-readback before recommending recovery or retrying an effect.
+For Notes tasks, read [apple-notes](.agents/skills/apple-notes/SKILL.md); for
+Reminders tasks, read [apple-reminders](.agents/skills/apple-reminders/SKILL.md).
+For another project's Mac access setup or choosing a computer-use route, read
+[apple-apps](.agents/skills/apple-apps/SKILL.md). For Apple Events, denied access
+or uncertain delivery, read
+[apple-effects-reliability](.agents/skills/apple-effects-reliability/SKILL.md).
+These skills keep each project's caller, target and receipts separate. Penny
+continues to use its existing Apple-effect ledger and transport.
 
 ## Canonical references
 

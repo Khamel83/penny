@@ -1,0 +1,7 @@
+interface:
+  display_name: "Apple Notes"
+  short_description: "Work with Notes and verify the requested content"
+  default_prompt: "Use $apple-notes to perform the requested Notes action in this project’s target folder."
+
+policy:
+  allow_implicit_invocation: true
