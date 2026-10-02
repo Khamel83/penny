@@ -1,3 +1,26 @@
+## Parakeet word timing correction — October 2, 2026
+
+Deployed937 long-review receipt identifies `backwards_parakeet_token_time` for
+the retained33-minute Atlas input, with no accepted primary transcript. This is
+adapter validation evidence, not a measured word-error rate or gibberish claim.
+The proposed correction checks chronology when each word is reconstructed,
+instead of rejecting a punctuation/suffix piece aligned before a preceding piece.
+All individual token bounds and genuine backward word starts remain rejected.
+No word is reordered, dropped or assigned a fabricated time.
+
+Meaningful overlapping-piece fixture fails before the correction; the companion
+backward-word fixture remains rejected. Full suite passed719 tests, 2 skips and53 subtests; deployment and
+the actual queued episode's recovery are pending. Penny937 remains installed.
+MinusPod admissions and legacy drain stay intentionally paused; native dead-owner
+recovery preserves an ASR checkpoint for postprocess-only resume. The response
+from termination CLI was not accepted (exit2); old-owner death was independently
+verified before recover-stale exit0. No manual queue relabeling occurred.
+
+Next: finish checks/review/merge, coordinated idle deployment, then one real
+queued request to verify whether this addresses the observed adapter error.
+Restore original producer scheduling only after readiness/queue receipts pass.
+Notes still needs owner authentication for the documented Apple Events restart.
+
 ## Long ASR quality-review evidence repair — October 2, 2026
 
 Atlas's reviewed helper now exposes `quality_review_requires_bounded_excerpt`

@@ -37,6 +37,28 @@ def test_wordpieces_retain_word_timing_and_punctuation():
     ]
 
 
+def test_piece_alignment_can_overlap_while_word_starts_remain_ordered():
+    result = SimpleNamespace(text="Hello there.", sentences=[SimpleNamespace(
+        text="Hello there.", tokens=[
+            token(" Hel", 0.0, 0.3), token("lo", 0.2, 0.7),
+            token(" there", 0.5, 0.8), token(".", 0.4, 0.9),
+        ],
+    )])
+    words = verbose_result(result, 1.0)["segments"][0]["words"]
+    assert words == [
+        {"word": "Hello", "start": 0.0, "end": 0.7},
+        {"word": "there.", "start": 0.5, "end": 0.9},
+    ]
+
+
+def test_genuinely_backwards_word_starts_still_require_review():
+    result = SimpleNamespace(text="Hello there.", sentences=[SimpleNamespace(
+        text="Hello there.", tokens=[token(" Hello", 0.5, 0.7), token(" there.", 0.4, 0.9)],
+    )])
+    with pytest.raises(ValueError, match="backwards_parakeet_token_time"):
+        verbose_result(result, 1.0)
+
+
 @pytest.mark.parametrize(
     "start,end", [(float("nan"), 1), (0, float("inf")), (1, 0.5), (0, 2)]
 )
