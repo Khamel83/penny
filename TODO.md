@@ -1,10 +1,33 @@
+## Portable Apple app skills — October 2
+
+- [x] Generalize Apple workflows across projects: separate Notes/Reminders skills,
+  shared Mac access and receipt contract, scoped failure recovery, and Penny-only
+  adapter reference. AGENTS.md routes tasks to these skills.
+- [x] Validate and install all four skills; source/install hashes agree, relative
+  references resolve, eight probe regressions pass. Fresh installed Notes and
+  Reminders access passes. Private receipts:20261002-apple-skills.
+  Source: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
+- [ ] Observe a first requested operation from another project's actual caller;
+  verify that project's exact target, item fields and durable receipt. Generic
+  skills do not imply new unattended adapter/write acceptance.
+
+## Reminders recovery acceptance — October 2
+
+- [x] Distinguish metadata response from blocked list access, inspect GUI/privacy
+  gate, verify current Reminders-data grants, then prove recovered shell/launchd
+  access and one existing item receipt. No data/security/runtime mutations.
+- [x] Update installed/versioned skill with separate Reminders-data permission
+  and native GUI/tool identity checks; no probe-code change.
+- [ ] New natural Penny capture/write/archive/downstream receipt acceptance and
+  separate capped-Note repair remain open. Finder window timeout is independent.
+
 ## Reusable Apple delivery procedure — October 2
 
 - [x] Create, validate and install apple-effects-reliability skill with bounded
   read-only provider probe, privacy/error/receipt regressions (8 passed), and
   exact caller/target/durable receipt gates before any authorized retry.
-- [ ] Investigate currently timing-out Reminders independently; Notes marker
-  reads now pass. No automatic monitoring or item-write canary has been installed.
+- [x] Reminders recovery verified: shell and equivalent-launchd list access pass;
+  one existing marker/ID/target matches its saved receipt. See docs/reminders-recovery-20261002.md.
 
 ## Apple Events SIP recovery correction — October 2
 

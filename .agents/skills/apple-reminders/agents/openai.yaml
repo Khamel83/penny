@@ -1,0 +1,7 @@
+interface:
+  display_name: "Apple Reminders"
+  short_description: "Work with reminders and verify task fields"
+  default_prompt: "Use $apple-reminders to perform the requested task action in this project’s target list."
+
+policy:
+  allow_implicit_invocation: true

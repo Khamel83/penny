@@ -1,4 +1,48 @@
-## Reusable Apple delivery procedure — October 2
+## Portable Apple app skills — October 2, 07:12 UTC
+
+Owner requested reusable Apple app workflows across projects. Four skills are
+versioned under `.agents/skills/` and installed under `~/.codex/skills/`:
+`apple-apps`, `apple-notes`, `apple-reminders`, `apple-effects-reliability`.
+Their shared contract binds each project to its own caller, exact target,
+operation ID and private receipt. Existing Penny ledger/transport/markers remain
+a project-specific binding. Native app access needs OS grants, not a shared API
+secret. Copying configuration does not transfer caller permission.
+
+All four skill validators and bundled reference-link checks pass; eight existing
+read-only probe regressions pass. Installed files match source hashes. Installed
+probe: Notes responding0.304s, Reminders responding0.455s. Private installation
+and reachability receipts: `~/.penny/recovery/20261002-apple-skills/`.
+Notes/Reminders scripting terms were checked against the installed dictionaries.
+This is operator-skill installation, not a new app write backend or Penny deploy;
+no item, grant, ledger or pipeline configuration was changed. New projects still
+need their own caller-context and authorized write/readback acceptance. Other
+apps route to computer use; no tested Calendar/Mail/Messages adapter is claimed.
+
+Source publication: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
+Installed operator artifacts are hash-verified separately from Penny runtime.
+
+## Earlier verified checkpoint: Reminders reachability and receipt recovery — October 2, 06:52 UTC
+
+Reminders list access now passes: shell0.242s and equivalent installed-launchd
+context0.135s. One existing reminder marker/provider ID/actual target agrees
+with its canonical succeeded receipt. TCC showed a pending Ghostty Reminders-data
+prompt before recovery; current UI grants and later decision/probes passed.
+The exact owner action is unspecified; What's New dismissal alone was not
+proven sufficient. Agent changed no privacy grant, item, ledger state or runtime.
+
+Updated installed/versioned apple-effects-reliability covers Reminders-data
+versus Automation, pending prompts as timeouts, metadata/data separation and
+CUA/Peekaboo caller identities. Both Notes/Reminders respond; Finder window-count
+still times out and must not be generalized as a Notes/Reminders outage. The
+failed real Note and synthetic quarantine remain separate unresolved receipts.
+No new item-write canary or natural Penny acceptance is inferred.
+
+Evidence/recheck: docs/reminders-recovery-20261002.md and private
+`~/.penny/recovery/20261002-reminders-diagnostic/`. Temporary probe agent removed.
+Next: one new natural Penny capture's model/ledger/archive/actual delivery proof;
+prepare a separate receipt-backed capped-Note repair decision without replay.
+
+## Historical: Reusable Apple delivery procedure — October 2
 
 The requested `apple-effects-reliability` skill is versioned at
 `.agents/skills/apple-effects-reliability/` and installed on this Mac under
@@ -17,7 +61,7 @@ This can show Automation prompts or launch apps; it creates no personal items.
 Future operators can invoke `$apple-effects-reliability`. Skill discovery is for
 future sessions; it does not install automatic monitoring or prove permanent uptime.
 
-## Apple Events recovery correction — October 2, 2026
+## Historical: Apple Events recovery correction — October 2, 2026
 
 Owner-authenticated system kickstart failed with error150 under enabled SIP.
 The prior password-only recovery instruction was wrong and is withdrawn.
