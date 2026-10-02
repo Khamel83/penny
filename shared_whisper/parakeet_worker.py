@@ -31,27 +31,57 @@ def verify_model(path: Path) -> None:
             raise ValueError("parakeet_model_hash_mismatch")
 
 
+class ParakeetTimingError(ValueError):
+    def __init__(self, reason, context):
+        super().__init__(reason)
+        self.timing_context = {
+            key: value
+            for key, value in context.items()
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and abs(value) <= 1_000_000_000
+            and math.isfinite(value)
+        }
+
+
 def verbose_result(result, duration: float) -> dict:
     """Join wordpieces with their own timing, preserving sentence boundaries."""
     segments = []
     previous = 0.0
-    for sentence in result.sentences:
+    for sentence_index, sentence in enumerate(result.sentences):
         words = []
-        for token in sentence.tokens:
+        for token_index, token in enumerate(sentence.tokens):
             start, end = float(token.start), float(token.end)
             if not (
                 math.isfinite(start)
                 and math.isfinite(end)
                 and 0 <= start <= end <= duration + 0.05
             ):
-                raise ValueError("invalid_parakeet_token_time")
+                raise ParakeetTimingError(
+                    "invalid_parakeet_token_time",
+                    {
+                        "sentence_index": sentence_index,
+                        "token_index": token_index,
+                        "start": start,
+                        "end": end,
+                    },
+                )
             text = str(token.text)
             if text.startswith(" ") or not words:
                 if text.strip():
                     # Wordpieces and punctuation may align before another piece
                     # of the same word. Validate the word starts consumers use.
                     if start < previous:
-                        raise ValueError("backwards_parakeet_token_time")
+                        raise ParakeetTimingError(
+                            "backwards_parakeet_token_time",
+                            {
+                                "sentence_index": sentence_index,
+                                "token_index": token_index,
+                                "start": start,
+                                "end": end,
+                                "previous_start": previous,
+                            },
+                        )
                     previous = start
                     words.append({"word": text.strip(), "start": start, "end": end})
             elif words:
@@ -104,12 +134,23 @@ def main() -> None:
             del result, audio
             reply = {"ok": payload}
         except Exception as exc:
-            safe_reason = str(exc) if isinstance(exc, ValueError) and str(exc) in {
-                "invalid_parakeet_token_time", "backwards_parakeet_token_time",
-                "empty_parakeet_output", "parakeet_translation_not_supported",
-                "audio_duration_out_of_bounds",
-            } else "parakeet_transcription_failed"
-            reply = {"error": safe_reason}
+            safe_reason = (
+                str(exc)
+                if isinstance(exc, ValueError)
+                and str(exc)
+                in {
+                    "invalid_parakeet_token_time",
+                    "backwards_parakeet_token_time",
+                    "empty_parakeet_output",
+                    "parakeet_translation_not_supported",
+                    "audio_duration_out_of_bounds",
+                }
+                else "parakeet_transcription_failed"
+            )
+            reply = {
+                "error": safe_reason,
+                "timing_context": getattr(exc, "timing_context", {}),
+            }
         finally:
             mx.synchronize()
             mx.clear_cache()

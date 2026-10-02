@@ -524,7 +524,27 @@ def transcribe_with_quality(
         request_options = dict(options)
         if attempts == 2 and getattr(client, "model_id", None) == PARAKEET_ID:
             request_options["model"] = WHISPER_MODEL_ID
-        response = client.transcribe(path, **request_options)
+        from shared_whisper.protocol import WhisperProtocolError
+
+        try:
+            response = client.transcribe(path, **request_options)
+        except WhisperProtocolError as exc:
+            if exc.code != "quality_review" or exc.retryable:
+                raise
+            detail = json.dumps(
+                {
+                    "reason": "structural_quality_review",
+                    "timing_context": exc.timing_context,
+                },
+                sort_keys=True,
+            )[:MAX_QUALITY_DETAIL_CHARACTERS]
+            return TranscriptionResult(
+                selected_text,
+                QualityResult(False, "needs_review"),
+                attempts,
+                detail,
+                model_id=selected_model or exc.model_id,
+            )
         selected_text = (
             response.text
             if hasattr(response, "text")

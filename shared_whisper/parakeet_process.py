@@ -48,12 +48,19 @@ class ParakeetWorker:
                 if "ok" not in payload:
                     reason = payload.get("error")
                     if reason not in {
-                        "invalid_parakeet_token_time", "backwards_parakeet_token_time",
-                        "empty_parakeet_output", "parakeet_translation_not_supported",
+                        "invalid_parakeet_token_time",
+                        "backwards_parakeet_token_time",
+                        "empty_parakeet_output",
+                        "parakeet_translation_not_supported",
                         "audio_duration_out_of_bounds",
                     }:
                         reason = "parakeet_output_invalid"
-                    raise WhisperProtocolError(reason, code="quality_review")
+                    raise WhisperProtocolError(
+                        reason,
+                        code="quality_review",
+                        timing_context=payload.get("timing_context"),
+                        model_id=PARAKEET_ID,
+                    )
                 self._results.put(
                     build_result(
                         request_id=self._request_id,
@@ -67,7 +74,9 @@ class ParakeetWorker:
             except Exception:
                 self._results.put(
                     WhisperProtocolError(
-                        "Parakeet output needs retry", code="quality_review"
+                        "Parakeet output needs retry",
+                        code="quality_review",
+                        model_id=PARAKEET_ID,
                     )
                 )
 

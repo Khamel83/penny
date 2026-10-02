@@ -1,3 +1,7 @@
+## ASR hardening in progress — October 2
+
+Isolated fix/asr-contract-hardening-20261002 preserves dirty primary checkout. Producer/client timing validation, child error locality, actual model error metadata and Penny needs_review handling implemented. Synthetic real-shape red tests now green; full suite749 pass/2 skip/53 subtests, focused43 pass plus8 new regression checks. Next: exact-head review/CI, merge, rollback-capable deploy, saved-response agreement and installed-context Doctor. Atlas legacy drain paused with private receipt at /mnt/fast-storage/appdata/minuspod/asr-hardening-drain-pause-20261002.json; restore only after hold deployment. Apple Events failure and natural capture acceptance remain separate.
+
 ## Runtime diagnostic — October 2, 2026 UTC
 
 Installed-context Doctor verifies Penny capture/storage/shared offline ASR,

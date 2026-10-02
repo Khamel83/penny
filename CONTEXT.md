@@ -1,3 +1,7 @@
+## ASR timing hardening — October 2 source work
+
+Owner authorized hardening after the runtime diagnostic. Invalid segment ranges remain invalid; no timestamp clamping or text deletion. Quality failures carry bounded numeric locality and actual failed model identity, and Penny stores needs_review without an automatic same-input retry. Busy/network failures retain retry semantics. These are source changes, not yet installed. Legacy drain was separately paused safely with no active process while its repeated-input hold is built.
+
 ## Runtime diagnostic — October 2, 2026 UTC
 
 Installed-context Doctor verifies Penny capture/storage/shared offline ASR,
