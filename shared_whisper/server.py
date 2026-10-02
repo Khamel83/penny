@@ -91,7 +91,9 @@ def create_app(
         started = time.monotonic()
         try:
 
-            def whisper_retry(quality_reason=None):
+            def whisper_retry(
+                quality_reason=None, timing_context=None, failed_model_id=None
+            ):
                 from .retry import audio_duration
 
                 try:
@@ -107,12 +109,17 @@ def create_app(
                             review.update(
                                 state="quality_review_requires_bounded_excerpt",
                                 quality_reason=quality_reason,
+                                timing_context=timing_context or {},
+                                failed_model_id=failed_model_id,
                             )
                             save(review_path, review)
                         except Exception as exc:
                             raise WhisperProtocolError("retry_receipt_failed") from exc
                     raise WhisperProtocolError(
-                        "quality_review_requires_bounded_excerpt"
+                        "quality_review_requires_bounded_excerpt",
+                        code="quality_review",
+                        timing_context=timing_context,
+                        model_id=failed_model_id,
                     )
                 from .retry_receipt import begin, save
                 from dataclasses import asdict
@@ -127,6 +134,16 @@ def create_app(
                         audio_path=str(path),
                         options={**_form_options(), "_backend": "whisper"},
                     )
+                except WhisperProtocolError as exc:
+                    retry_receipt.update(
+                        state="quality_review"
+                        if exc.code == "quality_review"
+                        else "retry_failed",
+                        timing_context=exc.timing_context,
+                        failed_model_id=exc.model_id,
+                    )
+                    save(receipt_path, retry_receipt)
+                    raise
                 except Exception:
                     retry_receipt["state"] = "retry_failed"
                     save(receipt_path, retry_receipt)
@@ -151,25 +168,39 @@ def create_app(
                     and not explicit_fallback
                     and exc.code == "quality_review"
                 ):
-                    reason = str(exc) if str(exc) in {
-                        "invalid_parakeet_token_time", "backwards_parakeet_token_time",
-                        "empty_parakeet_output", "parakeet_translation_not_supported",
-                        "audio_duration_out_of_bounds",
-                    } else "parakeet_output_invalid"
-                    result = whisper_retry(reason)
+                    reason = (
+                        str(exc)
+                        if str(exc)
+                        in {
+                            "invalid_parakeet_token_time",
+                            "backwards_parakeet_token_time",
+                            "empty_parakeet_output",
+                            "parakeet_translation_not_supported",
+                            "audio_duration_out_of_bounds",
+                        }
+                        else "parakeet_output_invalid"
+                    )
+                    result = whisper_retry(reason, exc.timing_context, exc.model_id)
                 else:
                     raise
+            from .protocol import validate_segments
+
+            validate_segments(result.segments)
             if allow_whisper_fallback and result.model_id == PARAKEET_ID:
                 from transcript_quality import evaluate_transcript
 
                 quality = evaluate_transcript(result.text, tolerant_restarts=True)
                 if not quality.passed:
-                    result = whisper_retry(quality.reason)
+                    result = whisper_retry(
+                        quality.reason, failed_model_id=result.model_id
+                    )
         except WhisperPreempted as exc:
             return _error_response(exc, 409)
         except (WhisperBusy, WhisperUnavailable) as exc:
             return _error_response(exc, 503)
         except WhisperProtocolError as exc:
+            if exc.model_id is None and result is not None:
+                exc.model_id = result.model_id
             return _error_response(exc, 502)
         finally:
             if pilot_store is not None:
@@ -256,6 +287,12 @@ def _error_response(error: WhisperProtocolError, status: int):
                     "code": error.code,
                     "message": str(error),
                     "retryable": error.retryable,
+                    **(
+                        {"timing_context": error.timing_context}
+                        if error.timing_context
+                        else {}
+                    ),
+                    **({"model_id": error.model_id} if error.model_id else {}),
                     **({"request_id": error.request_id} if error.request_id else {}),
                 }
             }

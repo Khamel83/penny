@@ -1,3 +1,9 @@
+## ASR timing hardening — October 2 source work
+
+- [x] Reproduce saved malformed Whisper timing with synthetic text; strict producer/client validation and numeric Parakeet failure locality implemented.
+- [x] Quality review becomes a held capture result; transient service failures remain retryable. Full suite:749 passed,2 skipped,53 subtests before the final added regressions.
+- [ ] Review/CI/merge/deploy exact final head and verify saved-response agreement, runtime identity and legacy hold skip.
+
 ## Shared runtime diagnostic — October 2, 2026
 
 - [x] Diagnose installed Penny/ASR/Atlas boundaries from existing metadata and receipts; fifty focused checks pass. Report:docs/runtime-diagnostic-20261002.md. No new inference/private replay or live change.

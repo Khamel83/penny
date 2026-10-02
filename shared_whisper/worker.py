@@ -11,7 +11,12 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from .protocol import WhisperResult, WhisperUnavailable
+from .protocol import (
+    WhisperResult,
+    WhisperUnavailable,
+    WhisperProtocolError,
+    validate_segments,
+)
 
 
 # Bound reusable Metal buffers without changing model weights or decoding.
@@ -56,6 +61,11 @@ def build_result(
         raise ValueError("MLX response missing segments")
     if not all(isinstance(segment, dict) for segment in segments):
         raise ValueError("MLX response contains invalid segments")
+    try:
+        validate_segments(segments)
+    except WhisperProtocolError as exc:
+        exc.model_id = model_id
+        raise
     return WhisperResult(
         text=text,
         segments=list(segments),
@@ -176,6 +186,13 @@ class SubprocessWorker:
             return None
         if kind == "ok":
             return value
+        if kind == "quality_review":
+            return WhisperProtocolError(
+                "Whisper output needs timing review",
+                code="quality_review",
+                timing_context=value["timing_context"],
+                model_id=value["model_id"],
+            )
         return WhisperUnavailable("Whisper worker failed while transcribing")
 
     def terminate(self) -> None:
@@ -235,6 +252,14 @@ def _worker_main(
                 model_id=model_id,
                 model_revision=model_revision,
             )
+        except WhisperProtocolError as exc:
+            results.put(
+                (
+                    "quality_review",
+                    {"timing_context": exc.timing_context, "model_id": model_id},
+                )
+            )
+            continue
         except Exception:
             results.put(("error", "transcription_failed"))
             continue
