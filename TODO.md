@@ -1,3 +1,56 @@
+## Recovery deployed and real episode imported — October 2, 2026
+
+Penny runtime is now `ca6322b697a4bcea8de52849d975d7543a994970` (PR82),
+including PR81's private long-review preservation. Exact-head CI passed both
+Python versions; full local suite719 passed, 2 skips,53 subtests. Existing trust,
+backup and deployment checks passed; all five installed agents match ca6322b.
+Protected root owner files were restored byte-identically; preservation stashes
+and private rollback/plist backups remain retained. Apple pilot stays disabled.
+
+The retained33-minute Atlas episode failed from wordpiece timing validation,
+not a measured semantic word-error result. Native suffix/punctuation pieces can
+align before other pieces while reconstructed word starts remain chronological.
+The correction validates actual word starts without sorting, dropping, clamping
+or changing text. Token bounds and genuinely backward words stay fail-closed.
+The actual queued episode now passed: one success, zero failure/deferral,
+canonical import01:21:12 UTC with independent PostgreSQL/file readback (35,410
+bytes/6,257 words). Historical compatibility label macwhisper is not model
+identity evidence. Shared service selects the pinned Parakeet primary; post-job
+one-owner measurement is1.5G physical footprint,2.0G peak. No wholesale Whisper
+fallback or held Penny replay occurred. Semantic first-party comparison is a
+separate earlier benchmark, not inferred from successful import.
+
+Atlas receipt-schema/manifest/queue-link and safe typed-helper repairs are
+installed. Native dead-owner reconciliation preserved an exact ASR checkpoint;
+next claim is postprocess_pending and skips ASR. The termination CLI returned2;
+accepted termination was not claimed. Exact old-owner death was independently
+proved before existing recovery exited0. Original native admissions and legacy timer are restored. Fresh01:24:30 UTC
+health/readiness are200 with no reasons. A strictly new01:26:17 successor
+reuses the same ASR receipt, staysASR0 and makes fresh splice-evidence progress;
+full native feed publication remains pending in Atlas's current audit package; no manual
+queue relabeling or extra provider/notification proof was performed.
+
+Penny fresh Doctor verifies core capture/ASR/archive/backup/Drop/Slack ready.
+Overall remains unready only at Apple provider failure; legacy Maya/Voice Memo
+exceptions remain visible. Nine Maya store-only receipts/current canonical bytes
+are verified and need no resend; two historical memo sources have no recoverable
+audio. Notes/Finder/Reminders automation still times out. Owner authentication is
+required for the bounded Apple Events service restart in the recovery guide.
+No privacy grant, TCC reset, account change or capped/quarantined-effect replay
+occurred. After that service restart, recheck exact provider receipt before any
+bounded effect retry. New natural Penny capture and full native feed publication
+remain independent acceptance gates.
+
+Private evidence is in ~/.penny/recovery/20261001 and ~/.penny/deployments;
+Atlas canonical import/native recovery receipts remain on Homelab. Public work:
+Penny PR80/81/82 and Atlas PR167/168/169. Earlier headers below are dated history;
+their f490/937 or pending-deployment statements do not describe current runtime.
+
+- [x] Deploy reviewed ca6322b and recover the real33-minute queued import; one-owner1.5G/2.0G peak verified.
+- [x] Restore Atlas final readiness200 and prove natural postprocess checkpoint reuse/forward progress.
+- [ ] Verify full native feed publication after that resumed job (Atlas-owned).
+- [ ] Owner authenticates Apple Events service restart; agent then reconciles exact capped effect. Keep synthetic quarantine untouched.
+
 ## Parakeet word timing correction — October 2, 2026
 
 Deployed937 long-review receipt identifies `backwards_parakeet_token_time` for
