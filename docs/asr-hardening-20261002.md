@@ -107,12 +107,14 @@ Read the native gate/deployment receipts and current own health/queue/admission
 before claiming activation. Atlas PR176 exact-head hosted checks passed in run `36966127524`.
 No natural capture or delivery result is inferred from a synthetic canary.
 
-Apple Events recovery still needs an administrator command unavailable through
-noninteractive sudo:
-
-```sh
-sudo launchctl kickstart -k system/com.apple.coreservices.appleevents
-```
-
-Then run read-only provider diagnostics and reconcile existing effect receipts
-before any resend. Do not reset permissions or retry an uncertain effect blindly.
+The earlier protected Apple Events kickstart instruction was invalid on this
+SIP-enabled Mac: administrator authentication still returned error150. It has
+been withdrawn. Keep SIP enabled and retain privacy grants and effect history.
+Fresh basic Notes access succeeds, while Finder/Reminders queries time out;
+exact Notes marker lookups also pass in shell and equivalent launchd context
+with zero matches for both outstanding effects. Failed/quarantined ledger
+states remain unchanged; marker readback does not prove successful delivery. See
+[corrected recovery guidance](workflow-recovery-20261001.md#recovery-correction--october-2-2026).
+A coordinated normal macOS restart is a recovery candidate only if target
+provider calls remain stuck; do not interrupt active shared ASR jobs or blindly
+resend uncertain effects. No machine restart or effect retry was performed.

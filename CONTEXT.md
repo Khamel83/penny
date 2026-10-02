@@ -1,3 +1,52 @@
+## Reusable Apple delivery procedure — October 2
+
+The requested `apple-effects-reliability` skill is versioned at
+`.agents/skills/apple-effects-reliability/` and installed on this Mac under
+`~/.codex/skills/apple-effects-reliability/`. Its read-only helper probes live
+provider reachability with bounded calls and safe error codes; it explicitly
+does not prove delivery or reproduce launchd/SSH caller identity. The skill
+requires exact target/marker and durable receipt reconciliation before retries,
+keeps SIP/TCC unchanged, and excludes capture replay and silent retry-cap resets.
+Eight focused regressions and skill validation passed. AGENTS.md now points
+Apple delivery investigations to this procedure. Installed helper smoke test
+confirms Notes responding (0.218s), Reminders process_timeout (12.008s). No watcher, provider
+routing, launch agent or live pipeline code is changed by installing the skill.
+
+Recheck: `python3 ~/.codex/skills/apple-effects-reliability/scripts/probe_providers.py --apps notes reminders`.
+This can show Automation prompts or launch apps; it creates no personal items.
+Future operators can invoke `$apple-effects-reliability`. Skill discovery is for
+future sessions; it does not install automatic monitoring or prove permanent uptime.
+
+## Apple Events recovery correction — October 2, 2026
+
+Owner-authenticated system kickstart failed with error150 under enabled SIP.
+The prior password-only recovery instruction was wrong and is withdrawn.
+Keep SIP and TCC unchanged. Fresh read-only probes: Notes account query and local
+AppleScript pass; Finder-window and Reminders-list queries time out after12s.
+The running appleeventsd PID proves presence only, not responsiveness.
+
+Private receipts/scripts: `~/.penny/recovery/20261002-sip-recovery/`.
+Doctor's Apple provider_failure derives from failed ledger rows; it does not
+probe current provider RPC. Exact Notes marker readback succeeded in shell and equivalent launchd context,
+with zero matches for both outstanding effects; this remains distinct from
+delivery success. Preserve failed/quarantined effects without resend/reset.
+A normal Mac restart is a recovery candidate if exact target calls remain stuck,
+after coordinating active work and shared ASR consumers. No restart authorized
+or performed. Supported owner action after drain/save: Apple menu > Restart.
+Exact existing Notes marker lookups now succeed from both the agent shell and
+an equivalent launchd job using installed watcher environment; both outstanding
+note effects return zero matches in their requested folders. The failed row and
+older synthetic quarantined row remain unchanged. This proves bounded marker
+absence at these observations, not delivered content or recovery of other apps.
+The temporary diagnostic LaunchAgent was removed. A Mac restart is not required
+for the currently reachable Notes path. Do not mark failed delivery succeeded or
+reset its cap merely because the provider responds.
+
+Next: prepare a receipt-backed repair decision for the capped real effect.
+Preserve the synthetic quarantine. No provider creation or ledger transition
+was authorized or performed during these probes.
+Source guidance: docs/workflow-recovery-20261001.md.
+
 ## Verified ASR activation — October 2, 2026, 05:24 UTC
 
 Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy.
@@ -16,8 +65,9 @@ at 05:20 UTC; exact-head reviews and 2,221 local nonlive tests passed separately
 Earlier source-only, queued-CI and deployment-fence checkpoints below are historical.
 Penny's installed-context Doctor still separates healthy core/ASR from unrelated
 Apple Events provider failure, historical Maya dead letters and unavailable memos.
-Administrator recovery and a new natural Penny ledger/archive/downstream receipt
-remain open. No historical capture release, private replay or redelivery occurred.
+Apple effect receipt-backed repair and a new natural Penny ledger/archive/downstream
+receipt remain open. The protected-service instruction is superseded by the
+recovery correction above. No historical capture release, private replay or redelivery occurred.
 
 ## Historical: ASR hardening runtime checkpoint — October 2
 

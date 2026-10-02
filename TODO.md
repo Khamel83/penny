@@ -1,3 +1,22 @@
+## Reusable Apple delivery procedure — October 2
+
+- [x] Create, validate and install apple-effects-reliability skill with bounded
+  read-only provider probe, privacy/error/receipt regressions (8 passed), and
+  exact caller/target/durable receipt gates before any authorized retry.
+- [ ] Investigate currently timing-out Reminders independently; Notes marker
+  reads now pass. No automatic monitoring or item-write canary has been installed.
+
+## Apple Events SIP recovery correction — October 2
+
+- [x] Withdraw protected-service kickstart instruction: authenticated attempt
+  returns error150 under enabled SIP; basic Notes/local script probes pass,
+  Finder/Reminders timeout. No security settings or effect state changed.
+- [x] Exact Notes marker lookup passes in shell and equivalent launchd context;
+  both outstanding effects return zero matches. Temporary diagnostic job removed.
+- [ ] Prepare receipt-backed capped-effect repair; retain synthetic quarantine.
+  A coordinated restart is only a candidate for still-stuck other provider calls.
+  Evidence: docs/workflow-recovery-20261001.md; private20261002-sip-recovery receipts.
+
 ## ASR hardening activation closeout — October 2, 05:24 UTC
 
 - [x] Deploy and verify Penny `c341598c`, legacy `0d75` and native `74f4cada`;
@@ -5,7 +24,7 @@
   cleanup marker verified. Final Homelab receipt: `asr-hardening-final-acceptance-20261002.json`.
 - [x] Exact-head Atlas PR176 hosted syntax/tests passed in run `36966127524`;
   source review and local nonlive checks passed separately.
-- [ ] Administrator Apple Events recovery and receipt reconciliation.
+- [ ] Apple effect receipt-backed repair; protected restart instruction withdrawn.
 - [ ] Observe a new natural Penny capture's actual model, ledger, archive and
   downstream receipt; synthetic canary does not prove this boundary.
 
