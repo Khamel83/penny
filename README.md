@@ -36,14 +36,14 @@ bytes, and a catalog; verification runs in a scratch directory only.
 
 ## Phase A status and boundaries
 
-Phase A hardens the existing Voice Memos + MLX path without requiring JPR,
-macOS 27, Swift/EventKit, Apple Speech, or MacWhisper. The transcription
-dependency is `mlx-whisper==0.4.3`, with model revision
-`a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`, and requires `HF_HUB_OFFLINE=1`.
-The default absolute model path is
-`/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`.
-Doctor must verify the local model manifest/weights receipt before readiness;
-provisioning is a separate, explicit network step.
+The production transcription service uses pinned Parakeet v3 BF16 through MLX.
+Penny, Atlas and MinusPod share one authenticated owner; bounded Whisper retries
+load serially, and idle model workers unload. Model identity, local assets and
+`HF_HUB_OFFLINE=1` are verified. The legacy `shared-whisper` service/module names
+remain for compatibility. Apple Speech's evaluated pilot is disabled.
+See [the ASR contract](docs/shared-parakeet.md) for exact revisions, quality
+limits, timing behavior and excerpt retries. Provisioning is a separate network
+step; production recognition remains local.
 
 Any remaining direct OpenRouter classification is transitional. It remains only
 until the Maya replacement is deployed, authenticated, idempotent, and verified
@@ -70,7 +70,7 @@ passing local test.
 ## Services
 
 These are five macOS background services, not five AI agents. The voice-memo
-path uses the watcher and shared Whisper; Tasks is a separate input, the webhook
+path uses the watcher and shared ASR; Tasks is a separate input, the webhook
 provides intake/health, and export runs scheduled backups rather than continuously.
 
 | Service | Responsibility |
@@ -83,11 +83,15 @@ provides intake/health, and export runs scheduled backups rather than continuous
 
 ## Readiness and operations
 
-Run the Doctor from the repository environment:
+On the deployed Mac, read readiness from the actual installed caller:
 
 ```bash
-venv/bin/python scripts/penny_doctor.py
+curl -fsS http://127.0.0.1:5678/ready
 ```
+
+The CLI `venv/bin/python scripts/penny_doctor.py` reads its process environment.
+Use the installed service configuration for operational checks; a bare shell
+can report missing backup, offline or delivery settings that the service has.
 
 Exit status is `0` for ready, `1` for degraded, and `2` for unready. Output is
 metadata-only: bounded states, reason codes, counters, ages, and booleans; it
