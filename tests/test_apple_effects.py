@@ -106,6 +106,9 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
         stored = transcript_log.get_apple_effect(key)
         self.assertEqual(stored["state"], "uncertain")
         self.assertEqual(stored["attempt_count"], 6)
+        with self.assertRaisesRegex(apple_effects.AppleEffectError, "attempt_cap"):
+            apple_effects.ensure_note(self.row_id, text)
+        self.assertEqual(transcript_log.get_apple_effect(key)["state"], "uncertain")
 
     def test_first_create_requires_marker_readback_and_replay_does_not_create(self) -> None:
         with (

@@ -5923,6 +5923,13 @@ def claim_apple_effect(
             result.update({"claimable": False, "error_code": "invalid_effect"})
             return result
         if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS and not operator_retry:
+            if reconcile_only:
+                # Reaching a retry limit does not resolve an ambiguous write.
+                # Keep that evidence so an operator cannot mistake it for a
+                # capped pre-write failure and authorize another creation.
+                conn.commit()
+                result.update({"claimable": False, "error_code": "attempt_cap"})
+                return result
             conn.execute(
                 """UPDATE apple_effects
                    SET state = 'failed', last_error_code = 'attempt_cap',
