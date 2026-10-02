@@ -20,12 +20,15 @@ def main():
     p.add_argument("--timeout", type=float, default=180)
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    args.output.chmod(0o700)
     started = time.perf_counter()
     jobs = []
     streams = []
     for i in range(args.jobs):
         out = (args.output / f"job-{i}.json").open("w")
         err = (args.output / f"job-{i}.stderr").open("w")
+        os.fchmod(out.fileno(), 0o600)
+        os.fchmod(err.fileno(), 0o600)
         streams.extend([out, err])
         jobs.append(
             subprocess.Popen(
@@ -91,7 +94,9 @@ def main():
         "system_service_footprints_sampled": footprints,
         "samples": samples,
     }
-    (args.output / "receipt.json").write_text(json.dumps(report, indent=2) + "\n")
+    with (args.output / "receipt.json").open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(report, indent=2) + "\n")
     print(json.dumps({k: v for k, v in report.items() if k != "samples"}), flush=True)
 
 

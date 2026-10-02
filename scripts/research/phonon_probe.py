@@ -86,7 +86,9 @@ def main():
             row["cleared_mlx_active_bytes"] = mx.get_active_memory()
             row["cleared_mlx_cache_bytes"] = mx.get_cache_memory()
         report["rows"].append(row)
-        args.output.write_text(json.dumps(report, indent=2, default=str) + "\n")
+        with args.output.open("w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(report, indent=2, default=str) + "\n")
         print(
             json.dumps(
                 {
