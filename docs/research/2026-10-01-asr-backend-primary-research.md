@@ -1,5 +1,8 @@
 # Primary-source ASR comparison — October 1, 2026
 
+This is the historical research checkpoint before the later Parakeet cutover.
+Current deployment and recovery evidence are in [HANDOFF.md](../../HANDOFF.md).
+
 This is research for a local challenger benchmark. It does not authorize a
 production cutover or establish throughput on Penny's Mac. This source review
 did not execute models. The accompanying local benchmark report separately
