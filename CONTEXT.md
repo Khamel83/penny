@@ -1,5 +1,3 @@
-## ASR hardening runtime checkpoint — October 2
-
 ## Verified ASR activation — October 2, 2026, 05:24 UTC
 
 Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy.
@@ -21,9 +19,11 @@ Apple Events provider failure, historical Maya dead letters and unavailable memo
 Administrator recovery and a new natural Penny ledger/archive/downstream receipt
 remain open. No historical capture release, private replay or redelivery occurred.
 
+## Historical: ASR hardening runtime checkpoint — October 2
+
 Penny `c341598c` is deployed and verified. Strict timestamp agreement, nonretryable review, numeric locality and actual-model metadata are live. Legacy quality holds and scheduling are installed and verified without replaying the known 105-minute input. The native image is built and hash-verified; activation waits for the owned job to finish. Apple Events remains a separate administrator recovery boundary. Evidence is in docs/asr-hardening-20261002.md.
 
-## ASR timing hardening — October 2 source work
+## Historical: ASR timing hardening — October 2 source work
 
 Owner authorized hardening after the runtime diagnostic. Invalid segment ranges remain invalid; no timestamp clamping or text deletion. Quality failures carry bounded numeric locality and actual failed model identity, and Penny stores needs_review without an automatic same-input retry. Busy/network failures retain retry semantics. These are source changes, not yet installed. Legacy drain was separately paused safely with no active process while its repeated-input hold is built.
 

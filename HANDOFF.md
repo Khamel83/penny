@@ -1,5 +1,3 @@
-## ASR hardening runtime checkpoint — October 2
-
 ## Verified ASR activation — October 2, 2026, 05:24 UTC
 
 Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy.
@@ -21,13 +19,15 @@ Apple Events provider failure, historical Maya dead letters and unavailable memo
 Administrator recovery and a new natural Penny ledger/archive/downstream receipt
 remain open. No historical capture release, private replay or redelivery occurred.
 
+## Historical: ASR hardening runtime checkpoint — October 2
+
 Penny `c341598c` (PR88) is live on five agents. The saved malformed-response check is green; a public serial model canary passed without ledger or delivery mutation. Legacy projection `0d75eaba` is deployed with its timer active and full component verification passed. Seventeen prior failure receipts seeded one private hold; no additional same-input retries were observed.
 
 The native candidate `74f4cada` is built and hash-verified. The gated updater waits for the owned postprocessing job, then records activation, rollback or deferral and restores original admission. Read `/mnt/fast-storage/appdata/minuspod/asr-hardening-native-gate-20261002.json` before claiming native activation. Atlas hosted tests remain capacity-queued at the checkpoint; hosted syntax and 2,221 local nonlive tests pass.
 
 Apple Events needs the administrator command documented in docs/asr-hardening-20261002.md, followed by receipt reconciliation. Do not resend uncertain effects. Natural Penny capture/ledger/archive/downstream acceptance remains unobserved. Recheck commands and private receipt paths are in that report. Protected root files and their preservation stash remain intact.
 
-## ASR hardening in progress — October 2
+## Historical: ASR hardening in progress — October 2
 
 Isolated fix/asr-contract-hardening-20261002 preserves dirty primary checkout. Producer/client timing validation, child error locality, actual model error metadata and Penny needs_review handling implemented. Synthetic real-shape red tests now green; full suite749 pass/2 skip/53 subtests, focused43 pass plus8 new regression checks. Next: exact-head review/CI, merge, rollback-capable deploy, saved-response agreement and installed-context Doctor. Atlas legacy drain paused with private receipt at /mnt/fast-storage/appdata/minuspod/asr-hardening-drain-pause-20261002.json; restore only after hold deployment. Apple Events failure and natural capture acceptance remain separate.
 

@@ -12,12 +12,12 @@
 Older unfinished deployment/CI checkpoints below are historical and superseded
 by this closeout. Other provider, storage and publication tasks retain their scope.
 
-## ASR hardening runtime checkpoint — October 2
+## Historical: ASR hardening runtime checkpoint — October 2
 
 - [x] Deploy Penny `c341598c` on five agents; verify saved-response agreement and public serial Parakeet/Whisper canary. Install legacy signature holds, restore scheduling and pass the component verifier. Evidence: docs/asr-hardening-20261002.md.
 - [ ] Verify native activation receipt and queued Atlas hosted test. Administrator Apple Events recovery/reconciliation and new natural capture/archive/delivery acceptance remain separate open items.
 
-## ASR timing hardening — October 2 source work
+## Historical: ASR timing hardening — October 2 source work
 
 - [x] Reproduce saved malformed Whisper timing with synthetic text; strict producer/client validation and numeric Parakeet failure locality implemented.
 - [x] Quality review becomes a held capture result; transient service failures remain retryable. Full suite:749 passed,2 skipped,53 subtests before the final added regressions.
