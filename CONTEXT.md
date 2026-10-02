@@ -1,4 +1,29 @@
-## ASR timing hardening — October 2 source work
+## Verified ASR activation — October 2, 2026, 05:24 UTC
+
+Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy.
+The native image is `atlas-minuspod:74f4cada-asr-hardening`, digest
+`sha256:fe0b45965f9bd396ec5f4e256369302acb4c275752fff4a18cd12ad7dca6a0df`.
+Both owned jobs completed naturally before activation; no forced shutdown occurred.
+The gate reports `activated_admission_restored`, original admission is `false`,
+and drain, watchdog and readiness user timers are active. Restart count is zero.
+Installed transcriber, processing and schema hashes match the reviewed overlay
+chain; the once-only cleanup success marker exists. Legacy `0d75` remains active.
+Final private Homelab receipt:
+`/mnt/fast-storage/appdata/minuspod/asr-hardening-final-acceptance-20261002.json`.
+
+Atlas PR176 exact-head hosted syntax and tests passed in run `36966127524`
+at 05:20 UTC; exact-head reviews and 2,221 local nonlive tests passed separately.
+Earlier source-only, queued-CI and deployment-fence checkpoints below are historical.
+Penny's installed-context Doctor still separates healthy core/ASR from unrelated
+Apple Events provider failure, historical Maya dead letters and unavailable memos.
+Administrator recovery and a new natural Penny ledger/archive/downstream receipt
+remain open. No historical capture release, private replay or redelivery occurred.
+
+## Historical: ASR hardening runtime checkpoint — October 2
+
+Penny `c341598c` is deployed and verified. Strict timestamp agreement, nonretryable review, numeric locality and actual-model metadata are live. Legacy quality holds and scheduling are installed and verified without replaying the known 105-minute input. The native image is built and hash-verified; activation waits for the owned job to finish. Apple Events remains a separate administrator recovery boundary. Evidence is in docs/asr-hardening-20261002.md.
+
+## Historical: ASR timing hardening — October 2 source work
 
 Owner authorized hardening after the runtime diagnostic. Invalid segment ranges remain invalid; no timestamp clamping or text deletion. Quality failures carry bounded numeric locality and actual failed model identity, and Penny stores needs_review without an automatic same-input retry. Busy/network failures retain retry semantics. These are source changes, not yet installed. Legacy drain was separately paused safely with no active process while its repeated-input hold is built.
 

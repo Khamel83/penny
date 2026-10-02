@@ -1,4 +1,23 @@
-## ASR timing hardening — October 2 source work
+## ASR hardening activation closeout — October 2, 05:24 UTC
+
+- [x] Deploy and verify Penny `c341598c`, legacy `0d75` and native `74f4cada`;
+  original admission restored, three user timers active, generated hashes and
+  cleanup marker verified. Final Homelab receipt: `asr-hardening-final-acceptance-20261002.json`.
+- [x] Exact-head Atlas PR176 hosted syntax/tests passed in run `36966127524`;
+  source review and local nonlive checks passed separately.
+- [ ] Administrator Apple Events recovery and receipt reconciliation.
+- [ ] Observe a new natural Penny capture's actual model, ledger, archive and
+  downstream receipt; synthetic canary does not prove this boundary.
+
+Older unfinished deployment/CI checkpoints below are historical and superseded
+by this closeout. Other provider, storage and publication tasks retain their scope.
+
+## Historical: ASR hardening runtime checkpoint — October 2
+
+- [x] Deploy Penny `c341598c` on five agents; verify saved-response agreement and public serial Parakeet/Whisper canary. Install legacy signature holds, restore scheduling and pass the component verifier. Evidence: docs/asr-hardening-20261002.md.
+- [ ] Verify native activation receipt and queued Atlas hosted test. Administrator Apple Events recovery/reconciliation and new natural capture/archive/delivery acceptance remain separate open items.
+
+## Historical: ASR timing hardening — October 2 source work
 
 - [x] Reproduce saved malformed Whisper timing with synthetic text; strict producer/client validation and numeric Parakeet failure locality implemented.
 - [x] Quality review becomes a held capture result; transient service failures remain retryable. Full suite:749 passed,2 skipped,53 subtests before the final added regressions.
