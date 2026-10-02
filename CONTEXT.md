@@ -1,3 +1,27 @@
+## Penny Note reconciliation — October 2, 2026
+
+PR94 and PR95 are merged. The retry selector and operator repair were installed
+as a scoped three-caller update at `946a4ac`; shared ASR and export were not
+restarted. Protected owner files and the runtime Git checkout were preserved.
+Private deployment receipt: `~/.penny/deployments/20261002T1926Z-note-repair/`.
+
+The authorized repair created exactly one Note for row 770 on attempt six.
+Notes rejected its advertised `container` getter, so full readback failed and
+the ledger correctly retained `uncertain`. The corrected folder-membership
+readback now verifies the existing Note's exact marker and full normalized
+payload. No second Note was created. Source adds an explicit reconciliation-only
+claim: exact expected count, no creation, no cap reset, no quarantine override.
+
+Validation: 765 passed, 2 skipped, 60 subtests; trust check 497 tests, 2 skipped, PASS.
+
+Next: merge and install this correction, reconcile the existing Note at expected
+attempt six, then verify ordinary routing and installed `/ready`. Private first
+attempt: `~/.penny/recovery/20261002-note-770-repair/`. Historical quarantine and
+held row 769 remain untouched. Natural post-Parakeet capture acceptance still
+requires a new ordinary recording; no new capture has arrived.
+
+## Historical checkpoints (superseded by the current state above)
+
 ## Penny finalization — October 2, 19:15 UTC
 
 This task is Penny only. The unrelated Drop closeout does not establish any

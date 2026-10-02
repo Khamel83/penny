@@ -192,6 +192,7 @@ def _ensure_effect(
     find: Callable[[], Any],
     create: Callable[[], Any],
     operator_retry_at_attempt: int | None = None,
+    operator_reconcile_only: bool = False,
 ) -> AppleEffectReceipt:
     if not isinstance(transcript_id, int) or transcript_id <= 0:
         raise AppleEffectError("canonical_id_required")
@@ -210,7 +211,8 @@ def _ensure_effect(
         requested_target=_normalize_text(requested_target),
         fallback_target=_normalize_text(fallback_target),
         payload_sha256=payload_hash,
-        **({"operator_retry_at_attempt": operator_retry_at_attempt}
+        **({"operator_retry_at_attempt": operator_retry_at_attempt,
+            "operator_reconcile_only": operator_reconcile_only}
            if operator_retry_at_attempt is not None else {}),
     )
     if not claim.get("claimable"):
