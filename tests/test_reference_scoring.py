@@ -81,3 +81,48 @@ def test_recognition_never_silently_reuses_partial_results(tmp_path):
     (tmp_path / "musk-apple.json").write_text("{}")
     with pytest.raises(RuntimeError, match="existing_recognition_use_verified_score"):
         recognize(tmp_path, tmp_path / "unused-binary")
+
+
+def test_saved_artifact_secures_preexisting_permissions(tmp_path):
+    import stat
+    from scripts.benchmark_apple_references import save
+
+    target = tmp_path / 'result.json'
+    target.write_text('old fixture')
+    target.chmod(0o644)
+    save(target, {'text': 'synthetic fixture'})
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_artifact_is_private_even_when_write_fails(tmp_path, monkeypatch):
+    import stat
+    from pathlib import Path
+    import pytest
+    from scripts.benchmark_apple_references import save
+
+    target = tmp_path / 'result.json'
+    target.write_text('old fixture')
+    target.chmod(0o644)
+    original_open = Path.open
+
+    class FailedWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def write(self, text):
+            assert stat.S_IMODE(target.stat().st_mode) == 0o600
+            raise OSError('simulated write failure')
+
+    monkeypatch.setattr(Path, 'open', lambda path, *a, **k: FailedWriter(original_open(path, *a, **k)))
+    with pytest.raises(OSError, match='simulated write failure'):
+        save(target, {'text': 'synthetic fixture'})
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
