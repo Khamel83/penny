@@ -1,3 +1,10 @@
+## Shared runtime diagnostic — October 2, 2026
+
+- [x] Diagnose installed Penny/ASR/Atlas boundaries from existing metadata and receipts; fifty focused checks pass. Report:docs/runtime-diagnostic-20261002.md. No new inference/private replay or live change.
+- [ ] Repair producer/consumer timing-contract disagreement proved by the same saved Whisper response; establish reviewed small-alignment policy without discarding or reordering text.
+- [ ] Hold repeated long Parakeet quality failures durably and capture numeric failure locality for bounded excerpt retries. One105-minute input repeated ten times; review receipts alone did not halt admission.
+- [ ] Verify a new ordinary post-cutover Penny capture's actual model, ledger/archive and downstream receipts; health and public canaries do not prove this.
+
 ## Native startup follow-up — October 2, 2026
 
 - [x] Merge all originally open Penny research PRs (66,72,73,74), configuration PR85 and recovery documentation PR84 with passing checks; original conflict backlog is closed.
