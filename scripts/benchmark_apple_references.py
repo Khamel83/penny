@@ -43,9 +43,14 @@ CASES = {
 }
 
 
+def write_private_text(path, text):
+    with path.open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(text)
+
+
 def save(path, value):
-    path.write_text(json.dumps(value, indent=2, sort_keys=True))
-    path.chmod(0o600)
+    write_private_text(path, json.dumps(value, indent=2, sort_keys=True))
 
 
 def digest(path):
@@ -170,6 +175,7 @@ def prepare(root):
                 size = 0
                 started = time.monotonic()
                 with temp.open("wb") as f:
+                    os.fchmod(f.fileno(), 0o600)
                     for chunk in r.iter_content(1024 * 1024):
                         size += len(chunk)
                         if size > 256 * 1024**2 or time.monotonic() - started > 180:
@@ -191,7 +197,7 @@ def prepare(root):
         begin = t[first][0]
         end = t[last][0]
         reference = " ".join(words for _, words in t[first:last])
-        (root / (name + "-reference.txt")).write_text(reference)
+        write_private_text(root / (name + "-reference.txt"), reference)
         clip = root / (name + "-clip.wav")
         if not clip.exists():
             subprocess.run(
@@ -271,9 +277,8 @@ def recognize(root, binary):
                 raise RuntimeError("apple_failed")
             payload = json.loads(r.stdout)
             payload["request_elapsed_seconds"] = time.monotonic() - started
-            output.write_text(json.dumps(payload))
-            output.chmod(0o600)
-            (root / (name + "-apple-resources.txt")).write_text(r.stderr)
+            save(output, payload)
+            write_private_text(root / (name + "-apple-resources.txt"), r.stderr)
             print(
                 json.dumps(
                     {
