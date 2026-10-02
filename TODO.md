@@ -35,6 +35,9 @@ checklists are superseded; their evidence remains in the
   natural 09:00 UTC Penny observer recorded the actual Apple failure; its
   supervised 19:37 UTC check recorded recovery to degraded. Timer remains active.
   Observer environment limits are explicit in [INFRA.md](INFRA.md).
+- [x] Preserve explicit local-routing, independent Slack and independent Maya v2
+  evidence boundaries in the condensed handoff; keep the documentation contract
+  enforced by existing tests.
 - [x] Consolidate duplicate and obsolete TODO/CONTEXT/HANDOFF checkpoints;
   keep current evidence and genuine input gates separate from historical plans.
 

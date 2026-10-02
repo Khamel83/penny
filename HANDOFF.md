@@ -9,6 +9,11 @@ unready component. Historical exceptions and held recordings remain intact.
 Final code tests: 765 passed, 2 skipped, 60 subtests; trust 497 tests, 2 skipped,
 PASS. Both PR96 hosted Python checks passed. See [current context](CONTEXT.md).
 
+A successful local routing receipt does not establish independent Slack or
+independent Maya v2 delivery. For Voice Memos, accepted Drop intake is a separate
+boundary from each consumer's downstream receipt. Verify archive and provider
+receipts separately; never infer delivery from healthy services or passing tests.
+
 ## Runtime and receipts
 
 - Three caller labels: `6ccf2286a2c6af1919e43b4eaba72465f8eb614b`.
