@@ -1,3 +1,53 @@
+## PR recovery — October 2, 2026
+
+Owner authorized completion of workflow recovery and repair/review/merge of open
+Penny/Atlas PRs. Penny's four remaining PRs (66,72,73,74) conflicted only in
+CONTEXT.md, HANDOFF.md and TODO.md after the deployment/recovery series advanced
+main. Each was reconciled in a separate fresh worktree, with both historical
+research and current runtime evidence retained. Both Python3.11/3.12 CI checks
+and exact-final-head Standards/Spec reviews passed before each merge.
+
+Research output permission gaps were repaired: pre-existing files and reused
+atomic temporary files become0600 before writing; Apple probe directories become
+0700. Synthetic regression cases cover existing0644 files and a failed write.
+No research recognition or private capture replay was performed for these fixes.
+
+All four are source-merged: PR66=9331227, PR72=aa8d70d, PR73=c269ab3,
+PR74=f492c33. These are research/tooling changes; installed pipeline remains
+ca6322b, with the pinned Parakeet primary. Final ASR health was idle, worker_count0
+and no resident backend after normal idle unloading. Dirty runtime-root owner
+files and original research checkouts remain preserved.
+
+Atlas's earlier postprocess verification failure was local ASR-slot contention,
+not a failed primary transcript or proven transport outage. Normal scheduling
+resumed the same checkpoint and completed02:02:52 UTC. Episode/history completion,
+canonical24,686,598-byte processed audio, ffprobe0, current-version RSS enclosure
+and HTTP200 full readback matching its SHA256 are independently verified.
+The original ASR receipt is unchanged. Private evidence remains at
+/mnt/fast-storage/appdata/minuspod/atlas-native-publication-proof-20261002.json.
+This closes that native publication gate, separately from the prior33-minute
+legacy text import; no recognition or provider proof request was added.
+
+Atlas PR170's preventive typed local-capacity deferral fix at b367c8f2 passed
+both hosted checks and parent source review, then merged5086c022. The full
+nonlive suite passed2,152 tests (159 skips/14 deselected), with163 focused MinusPod
+tests. Its immutable image is built and hash-verified; the controlled deployment
+is in progress at zero owners with admissions temporarily paused. Native startup
+health/source acceptance and admission restoration remain required.
+Seven obsolete queued Atlas CI runs were cancelled with no active jobs; the
+current repair's tests then ran successfully. OCI admission uses one global
+runner slot shared with Maya; no capacity/authentication policy changed.
+The transient legacy drain failure recovered through its normal retry, with
+Result=success and health/readiness200; its old inner cause remains unproven.
+
+Maya caller configuration cutover is recorded in PR85, merged d29e6eb. Installed
+and loaded watcher/webhook/tasks URLs match the core endpoint; the hashed private
+configuration receipt and unchanged outbox counts are verified. New direct v2
+provider receipt/core readback remains a future natural acceptance gate.
+Apple Notes still requires owner authentication for the documented Apple Events
+restart. No capped effect was replayed or TCC permission changed.
+
+
 ## Maya core caller cutover — October 2, 2026 02:02 UTC
 
 Installed watcher, webhook and tasks now use

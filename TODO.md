@@ -1,3 +1,11 @@
+## PR and workflow recovery — October 2, 2026
+
+- [x] Reconcile and merge PR66,72,73,74 with fresh Python3.11/3.12 CI and final-head Standards/Spec reviews. Merge receipts:9331227,aa8d70d,c269ab3,f492c33; the four original open PRs are closed.
+- [x] Enforce private permissions before research artifact writes, including pre-existing0644 files and reused atomic temp files; regressions verify write-failure privacy. No extra recognition/private replay.
+- [x] Verify native postprocess completion/publication:02:02:52 complete_job, original ASR receipt retained, current RSS enclosure HTTP200/hash matches canonical24,686,598-byte output. Private Atlas publication receipt owns proof.
+- [ ] Finish already reviewed Atlas PR170 image deployment/startup acceptance and restore original admission; source5086c022 merged with passing CI, native cold startup in progress.
+- [ ] Recheck exact Apple Notes provider receipt after owner-authenticated Apple Events restart, then determine bounded retry; preserve capped and quarantined history.
+
 ## Maya core caller cutover — October 2, 2026 02:02 UTC
 
 - [x] Repoint installed watcher, webhook and tasks `MAYA_TRANSCRIPT_URL` to
