@@ -1,3 +1,37 @@
+## Long ASR quality-review evidence repair — October 2, 2026
+
+Atlas's reviewed helper now exposes `quality_review_requires_bounded_excerpt`
+for a queued 2,001.92-second episode. This is a real >660-second safety guard,
+not an availability failure. The legacy drain was paused only at MainPID zero
+to prevent repeated whole-audio inference; queued media and MinusPod are intact.
+Atlas current health is 200/readiness 503 for the intentional inactive drain.
+
+This source change preserves a private review receipt before rejecting an
+automatic long-recording fallback: original audio, primary text/timestamps when
+available, and a fixed safe quality reason. Native worker failure reasons are
+allowlisted; arbitrary exceptions/payloads remain private. Primary-invalid output
+is distinct from a text repetition flag. The Whisper bound, serial model owner,
+canonical ledger and all downstream delivery behavior stay unchanged. Explicit
+full-length Whisper requests remain refused without starting Whisper.
+
+Meaningful receipt regression was red before the change (no receipt preserved).
+Full suite then passed 715 tests, 2 skips and 53 subtests. Two additional server
+worker-failure/privacy cases bring the focused adapter suite to 17 passed. Source
+review/deployment and recovery of the queued episode remain pending; this is not
+live repair evidence. Installed Penny runtime is still f4909d33. Protected root
+files remain untouched. Private recovery receipts stay under ~/.penny/recovery/20261001.
+
+Next: review/merge, establish producer ASR quiescence, deploy source with existing
+backup/credential-preserving script, then inspect one ordinary deferred request's
+private receipt and repair only a bounded excerpt if needed. Two native MinusPod
+owners were observed at00:59 UTC; their stages must be checked before any restart.
+Notes automation still needs owner authentication for the previously documented
+Apple Events service restart. No TCC change or capped-effect replay is authorized
+by this diagnostic receipt alone.
+
+- [x] Build/test private long-quality review preservation; full 715 passed, 2 skipped, 53 subtests; 17 focused adapter cases and trust check pass.
+- [ ] Deploy reviewed source after ASR producer quiescence; inspect one deferred request and complete bounded recovery.
+
 ## Workflow recovery checkpoint — October 1, 2026
 
 Owner authorized remaining workflow diagnosis and repair. Penny installed code stays

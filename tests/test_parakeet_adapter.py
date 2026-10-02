@@ -215,3 +215,57 @@ def test_parakeet_accepts_restart_but_still_flags_long_loop():
     ).passed
     assert not evaluate_transcript("I I I think this is useful.").passed
     assert not evaluate_transcript("loop " * 8, tolerant_restarts=True).passed
+
+
+@pytest.mark.parametrize("worker_failure", [None, "backwards_parakeet_token_time", "private /audio transcript"])
+def test_long_quality_review_preserves_primary_without_loading_whisper(monkeypatch, tmp_path, worker_failure):
+    import json
+    from shared_whisper.protocol import WhisperProtocolError
+    monkeypatch.setenv("PENNY_ASR_RETRY_DIR", str(tmp_path / "retries"))
+    calls = []
+    primary = WhisperResult("loop " * 8, [{"start": 300, "end": 305, "text": "loop " * 8}], PARAKEET_ID, PARAKEET_REVISION, "primary")
+    class Supervisor:
+        def expire_idle(self):
+            pass
+        def handle_request(self, client, *, audio_path, options):
+            calls.append(options)
+            assert options.get("_backend") != "whisper"
+            if worker_failure is not None:
+                raise WhisperProtocolError(worker_failure, code="quality_review")
+            return primary
+    monkeypatch.setattr("shared_whisper.retry.audio_duration", lambda path: 2001.92)
+    app = create_app(Supervisor(), auth_token="secret", model_id=PARAKEET_ID, model_revision=PARAKEET_REVISION, allow_whisper_fallback=True)
+    response = app.test_client().post("/v1/audio/transcriptions", headers={"Authorization": "Bearer secret", "X-Whisper-Client": "atlas"}, data={"model": PARAKEET_ID, "file": (io.BytesIO(b"audio"), "episode.mp3")})
+    assert response.status_code == 502
+    receipts = list((tmp_path / "retries").glob("*/receipt.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text())
+    assert receipt["state"] == "quality_review_requires_bounded_excerpt"
+    if worker_failure is None:
+        assert receipt["quality_reason"] == "consecutive_token_repetition"
+        assert receipt["primary"]["segments"] == primary.segments
+    else:
+        assert receipt["quality_reason"] == (worker_failure if worker_failure == "backwards_parakeet_token_time" else "parakeet_output_invalid")
+        assert receipt["primary"] is None
+    assert receipt["fallback"] is None
+    assert len(calls) == 1
+    assert (receipts[0].parent / "audio.mp3").read_bytes() == b"audio"
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("backwards_parakeet_token_time", "backwards_parakeet_token_time"),
+    ("invalid_parakeet_token_time", "invalid_parakeet_token_time"),
+    ("private transcript /private/audio", "parakeet_output_invalid"),
+    ({"private": "payload"}, "Parakeet output needs retry"),
+])
+def test_worker_pipe_keeps_only_safe_failure_reason(reason, expected):
+    import json
+    import queue
+    from shared_whisper.parakeet_process import ParakeetWorker
+    worker = object.__new__(ParakeetWorker)
+    worker._results = queue.Queue()
+    worker._process = SimpleNamespace(stdout=io.StringIO(json.dumps({"error": reason}) + "\n"))
+    worker._read()
+    error = worker._results.get_nowait()
+    assert error.code == "quality_review"
+    assert str(error) == expected

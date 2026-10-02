@@ -101,8 +101,13 @@ def main() -> None:
             payload = verbose_result(result, duration)
             del result, audio
             reply = {"ok": payload}
-        except Exception:
-            reply = {"error": "parakeet_transcription_failed"}
+        except Exception as exc:
+            safe_reason = str(exc) if isinstance(exc, ValueError) and str(exc) in {
+                "invalid_parakeet_token_time", "backwards_parakeet_token_time",
+                "empty_parakeet_output", "parakeet_translation_not_supported",
+                "audio_duration_out_of_bounds",
+            } else "parakeet_transcription_failed"
+            reply = {"error": safe_reason}
         finally:
             mx.synchronize()
             mx.clear_cache()
