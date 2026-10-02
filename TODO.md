@@ -6,6 +6,7 @@
 - [x] Validate and install all four skills; source/install hashes agree, relative
   references resolve, eight probe regressions pass. Fresh installed Notes and
   Reminders access passes. Private receipts:20261002-apple-skills.
+  Source: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
 - [ ] Observe a first requested operation from another project's actual caller;
   verify that project's exact target, item fields and durable receipt. Generic
   skills do not imply new unattended adapter/write acceptance.

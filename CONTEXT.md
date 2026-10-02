@@ -18,6 +18,9 @@ no item, grant, ledger or pipeline configuration was changed. New projects still
 need their own caller-context and authorized write/readback acceptance. Other
 apps route to computer use; no tested Calendar/Mail/Messages adapter is claimed.
 
+Source publication: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
+Installed operator artifacts are hash-verified separately from Penny runtime.
+
 ## Earlier verified checkpoint: Reminders reachability and receipt recovery — October 2, 06:52 UTC
 
 Reminders list access now passes: shell0.242s and equivalent installed-launchd

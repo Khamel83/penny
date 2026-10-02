@@ -24,6 +24,9 @@ Recheck access: `python3 ~/.codex/skills/apple-effects-reliability/scripts/probe
 A new natural Penny capture/archive/delivery check and capped-Note repair remain
 separate open acceptance items; preserve existing held captures and quarantine.
 
+Source publication: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
+Installed operator artifacts are hash-verified separately from Penny runtime.
+
 ## Earlier verified checkpoint: Reminders reachability and receipt recovery — October 2, 06:52 UTC
 
 Reminders list access now passes: shell0.242s and equivalent installed-launchd
