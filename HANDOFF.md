@@ -1,3 +1,42 @@
+## Workflow recovery checkpoint — October 1, 2026
+
+Owner authorized remaining workflow diagnosis and repair. Penny installed code stays
+`f4909d33`; fresh metadata-only Doctor at `2026-10-02T00:36:50Z` reports capture,
+Parakeet, archive, backup, Drop, Slack and SQLite ready. Overall remains unready
+from Apple provider failure, with historical Maya and Voice Memo degradation.
+
+Nine legacy Maya dead letters have unique successful Drop `store_only` receipts;
+all nine raw payload hashes/sizes and current canonical object bytes match. Zero
+missing/conflicting receipts. Legacy flat-file paths are absent, so this is current
+canonical storage proof, not proof of historical flat-file migration. Do not resend
+or forge success for the original direct Maya failures.
+
+Actual launchd-context inventory finds both historical Voice Memo source rows.
+One has zero duration and no audio file. The other has a 1,586-byte AAC file with
+3.285-second container metadata but decoding exits 69, emits zero samples and
+reports invalid AAC data. Preserve originals/history; no ASR or canonical rewrite
+was performed. Native-source inventory succeeds; agent-shell access denial does
+not establish a capture failure. Temporary diagnostic LaunchAgents were removed.
+
+Notes UI is responsive. Actual provider marker/account queries time out, including
+from installed Penny launchd context; generic Finder-window and Reminders-list
+queries also time out. Normal Notes quit/reopen did not fix it. UI exact-marker
+search for the recent capped effect returned no results, but this does not replace
+provider reconciliation. An older synthetic effect remains quarantined. There were
+zero active Apple-effect leases. The bounded system Apple Events service restart
+was attempted and blocked by `sudo: a password is required`; no privacy grants,
+TCC reset, note recreation or account changes occurred.
+
+Atlas receipt-schema, relative-manifest-entrypoint and missing canonical queue-link
+repairs passed native verification. A following natural drain completed pull/import
+but failed after typed ASR deferral; fresh readiness returned 503. PR167 exposes
+only the safe typed code; final deployment/cause resolution is still in flight.
+MinusPod has at least one natural completion after resume; identity/publication
+remain distinct acceptance gates. See Atlas's current audit package.
+
+Private receipts (0600) are under `~/.penny/recovery/20261001`; no personal content
+is committed. Details and next commands: [workflow recovery](docs/workflow-recovery-20261001.md).
+
 ## Shared Parakeet live activation — October 1, 2026
 
 Penny runtime is deployed at `f4909d33d0a15db660c9eec35a02318aab297ca2` (merged PRs 75–77). Five launch agents carry that revision; watcher/webhook are resumed. Authenticated production Parakeet input passed Penny and Atlas/MinusPod identity/timestamp validation. Apple pilot remains disabled. The ten-minute public staging input took 14.984 seconds including cold load (1.4 GB physical footprint, 1.9 GB peak); bounded five-minute Whisper fallback took 45.509 seconds (1.8 GB, 2.4 GB peak), followed by successful Parakeet return and idle unload. The installed excerpt command separately verified original-audio timestamp offsets. No simultaneous model owners were observed.
