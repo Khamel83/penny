@@ -5747,6 +5747,7 @@ def claim_apple_effect(
     now: datetime | str | None = None,
     lease_seconds: int = APPLE_EFFECT_LEASE_SECONDS,
     lease_owner: str | None = None,
+    operator_retry_at_attempt: int | None = None,
 ) -> dict[str, Any]:
     """Insert or CAS-claim one effect while holding SQLite's write lock.
 
@@ -5793,6 +5794,10 @@ def claim_apple_effect(
         row = conn.execute(
             "SELECT * FROM apple_effects WHERE effect_key = ?", (effect_key,)
         ).fetchone()
+        if row is None and operator_retry_at_attempt is not None:
+            conn.rollback()
+            return {"effect_key": effect_key, "state": "failed", "claimable": False,
+                    "error_code": "effect_not_found"}
         if row is None:
             conn.execute(
                 """
@@ -5902,7 +5907,30 @@ def claim_apple_effect(
             attempt_count = int(result.get("attempt_count") or 0)
         except (TypeError, ValueError):
             attempt_count = 0
-        if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS:
+        # A deliberate operator repair is bound to one observed capped row.
+        # Count is incremented, never reset. The normal watcher never supplies
+        # this argument; replay with the old count cannot authorize another try.
+        operator_retry = operator_retry_at_attempt is not None
+        if operator_retry and not (
+            type(operator_retry_at_attempt) is int
+            and operator_retry_at_attempt == attempt_count
+            and attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS
+            and result["state"] == "failed"
+            and result.get("last_error_code") == "attempt_cap"
+            and not result.get("provider_id")
+            and not result.get("lease_owner")
+        ):
+            conn.commit()
+            result.update({"claimable": False, "error_code": "invalid_effect"})
+            return result
+        if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS and not operator_retry:
+            if reconcile_only:
+                # Reaching a retry limit does not resolve an ambiguous write.
+                # Keep that evidence so an operator cannot mistake it for a
+                # capped pre-write failure and authorize another creation.
+                conn.commit()
+                result.update({"claimable": False, "error_code": "attempt_cap"})
+                return result
             conn.execute(
                 """UPDATE apple_effects
                    SET state = 'failed', last_error_code = 'attempt_cap',
@@ -5919,7 +5947,7 @@ def claim_apple_effect(
             result.update({"claimable": False, "error_code": "attempt_cap"})
             return result
 
-        if result["state"] in {"uncertain", "failed"} and not _apple_effect_retry_due(
+        if not operator_retry and result["state"] in {"uncertain", "failed"} and not _apple_effect_retry_due(
             result, now_dt
         ):
             conn.commit()
@@ -6040,6 +6068,31 @@ def mark_apple_effect_succeeded(
             conn.rollback()
         log.error("Failed to persist Apple effect receipt")
         return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def resume_route_after_note_repair(effect_key: str) -> bool:
+    """Reopen only a currently capped route after its exact Note succeeded.
+
+    Keeps the route failed/pending for the ordinary worker and preserves the
+    effect attempt count. No capture, outbox or unrelated route is replayed.
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """UPDATE transcripts SET error_message='apple_effect_repaired', updated_at=?
+               WHERE status='failed' AND error_message='attempt_cap'
+                 AND COALESCE(routing_suppressed, 0)=0
+                 AND id=(SELECT transcript_id FROM apple_effects
+                         WHERE effect_key=? AND effect_type='note'
+                           AND state='succeeded' AND provider_id IS NOT NULL)""",
+            (_apple_effect_now(), effect_key),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
     finally:
         if conn:
             conn.close()

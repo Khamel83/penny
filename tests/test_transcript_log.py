@@ -306,8 +306,8 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(blocked["error_code"], "retry_not_due")
 
         # Advance the logical clock past the retry schedule and exhaust the
-        # bounded attempts.  The final state is visible failure, not an
-        # unbounded sequence of provider writes.
+        # bounded attempts. Preserve uncertain-write evidence at the cap;
+        # exhausting probes does not prove the provider write failed.
         for _ in range(transcript_log.APPLE_EFFECT_MAX_ATTEMPTS - 2):
             current = transcript_log.get_apple_effect(key)
             updated_at = datetime.fromisoformat(
@@ -336,7 +336,7 @@ class TranscriptLogTests(unittest.TestCase):
         )
         self.assertFalse(capped["claimable"])
         self.assertEqual(capped["error_code"], "attempt_cap")
-        self.assertEqual(transcript_log.get_apple_effect(key)["state"], "failed")
+        self.assertEqual(transcript_log.get_apple_effect(key)["state"], "uncertain")
 
     def test_pre_create_find_timeout_retry_remains_createable(self) -> None:
         row_id = transcript_log.insert_transcript(
