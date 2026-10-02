@@ -5748,6 +5748,7 @@ def claim_apple_effect(
     lease_seconds: int = APPLE_EFFECT_LEASE_SECONDS,
     lease_owner: str | None = None,
     operator_retry_at_attempt: int | None = None,
+    operator_reconcile_only: bool = False,
 ) -> dict[str, Any]:
     """Insert or CAS-claim one effect while holding SQLite's write lock.
 
@@ -5915,14 +5916,16 @@ def claim_apple_effect(
             type(operator_retry_at_attempt) is int
             and operator_retry_at_attempt == attempt_count
             and attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS
-            and result["state"] == "failed"
-            and result.get("last_error_code") == "attempt_cap"
+            and ((result["state"] == "failed" and result.get("last_error_code") == "attempt_cap")
+                 or (operator_reconcile_only and result["state"] == "uncertain"))
             and not result.get("provider_id")
             and not result.get("lease_owner")
         ):
             conn.commit()
             result.update({"claimable": False, "error_code": "invalid_effect"})
             return result
+        if operator_retry and operator_reconcile_only:
+            reconcile_only = True
         if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS and not operator_retry:
             if reconcile_only:
                 # Reaching a retry limit does not resolve an ambiguous write.

@@ -19,7 +19,7 @@ import transcript_log
 from core import normalize_transcript_text
 
 
-def snapshot(effect_key: str) -> tuple[dict, str]:
+def snapshot(effect_key: str, reconcile_only: bool = False) -> tuple[dict, str]:
     conn = sqlite3.connect(f"file:{transcript_log.TRANSCRIPT_DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -35,7 +35,8 @@ def snapshot(effect_key: str) -> tuple[dict, str]:
             raise ValueError("capture_not_eligible")
         text = normalize_transcript_text(row["transcript"])
         if (effect["effect_type"] != "note" or effect["fallback_target"]
-                or effect["state"] != "failed" or effect["last_error_code"] != "attempt_cap"
+                or not ((effect["state"] == "failed" and effect["last_error_code"] == "attempt_cap")
+                        or (reconcile_only and effect["state"] == "uncertain"))
                 or effect["provider_id"] or effect["lease_owner"]):
             raise ValueError("effect_not_capped_note")
         if apple_effects.normalized_payload_sha256(text) != effect["payload_sha256"]:
@@ -60,10 +61,16 @@ end tell
 
 def verify_content(provider_id: str, folder_id: str, effect_key: str, payload_hash: str) -> None:
     ident = reminders._escape_applescript(provider_id)
+    folder = reminders._escape_applescript(folder_id)
     result = reminders._run_osascript(f'''
 tell application "Notes"
-    set n to note id "{ident}"
-    return (id of container of n as text) & linefeed & (plaintext of n as text)
+    set targetFolder to folder id "{folder}"
+    repeat with n in notes of targetFolder
+        if (id of n as text) is "{ident}" then
+            return (id of targetFolder as text) & linefeed & (plaintext of n as text)
+        end if
+    end repeat
+    error "note not in target folder"
 end tell
 ''')
     actual_folder, _, plain = result.partition("\n")
@@ -88,12 +95,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("effect_key")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--reconcile-only", action="store_true", help="verify an existing Note; never create")
     parser.add_argument("--expected-attempts", type=int)
     parser.add_argument("--receipt-dir", type=Path)
     args = parser.parse_args()
     directory = None
     try:
-        effect, text = snapshot(args.effect_key)
+        effect, text = snapshot(args.effect_key, args.reconcile_only)
         folder_id = exact_folder(effect["requested_target"])
         matches = reminders.find_note_by_marker(args.effect_key, effect["requested_target"])
         if len(matches) > 1:
@@ -121,6 +129,7 @@ def main() -> int:
             "at": datetime.now(timezone.utc).isoformat(), "before": effect,
             "target_id": folder_id, "marker_matches": len(matches),
             "authorization": "explicit operator one-effect repair",
+            "reconcile_only": args.reconcile_only,
         })
         def verified_matches():
             if exact_folder(effect["requested_target"]) != folder_id:
@@ -130,14 +139,18 @@ def main() -> int:
                 verify_content(found[0], folder_id, args.effect_key, effect["payload_sha256"])
             return found
 
+        def create_note():
+            if args.reconcile_only:
+                raise ValueError("reconcile_only_never_creates")
+            return reminders.create_note_with_marker(args.effect_key, text, effect["requested_target"])
+
         receipt = apple_effects._ensure_effect(
             transcript_id=effect["transcript_id"], effect_type="note", text=text,
             requested_target=effect["requested_target"], fallback_target="",
             find=verified_matches,
-            create=lambda: reminders.create_note_with_marker(
-                args.effect_key, text, effect["requested_target"],
-            ),
+            create=create_note,
             operator_retry_at_attempt=args.expected_attempts,
+            operator_reconcile_only=args.reconcile_only,
         )
         if receipt.state != "succeeded" or not receipt.provider_id:
             raise ValueError("repair_not_succeeded")

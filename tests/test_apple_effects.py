@@ -116,6 +116,72 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
             apple_effects.ensure_note(self.row_id, text)
         self.assertEqual(transcript_log.get_apple_effect(key)["state"], "uncertain")
 
+    def test_operator_reconciliation_never_creates_after_uncertain_write(self) -> None:
+        for found in ([], ["existing-note"]):
+            with self.subTest(found=bool(found)):
+                text = f"uncertain repair {bool(found)}"
+                key = apple_effects.effect_key_for(self.row_id, "note", "Penny", payload=text)
+                transcript_log.claim_apple_effect(
+                    effect_key=key, transcript_id=self.row_id, effect_type="note",
+                    requested_target="Penny",
+                    payload_sha256=apple_effects.normalized_payload_sha256(text),
+                )
+                conn = transcript_log._get_conn()
+                conn.execute(
+                    "UPDATE apple_effects SET state='uncertain',attempt_count=6,"
+                    "last_error_code='provider_error',lease_owner=NULL,lease_expires_at=NULL "
+                    "WHERE effect_key=?", (key,),
+                )
+                conn.commit()
+                conn.close()
+                with patch.object(apple_effects.reminders, "create_note_with_marker") as create:
+                    def reconcile():
+                        return apple_effects._ensure_effect(
+                            transcript_id=self.row_id, effect_type="note", text=text,
+                            requested_target="Penny", fallback_target="", find=lambda: found,
+                            create=create, operator_retry_at_attempt=6,
+                            operator_reconcile_only=True,
+                        )
+                    if found:
+                        receipt = reconcile()
+                        self.assertTrue(receipt.reconciled)
+                        self.assertEqual(receipt.provider_id, "existing-note")
+                    else:
+                        with self.assertRaisesRegex(apple_effects.AppleEffectError, "timeout_uncertain"):
+                            reconcile()
+                        with self.assertRaisesRegex(apple_effects.AppleEffectError, "invalid_effect"):
+                            reconcile()
+                    create.assert_not_called()
+                stored = transcript_log.get_apple_effect(key)
+                self.assertEqual(stored["attempt_count"], 7)
+                self.assertEqual(stored["state"], "succeeded" if found else "uncertain")
+
+    def test_operator_reconciliation_refuses_quarantine_or_stale_count(self) -> None:
+        text = "guarded reconciliation"
+        key = apple_effects.effect_key_for(self.row_id, "note", "Penny", payload=text)
+        transcript_log.claim_apple_effect(
+            effect_key=key, transcript_id=self.row_id, effect_type="note",
+            requested_target="Penny", payload_sha256=apple_effects.normalized_payload_sha256(text),
+        )
+        for state, count in (("quarantined", 6), ("uncertain", 7)):
+            conn = transcript_log._get_conn()
+            conn.execute(
+                "UPDATE apple_effects SET state=?,attempt_count=?,last_error_code='provider_error',lease_owner=NULL,"
+                "lease_expires_at=NULL WHERE effect_key=?", (state, count, key),
+            )
+            conn.commit()
+            conn.close()
+            with self.subTest(state=state), patch.object(apple_effects.reminders, "find_note_by_marker") as find:
+                with self.assertRaises(apple_effects.AppleEffectError):
+                    apple_effects._ensure_effect(
+                        transcript_id=self.row_id, effect_type="note", text=text,
+                        requested_target="Penny", fallback_target="", find=find,
+                        create=lambda: self.fail("must never create"),
+                        operator_retry_at_attempt=6, operator_reconcile_only=True,
+                    )
+                find.assert_not_called()
+                self.assertEqual(transcript_log.get_apple_effect(key)["attempt_count"], count)
+
     def test_first_create_requires_marker_readback_and_replay_does_not_create(self) -> None:
         with (
             patch.object(transcript_log, "mark_apple_effect_succeeded", wraps=transcript_log.mark_apple_effect_succeeded),

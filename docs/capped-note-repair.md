@@ -16,7 +16,8 @@ receipt directory is refused. Preserve it after any uncertain result.
 
 The SQLite claim compares the expected attempt count under its write lock,
 retains the original count and increments it once. It refuses quarantined,
-uncertain, changed, already-claimed or mismatched effects. The regular watcher
+changed, already-claimed or mismatched effects. An uncertain effect requires
+`--reconcile-only`; this mode can verify an existing Note but cannot create one. The regular watcher
 never requests this override. Reusing the old expected count cannot authorize
 another creation. A successful effect remains idempotent.
 
@@ -29,8 +30,19 @@ reset is part of this command. Once the exact Note succeeds, only its matching
 currently capped route can rejoin the normal routing worker; an already-routed
 capture is never downgraded.
 
-October 2 preflight: actual failed effect for canonical row 770 has five
-attempts, matching payload identity and zero marker matches in its unique Penny
-folder. Notes and Reminders reachability pass. Source tests cover one-use claims,
-stale-count/quarantine/uncertainty refusal and post-create timeout. Live repair
-and final provider/ledger acceptance remain pending until a private result exists.
+October 2 live attempt: the unique Note was created on attempt six, but Notes
+rejected its advertised `container` getter with error -1728. The ledger remained
+uncertain. Folder-membership lookup by exact folder and Note IDs independently
+verified the marker and full normalized payload. Use this readback to reconcile
+the existing item; do not rerun creation.
+
+```bash
+venv/bin/python scripts/repair_capped_note.py <effect-key> --reconcile-only
+venv/bin/python scripts/repair_capped_note.py <effect-key> --reconcile-only \
+  --apply --expected-attempts <observed-count> --receipt-dir <new-private-directory>
+```
+
+Reconciliation still increments the attempt history. A missing marker or failed
+readback remains uncertain and never creates a replacement Note. A changed
+count or quarantine refuses the claim. Synthetic fixtures and held captures
+remain untouched.
