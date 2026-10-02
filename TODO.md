@@ -1,3 +1,10 @@
+## PR and workflow recovery — October 2, 2026
+
+- [x] Reconcile and merge PR66,72,73,74 with fresh Python3.11/3.12 CI and final-head Standards/Spec reviews. Merge receipts:9331227,aa8d70d,c269ab3,f492c33; the four original open PRs are closed.
+- [x] Enforce private permissions before research artifact writes, including pre-existing0644 files and reused atomic temp files; regressions verify write-failure privacy. No extra recognition/private replay.
+- [ ] Complete Atlas native postprocess slot-contention repair, reviewed deployment and durable completion/publication acceptance; Atlas owns that source/runtime evidence.
+- [ ] Recheck exact Apple Notes provider receipt after owner-authenticated Apple Events restart, then determine bounded retry; preserve capped and quarantined history.
+
 ## Recovery deployed and real episode imported — October 2, 2026
 
 Penny runtime is now `ca6322b697a4bcea8de52849d975d7543a994970` (PR82),

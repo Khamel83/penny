@@ -1,3 +1,37 @@
+## PR recovery — October 2, 2026
+
+Owner authorized completion of workflow recovery and repair/review/merge of open
+Penny/Atlas PRs. Penny's four remaining PRs (66,72,73,74) conflicted only in
+CONTEXT.md, HANDOFF.md and TODO.md after the deployment/recovery series advanced
+main. Each was reconciled in a separate fresh worktree, with both historical
+research and current runtime evidence retained. Both Python3.11/3.12 CI checks
+and exact-final-head Standards/Spec reviews passed before each merge.
+
+Research output permission gaps were repaired: pre-existing files and reused
+atomic temporary files become0600 before writing; Apple probe directories become
+0700. Synthetic regression cases cover existing0644 files and a failed write.
+No research recognition or private capture replay was performed for these fixes.
+
+All four are source-merged: PR66=9331227, PR72=aa8d70d, PR73=c269ab3,
+PR74=f492c33. These are research/tooling changes; installed pipeline remains
+ca6322b, with the pinned Parakeet primary. Final ASR health was idle, worker_count0
+and no resident backend after normal idle unloading. Dirty runtime-root owner
+files and original research checkouts remain preserved.
+
+Atlas's resumed native checkpoint ended at fail_job01:31:11. Private evidence
+identifies local ASR-slot contention during postprocess verification, not a
+failed primary transcript or transport outage. The exact primary receipt is
+retained. Atlas PR170 at b367c8f2 contains the reviewed typed local-capacity deferral repair.
+Its image is built and hash-verified; production installation is waiting for
+current CI and natural zero-owner drain. The full nonlive suite passed2,152 tests
+(159 skips/14 deselected), and163 focused MinusPod tests passed. Full native
+completion/feed publication remains open. Seven obsolete queued Atlas CI runs were cancelled with no active jobs; the
+current PR170 run is preserved. OCI admission has one global runner slot shared
+with Maya, so queued CI is unknown, not passing. A separate fresh legacy drain
+failure is being diagnosed without replay. Apple Notes still requires
+owner authentication for the documented Apple Events restart; no capped effect
+was replayed or TCC permission changed.
+
 ## Recovery deployed and real episode imported — October 2, 2026
 
 Penny runtime is now `ca6322b697a4bcea8de52849d975d7543a994970` (PR82),
