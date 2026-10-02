@@ -2,7 +2,7 @@
 
 - [x] Merge all originally open Penny research PRs (66,72,73,74), configuration PR85 and recovery documentation PR84 with passing checks; original conflict backlog is closed.
 - [x] Verify Atlas native publication from its original ASR checkpoint; retain the independent private publication receipt.
-- [x] Restore the previous healthy MinusPod image, original admission=false and user watchdog/readiness/drain timers after the candidate startup deadline; zero active/processing jobs and other settings unchanged.
+- [x] Restore the previous healthy MinusPod image, original admission=false and user watchdog/readiness/drain timers after the candidate startup deadline; zero active/processing jobs at restoration and other SQL settings unchanged; normal scheduler later admitted a new job.
 - [ ] Activate Atlas PR170 preventive local-slot deferral image after diagnosing stock cold-database startup; candidate failed its1020-second startup bound and was rolled back. Source merge is not runtime activation.
 - [x] Identify stock startup bottlenecks from existing private timing logs: search-index counts197.0/240.9 seconds and legacy marker cleanup370.4 seconds. No SQL/transcript content transferred.
 - [ ] Review safe gating/optimization of those measured existing-database scans, then repeat bounded rollback-capable activation.

@@ -10,7 +10,10 @@ Old-image own health passed before the rollback wait expired. Parent readback
 at02:46 UTC confirms running/healthy image ed39b04e and active user timers
 atlas-minuspod-watchdog, atlas-readiness and atlas-podcast-whisper-drain.
 Original admission=false was restored with zero active/processing jobs and
-all other settings unchanged. Queue/data and the original ASR receipt remain
+all other SQL settings unchanged. Fresh health/readiness were200 with no reasons.
+The normal scheduler subsequently admitted a new native job; its completion is
+an independent acceptance item. Private restoration proof remains at
+/mnt/fast-storage/appdata/minuspod/atlas-local-slot-restored-proof-20261002.json. Queue/data and the original ASR receipt remain
 preserved. The installer returned candidate failure with rollback evidence;
 that exit is not a successful candidate deployment.
 
