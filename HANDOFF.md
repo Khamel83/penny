@@ -1,3 +1,32 @@
+## ASR hardening runtime checkpoint — October 2
+
+## Verified ASR activation — October 2, 2026, 05:24 UTC
+
+Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy.
+The native image is `atlas-minuspod:74f4cada-asr-hardening`, digest
+`sha256:fe0b45965f9bd396ec5f4e256369302acb4c275752fff4a18cd12ad7dca6a0df`.
+Both owned jobs completed naturally before activation; no forced shutdown occurred.
+The gate reports `activated_admission_restored`, original admission is `false`,
+and drain, watchdog and readiness user timers are active. Restart count is zero.
+Installed transcriber, processing and schema hashes match the reviewed overlay
+chain; the once-only cleanup success marker exists. Legacy `0d75` remains active.
+Final private Homelab receipt:
+`/mnt/fast-storage/appdata/minuspod/asr-hardening-final-acceptance-20261002.json`.
+
+Atlas PR176 exact-head hosted syntax and tests passed in run `36966127524`
+at 05:20 UTC; exact-head reviews and 2,221 local nonlive tests passed separately.
+Earlier source-only, queued-CI and deployment-fence checkpoints below are historical.
+Penny's installed-context Doctor still separates healthy core/ASR from unrelated
+Apple Events provider failure, historical Maya dead letters and unavailable memos.
+Administrator recovery and a new natural Penny ledger/archive/downstream receipt
+remain open. No historical capture release, private replay or redelivery occurred.
+
+Penny `c341598c` (PR88) is live on five agents. The saved malformed-response check is green; a public serial model canary passed without ledger or delivery mutation. Legacy projection `0d75eaba` is deployed with its timer active and full component verification passed. Seventeen prior failure receipts seeded one private hold; no additional same-input retries were observed.
+
+The native candidate `74f4cada` is built and hash-verified. The gated updater waits for the owned postprocessing job, then records activation, rollback or deferral and restores original admission. Read `/mnt/fast-storage/appdata/minuspod/asr-hardening-native-gate-20261002.json` before claiming native activation. Atlas hosted tests remain capacity-queued at the checkpoint; hosted syntax and 2,221 local nonlive tests pass.
+
+Apple Events needs the administrator command documented in docs/asr-hardening-20261002.md, followed by receipt reconciliation. Do not resend uncertain effects. Natural Penny capture/ledger/archive/downstream acceptance remains unobserved. Recheck commands and private receipt paths are in that report. Protected root files and their preservation stash remain intact.
+
 ## ASR hardening in progress — October 2
 
 Isolated fix/asr-contract-hardening-20261002 preserves dirty primary checkout. Producer/client timing validation, child error locality, actual model error metadata and Penny needs_review handling implemented. Synthetic real-shape red tests now green; full suite749 pass/2 skip/53 subtests, focused43 pass plus8 new regression checks. Next: exact-head review/CI, merge, rollback-capable deploy, saved-response agreement and installed-context Doctor. Atlas legacy drain paused with private receipt at /mnt/fast-storage/appdata/minuspod/asr-hardening-drain-pause-20261002.json; restore only after hold deployment. Apple Events failure and natural capture acceptance remain separate.
