@@ -45,12 +45,14 @@ def verbose_result(result, duration: float) -> dict:
                 and 0 <= start <= end <= duration + 0.05
             ):
                 raise ValueError("invalid_parakeet_token_time")
-            if start < previous:
-                raise ValueError("backwards_parakeet_token_time")
-            previous = start
             text = str(token.text)
             if text.startswith(" ") or not words:
                 if text.strip():
+                    # Wordpieces and punctuation may align before another piece
+                    # of the same word. Validate the word starts consumers use.
+                    if start < previous:
+                        raise ValueError("backwards_parakeet_token_time")
+                    previous = start
                     words.append({"word": text.strip(), "start": start, "end": end})
             elif words:
                 words[-1]["word"] += text
