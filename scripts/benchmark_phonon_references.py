@@ -13,6 +13,12 @@ import threading
 import time
 
 
+def write_private_json(path, data):
+    with path.open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(data, stream, indent=2)
+
+
 def digest(path):
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -74,20 +80,17 @@ def main():
             try:
                 values = sample_footprint(os.getpid())
             except Exception as error:
-                (
-                    a.root / (a.engine + "-" + a.case + "-monitor-failure.json")
-                ).write_text(
-                    json.dumps(
-                        {
-                            "error": type(error).__name__ + ": " + str(error),
-                            "samples": samples,
-                        }
-                    )
+                write_private_json(
+                    a.root / (a.engine + "-" + a.case + "-monitor-failure.json"),
+                    {
+                        "error": type(error).__name__ + ": " + str(error),
+                        "samples": samples,
+                    },
                 )
                 os._exit(3)
             samples.append({"monotonic": time.monotonic(), **values})
             if values.get("footprint", 0) > 5 * 1024**3:
-                (a.root / "memory-abort.json").write_text(json.dumps(samples))
+                write_private_json(a.root / "memory-abort.json", samples)
                 os._exit(2)
             ready.set()
             done.wait(1)
@@ -152,7 +155,7 @@ def main():
             elapsed = time.monotonic() - start
             data = asdict(result)
             data.update(request_elapsed_seconds=elapsed, audio_sha256=digest(path))
-            output.write_text(json.dumps(data))
+            write_private_json(output, data)
             peak = mx.get_peak_memory()
             mx.clear_cache()
             runs[name] = dict(
@@ -169,8 +172,8 @@ def main():
     finally:
         done.set()
         watcher.join(timeout=12)
-        (a.root / (a.engine + "-" + a.case + "-memory-samples.json")).write_text(
-            json.dumps(samples)
+        write_private_json(
+            a.root / (a.engine + "-" + a.case + "-memory-samples.json"), samples
         )
     configuration = model.describe()
     if a.engine == "parakeet":
@@ -188,7 +191,7 @@ def main():
         sampled_peak_physical_bytes=max(s["footprint"] for s in samples),
         lifetime_peak_physical_bytes=max(s["process_lifetime_peak"] for s in samples),
     )
-    (a.root / manifest_name).write_text(json.dumps(metadata, indent=2))
+    write_private_json(a.root / manifest_name, metadata)
     print(
         json.dumps(
             {
