@@ -1,3 +1,22 @@
+## Runtime diagnostic — October 2, 2026 UTC
+
+Installed-context Doctor verifies Penny capture/storage/shared offline ASR,
+archive/backup/Drop/Slack ready at03:11:57; overall remains unready at Apple
+effects with separate historical Maya/memo exceptions. Native health200 does
+not establish job success: new ASR failures exposed a saved Whisper response
+accepted by Penny but rejected by Atlas (segment end60ms before start), and one
+105-minute input repeated the same Parakeet backward-timing hold ten times.
+One-owner memory measured2.0GiB/peak2.5GiB; no old large owner. Fifty focused
+checks pass while the existing-response reproduction goes red; no new ASR,
+private replay, delivery, reset or production change was performed.
+
+See docs/runtime-diagnostic-20261002.md for exact evidence, private loop and
+acceptance limits. Next: unify structural response handling, stop repeated
+whole-input quality retries, and retain numeric failure locality for bounded
+excerpt repair. Slow native database startup and Apple Events are independent
+repairs. Natural post-cutover Penny capture acceptance remains unobserved.
+Earlier sections below remain dated historical evidence.
+
 ## Native image activation held — October 2, 2026
 
 Atlas PR170 is source-merged at5086c022 with passing hosted checks and reviewed
