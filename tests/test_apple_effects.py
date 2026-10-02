@@ -57,6 +57,12 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.attempt_count, 6)
         self.assertEqual(replay.provider_id, "fixed-note")
         create.assert_called_once()
+        transcript_log.mark_failed(self.row_id, "attempt_cap")
+        self.assertEqual(transcript_log.get_pending(), [])
+        self.assertTrue(transcript_log.resume_route_after_note_repair(key))
+        self.assertIn(self.row_id, [r["id"] for r in transcript_log.get_pending()])
+        self.assertFalse(transcript_log.resume_route_after_note_repair(key))
+        self.assertEqual(transcript_log.get_apple_effect(key)["attempt_count"], 6)
 
     def test_operator_retry_rejects_changed_attempt_and_quarantine(self) -> None:
         text = "guarded repair"

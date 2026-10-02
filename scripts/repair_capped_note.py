@@ -142,7 +142,9 @@ def main() -> int:
         if receipt.state != "succeeded" or not receipt.provider_id:
             raise ValueError("repair_not_succeeded")
         verify_content(receipt.provider_id, folder_id, args.effect_key, effect["payload_sha256"])
-        report.update({"applied": True, "provider_content_verified": True, "receipt": asdict(receipt)})
+        resumed = transcript_log.resume_route_after_note_repair(args.effect_key)
+        report.update({"applied": True, "provider_content_verified": True,
+                       "ordinary_route_resumed": resumed, "receipt": asdict(receipt)})
         save(directory, "verified.json", report)
         print(json.dumps({"transcript_id": receipt.transcript_id, "state": receipt.state,
                           "attempt_count": receipt.attempt_count, "provider_content_verified": True}))

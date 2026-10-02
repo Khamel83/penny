@@ -5544,6 +5544,7 @@ def get_pending(limit: int = 20) -> list[dict]:
                       routing_progress, routing_result
                FROM transcripts
                WHERE status IN ('pending', 'failed')
+                 AND NOT (status = 'failed' AND COALESCE(error_message, '') = 'attempt_cap')
                  AND COALESCE(ingest_state, '') != 'needs_review'
                  AND COALESCE(routing_suppressed, 0) = 0
                  AND (
@@ -6067,6 +6068,31 @@ def mark_apple_effect_succeeded(
             conn.rollback()
         log.error("Failed to persist Apple effect receipt")
         return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def resume_route_after_note_repair(effect_key: str) -> bool:
+    """Reopen only a currently capped route after its exact Note succeeded.
+
+    Keeps the route failed/pending for the ordinary worker and preserves the
+    effect attempt count. No capture, outbox or unrelated route is replayed.
+    """
+    conn = None
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """UPDATE transcripts SET error_message='apple_effect_repaired', updated_at=?
+               WHERE status='failed' AND error_message='attempt_cap'
+                 AND COALESCE(routing_suppressed, 0)=0
+                 AND id=(SELECT transcript_id FROM apple_effects
+                         WHERE effect_key=? AND effect_type='note'
+                           AND state='succeeded' AND provider_id IS NOT NULL)""",
+            (_apple_effect_now(), effect_key),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
     finally:
         if conn:
             conn.close()

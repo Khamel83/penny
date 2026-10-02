@@ -14,6 +14,24 @@ effects unready. Synthetic quarantine and historical exceptions are preserved.
 - [ ] Observe a new natural post-Parakeet Penny capture and its separate archive
   and downstream receipts; no new capture has arrived since the cutover.
 
+### Earlier retry-selector checkpoint
+
+## H02 capped retry selector source repair — October 2
+
+- [x] Prepare minimal source-only retry selector repair at parent source
+  `0fdc5ed653b5cb3bf4ab7b801bd07855d68c4785`: `get_pending()` now excludes
+  only current failed rows whose current route error is `attempt_cap`. Tests
+  prove provider errors, NULL-error failed rows, pending stale `attempt_cap`
+  metadata, and rows with historical capped/quarantined Apple effects remain
+  eligible; `get_pending()` makes no transcript/effect ledger updates.
+- [x] Fake-fixture validation passed: `tests/test_transcript_log.py`; Apple
+  effect suites; watcher retry-adjacent subset; Drop/Slack/Maya suites except
+  the environment-dependent Maya schema format-extra check.
+- [ ] Review/CI/merge/deploy the source repair, then verify installed runtime
+  selector behavior and Doctor separately. Capped Note delivery repair, the
+  synthetic quarantine, and a new natural capture/archive/downstream acceptance
+  remain open; this source change does not create a downstream receipt.
+
 ## Portable Apple app skills — October 2
 
 - [x] Generalize Apple workflows across projects: separate Notes/Reminders skills,

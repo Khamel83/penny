@@ -25,7 +25,9 @@ The operator path verifies the provider folder, marker and full normalized
 payload before committing success. An ambiguous creation/readback stays
 uncertain and must be reconciled before another operator decision. No capture
 retranscription, downstream outbox reset, synthetic-quarantine repair or retry-cap
-reset is part of this command.
+reset is part of this command. Once the exact Note succeeds, only its matching
+currently capped route can rejoin the normal routing worker; an already-routed
+capture is never downgraded.
 
 October 2 preflight: actual failed effect for canonical row 770 has five
 attempts, matching payload identity and zero marker matches in its unique Penny
