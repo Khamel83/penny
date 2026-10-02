@@ -70,6 +70,13 @@ Report ledger state, local receipt/archive state, runtime state, provider state,
 and each downstream delivery state separately. Stop when a required permission,
 receipt, or downstream effect is not proven.
 
+## Apple Notes and Reminders reliability
+
+When diagnosing Apple Events, Notes/Reminders delivery, or Apple-effect readiness,
+read [apple-effects-reliability](.agents/skills/apple-effects-reliability/SKILL.md).
+Separate live provider probes from historical ledger failures and verified item
+readback before recommending recovery or retrying an effect.
+
 ## Canonical references
 
 - [`README.md`](README.md) — pipeline authority and boundaries

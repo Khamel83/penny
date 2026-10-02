@@ -88,9 +88,11 @@ saved-response loop identifies an uncovered real-response boundary.
 4. Separately optimize measured stock database startup scans before activating
    Atlas PR170. That merged correction is not live and does not fix the above
    primary/fallback output problems.
-5. Separately recover Apple Events with authenticated system restart, reconcile
-   exact provider receipt, then consider bounded effect retry. Preserve capped
-   and quarantined history. No blind redelivery or TCC reset.
+5. Corrected October 2: the suggested protected Apple Events kickstart is blocked
+   by SIP even after authentication. Do not retry it or disable SIP. Recheck
+   exact provider receipts first; coordinate a normal Mac restart only if target
+   calls remain stuck. Preserve capped/quarantined history; no blind redelivery
+   or TCC reset. See docs/workflow-recovery-20261001.md.
 6. Observe a future ordinary Penny capture through actual Parakeet identity,
    canonical ledger, archive and independent downstream receipts. Latest audio
    ledger rows still identify pre-cutover Whisper; natural post-cutover capture
