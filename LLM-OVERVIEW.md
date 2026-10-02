@@ -4,8 +4,8 @@
 
 Penny is local-first voice capture middleware. It accepts Apple Watch/Voice
 Memos captures and approved uploads, preserves them locally, transcribes with a
-verified offline MLX Whisper model, and routes through durable local, Slack, and
-Maya v2 boundaries.
+verified offline MLX Parakeet model with bounded Whisper fallback, and routes
+through durable local, Slack, and Maya v2 boundaries.
 
 ## Authority and ownership
 
@@ -35,13 +35,12 @@ watermark.
 
 ## Model boundary
 
-Phase A uses `mlx-whisper==0.4.3` and model revision
-`a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb` at the absolute default path
-`/Users/macmini/.penny/models/whisper-large-v3-turbo/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb`.
-The model manifest/weights receipt must verify locally and `HF_HUB_OFFLINE=1`
-is required; provisioning is the only network boundary. Apple Speech and
-MacWhisper are later challengers and cannot replace canonical transcripts until
-measured gates pass.
+One shared Parakeet v3 BF16 service is the production primary. Whisper remains
+available for bounded second opinions; the supervisor serializes model ownership
+and unloads idle workers. Model assets are pinned and verified locally with
+`HF_HUB_OFFLINE=1`. Existing module/launchd names retain `shared-whisper` for
+compatibility, while responses preserve actual backend identity. Apple Speech's
+pilot is disabled. See [the exact ASR contract](docs/shared-parakeet.md).
 
 Any remaining direct OpenRouter classification is transitional. Do not remove it
 until Maya's replacement is deployed, authenticated, idempotent, and verified.

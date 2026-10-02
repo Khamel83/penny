@@ -16,8 +16,12 @@ line breaks to HTML, and include the escaped title at the start of the body.
 Keep an operation marker in visible text; an HTML comment alone may be stripped.
 Use `make new note at targetFolder with properties {body: preparedHTML}` after
 resolving that exact folder. Record the returned ID, then independently read
-its container and plaintext. Compare meaningful text, since Notes may normalize
-HTML and formatting. Preserve a pre-edit body hash for conflicting edits.
+its plaintext and confirm membership in that exact folder. On the tested Mac,
+`id of container of n` returns -1728 even though the dictionary advertises
+`container`. Query `notes of folder id <target-id>`, match the returned Note ID,
+and read that item's plaintext. A failed container getter does not prove that
+creation failed: reconcile the existing marker and ID before retrying a write.
+Compare meaningful text, since Notes may normalize HTML and formatting. Preserve a pre-edit body hash for conflicting edits.
 
 Pass dynamic inputs through AppleScript `on run argv` arguments or private
 UTF-8 files, using a subprocess argument list. Do not interpolate note content

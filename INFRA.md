@@ -1,4 +1,44 @@
-# Penny host and Apple pilot placement
+# Penny infrastructure
+
+## Current installed state — October 2, 2026, 19:38 UTC
+
+Runtime root: `/Users/macmini/penny`; canonical ledger: `~/.penny/transcripts.db`.
+Watcher, webhook and tasks carry `6ccf2286a2c6af1919e43b4eaba72465f8eb614b`.
+Only `transcript_log.py`, `apple_effects.py` and `scripts/repair_capped_note.py`
+were replaced with reviewed merged bytes. Shared ASR and export remain at
+`c341598c484734ace251944f3f7ca56ab0bb0009`; root Git HEAD and owner edits are
+preserved. This scoped component update has backups, ledger snapshot, exact
+file hashes, protected-file hashes and verified loaded revisions under
+`~/.penny/deployments/20261002T1936Z-note-reconciliation/`. Prior scoped receipt:
+`~/.penny/deployments/20261002T1926Z-note-repair/`.
+
+Port 10311 retains the shared Parakeet owner and pinned SSD environment/model;
+Whisper fallback loads serially and the idle worker unloads. Apple pilot is off.
+Port 5678 `/ready` reports the installed caller's configuration and revision:
+HTTP 200/degraded with historical exceptions only. No port, credential, macOS
+grant or downstream registration changed in the Note repair.
+
+The reusable Notes skill reference is installed in both discoverable skill roots
+(`~/.codex/skills` and `~/.agents/skills`), with per-file hashes and before-images
+under `~/.penny/recovery/20261002-notes-skill-readback/`. Other skill files are
+preserved. This is operator guidance, not a new daemon or write backend.
+
+OCI's `penny-health.timer` is active. Its natural run at 09:00 UTC recorded the
+actual Apple provider failure. The supervised post-repair run at 19:37:34 UTC
+recorded degraded with Apple quarantine, historical Maya/Voice Memo exceptions
+and no unready component. Receipt:
+`/home/ubuntu/.local/state/penny-health/receipts/20261002T193734.217878+0000-4250399a4cc346fe8fbf389601e2ca1e.json`.
+The observer invokes a bounded SSH Doctor with backup/offline settings; it does
+not inherit all launchd configuration, so its source is unknown and Drop appears
+disabled. It proves observed degradation, not loaded source or Drop readiness;
+those are verified through installed `/ready`. No observer source/config changed.
+Hosted GitHub tests replace the retired unmatched legacy workflows.
+
+## Historical placement and cutover records
+
+The dated records below explain earlier stages. Current component revisions
+and installed state are defined above.
+
 
 ## Direct Maya endpoint — checked October 2, 2026 02:02 UTC
 
