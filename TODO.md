@@ -166,6 +166,26 @@ Atlas/MinusPod are now healthy and resumed: reviewed consumer source `3f7bd51e23
 
 Doctor confirms shared ASR/transcription ready, actual model verified, one owner and safe memory. Overall Doctor remains unready from Apple effect provider failure, with Maya dead-letter and historical Voice Memos degraded; no delivery repair or replay was performed in this ASR task.
 
+## Historical RAM fix and alternatives assessment — October 1, 2026
+
+Cache cleanup reduced measured post-request Whisper physical footprint from 2.3 to 1.7 GiB with the same pinned model. It limits free allocator buffers and clears them after requests; it is not a total-RAM ceiling and does not reduce live weight memory. Existing single ownership and idle unloading avoid duplicate/resident idle models. Long-running stability and active peaks remain unproven. Current live health: idle, one worker, Apple pilot disabled.
+
+Apple reference result does not establish Whisper as the best available engine. Phonon-2 remains the leading next candidate for a bounded comparison; its official 164 MB download expands to a dense FP16 encoder under MLX, so runtime memory is unknown. Publisher M5 speed/accuracy are not local M4 evidence. Quantized Whisper and Parakeet/Core ML are alternatives. Next specific verification: reuse the three public clips/references for Phonon-2 quality, word-time compatibility, peak and retained physical memory, and elapsed time, if testing is undertaken. No new recognition/install/deployment in this assessment; primary Whisper stays unchanged and bulk pilot stays paused.
+
+## Public reference check recorded — October 1, 2026
+
+Three public Lex samples completed once per engine. Apple processed 18.22 minutes in 18.41s versus shared Whisper 95.77s (5.20x), but normalized first-party reference disagreement was higher on all three: weighted 8.23% versus 5.56%. Case/punctuation and cosmetic variants are ignored; edited references are not independently adjudicated ground truth. The requested non-worse accuracy gate is unproven, so no primary switch. Total Apple system-model RAM/energy remains unknown; speaker diarization, naming and TTS are separate. Bulk recognition remains paused; runtime remains e997211 with the pilot hook disabled.
+
+Research source/evidence: https://github.com/Khamel83/penny/pull/72 (draft). Research utility ran on this Mac, all required observed artifact hashes were verified, then results were rescored without further recognition. Source 4314c45 passed both standards/spec reviews; 708 tests passed, 2 skipped, 53 subtests; Ruff passed. Local artifacts: /Volumes/2TB_SSD/penny-asr-reference-20261001. Next: adjudicate consequential existing disagreements against audio if accuracy acceptance is pursued; do not resume the bulk cohort. Conditional adoption remains issue #70. No ledger/archive/provider/downstream ownership changed.
+
+## Official-reference comparison complete — October 1, 2026
+
+Owner authorized a bounded three-episode public reference check; the background cohort remains paused. Identical audio was recognized once per engine. Apple was about 5x faster, but normalized reference disagreement was 8.23% versus pinned shared Whisper 5.56%, higher for Apple on all three excerpts. Cosmetic/stutter sensitivity did not reverse the ranking; published text is edited and not independently adjudicated ground truth. No blanket switch: the requested accuracy condition is not met. Total Apple model RAM/energy remains unmeasured, and speaker labels/names/TTS are separate capabilities. Report: docs/research/2026-10-01-apple-reference-results.md. Next: adjudicate consequential existing disagreements or a separately authorized domain experiment; do not restart bulk recognition. GitHub #70 owns the conditional adoption gate. The research utility ran on the Mac; primary runtime and all delivery ownership are unchanged.
+
+## Bounded public reference comparison — October 1, 2026
+
+Owner authorized a few official-transcript comparisons and conditional Apple adoption if accuracy and resource acceptance support it. The background cohort remains paused. Isolated worktree research/apple-reference-check-20261001 starts from fetched e997211. Three first-party Lex audio/reference pairs are verified; scoring distinguishes transcript agreement from adjudicated accuracy. Artifacts stay local under /Volumes/2TB_SSD/penny-asr-reference-20261001. Next: prepare identical short clips, run deployed Apple binary and pinned shared Whisper as low-priority backfill, quantify reference edits and resource limits, then document the decision. Canonical capture/delivery remains unchanged.
+
 ## Apple pilot paused by owner — October 1, 2026
 
 All 32 held Penny recordings completed (43.2 hours), plus seven historical Atlas and ten natural Atlas inputs. Owner stopped further recognition. Sidecar is unloaded, autostart plist retained with .paused suffix, live capture disabled and normal five-label runtime verified at ec0f51a. All canonical Penny baseline text/status pairs remain unchanged. Binary repetition flags are not accuracy measurements: Apple repeated-run token share was 0.285% versus Whisper 0.725%, and severe runs were fewer. No first-party or independent reference comparison has been performed. Next is evaluation of existing outputs against references and flagged context, not more transcription; issue #70 owns the conditional primary gate. See docs/apple-pilot-live-receipt-20261001.md.
@@ -179,7 +199,8 @@ Apple pilot review fixes (October 1): live snapshot disk work now runs in at mos
 - [x] Inventory actual work: 32 quality-held Penny recordings with local audio; Atlas live queue two pending/two processing; 264 retained Atlas files are a historical corpus, not live backlog.
 - [x] Implement opt-in real-request shadow capture, private bounded queue, two Apple sessions, native modern API, deadlines and source-bound deployment. Focused tests and trust check pass; real generated-audio pilot receipt completed locally.
 - [x] Review and merge PR #68 plus launchd correction #69; deploy ec0f51a to all six labels, admit all 32 held Penny plus eight historical Atlas recordings, and verify fresh health and natural Atlas shadow completion. No canonical replacement or candidate delivery. See docs/apple-pilot-live-receipt-20261001.md.
-- [ ] Assess existing outputs against a reference and flagged context (#70). Natural Penny shadow capture remains unobserved; recognition is paused by the owner.
+- [x] Run bounded official-reference check with three public Lex clips; evidence and limits are in docs/research/2026-10-01-apple-reference-results.md.
+- [ ] Adjudicate consequential reference disagreements / verify broader domain and total resource gate before conditional primary ownership (#70). Bulk recognition remains paused.
 - [ ] Validate representative transcript quality, Atlas timing semantics and sustained total system memory before primary Apple ownership. See `docs/apple-speech-pilot.md`.
 
 ## Historical ASR replacement research — October 1, 2026
