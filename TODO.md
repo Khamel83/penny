@@ -1,3 +1,23 @@
+## Maya core caller cutover — October 2, 2026 02:02 UTC
+
+- [x] Repoint installed watcher, webhook and tasks `MAYA_TRANSCRIPT_URL` to
+  `https://maya.khamel.com/ingest/transcript` and verify each loaded job uses it.
+  Existing ingest tokens match the Homelab core. Runtime source remains
+  `ca6322b697a4bcea8de52849d975d7543a994970`; no credential or grant changed.
+  Private before-images, backup and receipts remain under
+  `~/.local/state/maya-penny-core-route-20261002/`. Configuration receipt SHA256
+  `f4871aaeb93e7535267c17cd4dbfadbd873c71915a1cc5d447e1ff2dde222951`.
+- [ ] Verify the next ordinary direct Maya delivery with a durable v2 receipt
+  and independent core readback. There was no pending direct delivery during
+  the cutover; nine dead letters, 481 ineligible and 29 sent rows stayed equal.
+  Preserve the separately verified store-only receipts; do not resend dead
+  letters to create acceptance evidence. Voice Memo Drop routing stays active.
+
+Only those three callers were reloaded, with no active delivery/effect claims.
+The shared transcription service PID and export job stayed equal. Doctor
+remains unready for the previously recorded Apple provider failure; configuration
+readback does not prove a fresh Maya receipt or Apple recovery.
+
 ## Recovery deployed and real episode imported — October 2, 2026
 
 Penny runtime is now `ca6322b697a4bcea8de52849d975d7543a994970` (PR82),

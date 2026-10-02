@@ -1,5 +1,16 @@
 # Penny host and Apple pilot placement
 
+## Direct Maya endpoint — checked October 2, 2026 02:02 UTC
+
+Installed `com.penny.watcher`, `com.penny.webhook` and `com.penny.tasks` have
+`MAYA_TRANSCRIPT_URL=https://maya.khamel.com/ingest/transcript`, with loaded
+configuration and running jobs verified. The existing ingest token matches the
+Homelab core and is retained privately. Runtime source remains `ca6322b697a4bcea8de52849d975d7543a994970`.
+The shared transcription process and export job were not reloaded. Private
+before-images, backup and receipts: `~/.local/state/maya-penny-core-route-20261002/`.
+The next ordinary direct v2 delivery remains a separate acceptance gate. Do not
+replay the nine historical dead letters. Voice Memo Drop routing stays active.
+
 The normal runtime checkout is `/Users/macmini/penny` on the M4 Mac mini.
 Existing services and deployment contract are in `docs/macmini-deployment.md`.
 Canonical SQLite remains `~/.penny/transcripts.db`. The authenticated shared
