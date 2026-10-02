@@ -18,19 +18,52 @@ ca6322b, with the pinned Parakeet primary. Final ASR health was idle, worker_cou
 and no resident backend after normal idle unloading. Dirty runtime-root owner
 files and original research checkouts remain preserved.
 
-Atlas's resumed native checkpoint ended at fail_job01:31:11. Private evidence
-identifies local ASR-slot contention during postprocess verification, not a
-failed primary transcript or transport outage. The exact primary receipt is
-retained. Atlas PR170 at b367c8f2 contains the reviewed typed local-capacity deferral repair.
-Its image is built and hash-verified; production installation is waiting for
-current CI and natural zero-owner drain. The full nonlive suite passed2,152 tests
-(159 skips/14 deselected), and163 focused MinusPod tests passed. Full native
-completion/feed publication remains open. Seven obsolete queued Atlas CI runs were cancelled with no active jobs; the
-current PR170 run is preserved. OCI admission has one global runner slot shared
-with Maya, so queued CI is unknown, not passing. A separate fresh legacy drain
-failure is being diagnosed without replay. Apple Notes still requires
-owner authentication for the documented Apple Events restart; no capped effect
-was replayed or TCC permission changed.
+Atlas's earlier postprocess verification failure was local ASR-slot contention,
+not a failed primary transcript or proven transport outage. Normal scheduling
+resumed the same checkpoint and completed02:02:52 UTC. Episode/history completion,
+canonical24,686,598-byte processed audio, ffprobe0, current-version RSS enclosure
+and HTTP200 full readback matching its SHA256 are independently verified.
+The original ASR receipt is unchanged. Private evidence remains at
+/mnt/fast-storage/appdata/minuspod/atlas-native-publication-proof-20261002.json.
+This closes that native publication gate, separately from the prior33-minute
+legacy text import; no recognition or provider proof request was added.
+
+Atlas PR170's preventive typed local-capacity deferral fix at b367c8f2 passed
+both hosted checks and parent source review, then merged5086c022. The full
+nonlive suite passed2,152 tests (159 skips/14 deselected), with163 focused MinusPod
+tests. Its immutable image is built and hash-verified; the controlled deployment
+is in progress at zero owners with admissions temporarily paused. Native startup
+health/source acceptance and admission restoration remain required.
+Seven obsolete queued Atlas CI runs were cancelled with no active jobs; the
+current repair's tests then ran successfully. OCI admission uses one global
+runner slot shared with Maya; no capacity/authentication policy changed.
+The transient legacy drain failure recovered through its normal retry, with
+Result=success and health/readiness200; its old inner cause remains unproven.
+
+Maya caller configuration cutover is recorded in PR85, merged d29e6eb. Installed
+and loaded watcher/webhook/tasks URLs match the core endpoint; the hashed private
+configuration receipt and unchanged outbox counts are verified. New direct v2
+provider receipt/core readback remains a future natural acceptance gate.
+Apple Notes still requires owner authentication for the documented Apple Events
+restart. No capped effect was replayed or TCC permission changed.
+
+
+## Maya core caller cutover — October 2, 2026 02:02 UTC
+
+Installed watcher, webhook and tasks now use
+`https://maya.khamel.com/ingest/transcript`; loaded launchd configuration and
+running jobs were independently checked. The unchanged existing ingest token
+matches the Homelab core. Runtime source is still `ca6322b697a4bcea8de52849d975d7543a994970`.
+The shared transcription process and export job were preserved. Private backups,
+before-images and count-only receipts are retained under
+`~/.local/state/maya-penny-core-route-20261002/`.
+
+This changes only the installed direct Maya endpoint. Voice Memo Drop routing
+and all ledger rows remain: nine dead letters, 481 ineligible and 29 sent; no
+pending direct delivery or active claim was present. A next ordinary direct v2
+receipt plus core readback remains open. No replay, new credential/grant or
+Apple effect repair occurred. Overall Doctor remains unready at the previously
+recorded Apple provider boundary.
 
 ## Recovery deployed and real episode imported — October 2, 2026
 
