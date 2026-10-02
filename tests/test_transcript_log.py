@@ -4147,6 +4147,142 @@ class TranscriptLogTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["content_hash"], "fail_hash")
 
+    def test_get_pending_skips_current_route_attempt_cap_only(self) -> None:
+        capped_id = transcript_log.insert_transcript(
+            "route-attempt-cap",
+            "iCloud",
+            "current capped route fixture",
+            enqueue_slack=False,
+        )
+        provider_error_id = transcript_log.insert_transcript(
+            "route-provider-error",
+            "iCloud",
+            "ordinary provider error fixture",
+            enqueue_slack=False,
+        )
+        null_error_id = transcript_log.insert_transcript(
+            "route-null-error",
+            "iCloud",
+            "legacy failed null error fixture",
+            enqueue_slack=False,
+        )
+        stale_metadata_id = transcript_log.insert_transcript(
+            "route-stale-attempt-cap",
+            "iCloud",
+            "pending stale metadata fixture",
+            error_message="attempt_cap",
+            enqueue_slack=False,
+        )
+        needs_review_id = transcript_log.insert_transcript(
+            "route-quarantine-needs-review",
+            "iCloud",
+            "synthetic quarantined review fixture",
+            ingest_state="needs_review",
+            quality_status="needs_review",
+            error_message="attempt_cap",
+            enqueue_slack=False,
+        )
+        historical_effect_id = transcript_log.insert_transcript(
+            "route-historical-effect",
+            "iCloud",
+            "current route failure with old effects fixture",
+            enqueue_slack=False,
+        )
+
+        transcript_log.mark_failed(capped_id, "attempt_cap")
+        transcript_log.mark_failed(provider_error_id, "provider_error")
+        transcript_log.mark_failed(historical_effect_id, "provider_error")
+        with transcript_log._get_conn() as conn:
+            conn.execute(
+                """UPDATE transcripts
+                   SET status = 'failed', ingest_state = 'failed',
+                       error_message = NULL
+                   WHERE id = ?""",
+                (null_error_id,),
+            )
+            conn.executemany(
+                """INSERT INTO apple_effects (
+                       effect_key, transcript_id, effect_type, requested_target,
+                       fallback_target, payload_sha256, state, provider_id,
+                       actual_target, reconciled, attempt_count,
+                       last_error_code, succeeded_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        "old-note-succeeded",
+                        historical_effect_id,
+                        "note",
+                        "Penny",
+                        "",
+                        "a" * 64,
+                        "succeeded",
+                        "fake-note-provider-id",
+                        "Penny",
+                        1,
+                        1,
+                        None,
+                        "2026-10-01T00:00:00Z",
+                    ),
+                    (
+                        "old-reminder-quarantined",
+                        historical_effect_id,
+                        "reminder",
+                        "Inbox",
+                        "",
+                        "b" * 64,
+                        "quarantined",
+                        None,
+                        "Inbox",
+                        0,
+                        transcript_log.APPLE_EFFECT_MAX_ATTEMPTS,
+                        "attempt_cap",
+                        None,
+                    ),
+                ],
+            )
+            before_transcripts = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM transcripts ORDER BY id"
+                ).fetchall()
+            ]
+            before_effects = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM apple_effects ORDER BY effect_key"
+                ).fetchall()
+            ]
+            conn.commit()
+
+        pending = transcript_log.get_pending()
+
+        with transcript_log._get_conn() as conn:
+            after_transcripts = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM transcripts ORDER BY id"
+                ).fetchall()
+            ]
+            after_effects = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM apple_effects ORDER BY effect_key"
+                ).fetchall()
+            ]
+
+        hashes = {row["content_hash"] for row in pending}
+        self.assertNotIn("route-attempt-cap", hashes)
+        self.assertNotIn("route-quarantine-needs-review", hashes)
+        self.assertIn("route-provider-error", hashes)
+        self.assertIn("route-null-error", hashes)
+        self.assertIn("route-stale-attempt-cap", hashes)
+        self.assertIn("route-historical-effect", hashes)
+        self.assertEqual(before_transcripts, after_transcripts)
+        self.assertEqual(before_effects, after_effects)
+        self.assertIsNotNone(stale_metadata_id)
+        self.assertIsNotNone(needs_review_id)
+
     def test_insert_returns_none_on_duplicate(self) -> None:
         transcript_log.insert_transcript("dup_x", "iCloud", "first")
         result = transcript_log.insert_transcript("dup_x", "Shortcut", "second")

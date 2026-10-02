@@ -1,3 +1,46 @@
+## H02 capped retry selector source repair — October 2
+
+Source prepared for review; deployment and installed Doctor verification remain open.
+Working tree changes are limited to `transcript_log.py`,
+`tests/test_transcript_log.py`, `TODO.md`, `CONTEXT.md` and `HANDOFF.md`.
+Parent source requested and locally present:
+`0fdc5ed653b5cb3bf4ab7b801bd07855d68c4785`. The parent fetched origin and
+independently verified that exact default-branch SHA before publication.
+
+Implemented repair: `get_pending()` now excludes only current rows with
+`status='failed'` and current `error_message='attempt_cap'`. It intentionally
+does not inspect or join `apple_effects`; historical succeeded/quarantined
+effects do not suppress an ordinary current routing failure. No provider calls,
+Apple RPC/writes, production ledger reads, live ledger changes, deploy, commit,
+push or secret reads were performed.
+
+Validation completed with fake fixtures:
+
+- `python3 -m pytest -q tests/test_transcript_log.py` — 114 passed, 11 subtests
+  passed.
+- `python3 -m pytest -q tests/test_apple_effects.py tests/test_apple_effects_integration.py tests/test_apple_provider_probe.py tests/test_reminders.py`
+  — 46 passed.
+- `HOME=/tmp/penny_test_home PYTHONPATH=/Users/macmini/Library/Python/3.14/lib/python/site-packages PENNY_INGEST_TOKEN=test-token python3 -m pytest -q tests/test_watcher.py -k 'retry_pending_routes or get_pending or pending_route or retry_logs or maya_origin_retry or ingest_pass or slack_outbox or maya_outbox or maya_worker or two_maya_workers or voice_memo_retry or failed_transcription_schedules_safe_retry or local_only'`
+  — 17 passed, 72 deselected.
+- `HOME=/tmp/penny_test_home PYTHONPATH=/Users/macmini/Library/Python/3.14/lib/python/site-packages PENNY_INGEST_TOKEN=test-token python3 -m pytest -q tests/test_drop_outbox.py tests/test_drop_delivery.py tests/test_export_drop.py tests/test_slack_delivery.py tests/test_transcript_contract.py -k 'not checked_maya_schema_uses_full_json_schema_and_format_validation'`
+  — 69 passed, 2 skipped, 1 deselected, 6 subtests passed.
+- `python3 -m py_compile transcript_log.py tests/test_transcript_log.py` passed.
+
+Known local validation gap: the full Drop/Slack/Maya run has one unrelated
+environment failure in
+`TranscriptContractTests.test_checked_maya_schema_uses_full_json_schema_and_format_validation`
+because this Python environment has `jsonschema` but not its date-time
+format extras (`rfc3339_validator`, `rfc3987`, `isoduration`). `ruff` on the
+changed paths also remains red on pre-existing issues in these files
+(`importlib` unused, two unused Apple-effect test locals, and two placeholder
+f-strings in `transcript_log.py`).
+
+Next: review/CI/merge/deploy this source repair, then verify installed runtime
+selector behavior and rerun Doctor from the authorized runtime path. Current
+Doctor remains expected unready at the existing Apple-effect delivery boundary
+until the separate capped Note repair is completed. Preserve the synthetic
+quarantine and do not replay or reset Apple effects from this source repair.
+
 ## Portable Apple app skills — October 2, 07:12 UTC
 
 Owner requested reusable Apple app workflows across projects. Four skills are

@@ -5544,6 +5544,7 @@ def get_pending(limit: int = 20) -> list[dict]:
                       routing_progress, routing_result
                FROM transcripts
                WHERE status IN ('pending', 'failed')
+                 AND NOT (status = 'failed' AND COALESCE(error_message, '') = 'attempt_cap')
                  AND COALESCE(ingest_state, '') != 'needs_review'
                  AND COALESCE(routing_suppressed, 0) = 0
                  AND (

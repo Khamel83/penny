@@ -1,3 +1,23 @@
+## H02 capped retry selector source repair — October 2
+
+At source `0fdc5ed653b5cb3bf4ab7b801bd07855d68c4785`, H02 has a minimal
+source-only repair in progress: `transcript_log.get_pending()` excludes the
+current failed route row only when its current `error_message` is `attempt_cap`.
+It does not join Apple effects and does not alter needs-review state, attempt
+caps, route state, Doctor, outboxes, providers or Apple items.
+
+Fake-fixture tests prove ordinary failed rows (`provider_error` and NULL error),
+pending rows with stale `attempt_cap` metadata, and rows with historical
+succeeded/quarantined Apple effects remain eligible. The same selector test
+snapshots transcripts and Apple effects before and after `get_pending()` to
+prove the read makes no ledger updates.
+
+This repair is prepared for review and is not deployed. The current Doctor remains expected unready
+at the existing Apple-effect delivery boundary from the latest handoff; it was
+not rechecked here because production ledger/runtime reads were out of scope.
+The capped Note repair, synthetic quarantine, and new natural capture/archive/
+downstream acceptance remain separate open work.
+
 ## Portable Apple app skills — October 2, 07:12 UTC
 
 Owner requested reusable Apple app workflows across projects. Four skills are
