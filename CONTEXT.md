@@ -40,6 +40,11 @@ external deliveries. [ASR contract](docs/shared-parakeet.md).
   The Notes reference now records exact-folder membership readback and preserves
   uncertainty after a failed post-create probe.
 
+The condensed handoff retains explicit local-routing, independent Slack and
+independent Maya v2 receipt boundaries. The existing documentation contract
+caught their omitted wording in PR97; restoring it changes guidance only,
+without modifying deployed code or provider state.
+
 ## Remaining evidence
 
 P01/P02 in [TODO.md](TODO.md) require a new ordinary capture or eligible direct
