@@ -26,8 +26,8 @@ def digest(path):
 def save(path, data):
     temp = path.with_suffix(path.suffix + ".tmp")
     with temp.open("w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
         json.dump(data, stream)
-    temp.chmod(0o600)
     temp.replace(path)
 
 

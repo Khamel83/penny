@@ -53,3 +53,22 @@ def test_footprint_failure_cannot_become_zero_memory(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="vmmap_failed"):
         benchmark.footprint()
+
+
+def test_reused_atomic_temp_is_private_before_writing(tmp_path, monkeypatch):
+    import stat
+
+    target = tmp_path / 'result.json'
+    temporary = target.with_suffix('.json.tmp')
+    temporary.write_text('old fixture')
+    temporary.chmod(0o644)
+    original_dump = benchmark.json.dump
+
+    def checked_dump(data, stream, **kwargs):
+        assert stat.S_IMODE(temporary.stat().st_mode) == 0o600
+        return original_dump(data, stream, **kwargs)
+
+    monkeypatch.setattr(benchmark.json, 'dump', checked_dump)
+    benchmark.save(target, {'text': 'synthetic fixture'})
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not temporary.exists()
