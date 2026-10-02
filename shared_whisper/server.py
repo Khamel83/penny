@@ -91,7 +91,7 @@ def create_app(
         started = time.monotonic()
         try:
 
-            def whisper_retry():
+            def whisper_retry(quality_reason=None):
                 from .retry import audio_duration
 
                 try:
@@ -99,6 +99,18 @@ def create_app(
                 except Exception as exc:
                     raise WhisperProtocolError("retry_duration_unverified") from exc
                 if not bounded:
+                    if quality_reason is not None:
+                        from .retry_receipt import begin, save
+
+                        try:
+                            review_path, review = begin(path, result, client.value)
+                            review.update(
+                                state="quality_review_requires_bounded_excerpt",
+                                quality_reason=quality_reason,
+                            )
+                            save(review_path, review)
+                        except Exception as exc:
+                            raise WhisperProtocolError("retry_receipt_failed") from exc
                     raise WhisperProtocolError(
                         "quality_review_requires_bounded_excerpt"
                     )
@@ -139,14 +151,20 @@ def create_app(
                     and not explicit_fallback
                     and exc.code == "quality_review"
                 ):
-                    result = whisper_retry()
+                    reason = str(exc) if str(exc) in {
+                        "invalid_parakeet_token_time", "backwards_parakeet_token_time",
+                        "empty_parakeet_output", "parakeet_translation_not_supported",
+                        "audio_duration_out_of_bounds",
+                    } else "parakeet_output_invalid"
+                    result = whisper_retry(reason)
                 else:
                     raise
             if allow_whisper_fallback and result.model_id == PARAKEET_ID:
                 from transcript_quality import evaluate_transcript
 
-                if not evaluate_transcript(result.text, tolerant_restarts=True).passed:
-                    result = whisper_retry()
+                quality = evaluate_transcript(result.text, tolerant_restarts=True)
+                if not quality.passed:
+                    result = whisper_retry(quality.reason)
         except WhisperPreempted as exc:
             return _error_response(exc, 409)
         except (WhisperBusy, WhisperUnavailable) as exc:
