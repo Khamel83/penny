@@ -1,3 +1,19 @@
+## Penny finalization — October 2, 19:15 UTC
+
+This task is Penny only. The unrelated Drop closeout does not establish any
+Penny acceptance. Current `/ready` confirms shared Parakeet, capture, archive,
+backup and delivery queues are healthy; the one capped real Note keeps Apple
+effects unready. Synthetic quarantine and historical exceptions are preserved.
+
+- [x] Recheck actual installed readiness and exact Note payload/marker/target.
+- [x] Build and test a one-effect operator retry that increments the existing
+  count and preserves private before/after receipts. No automatic cap reset.
+- [ ] Merge/execute the scoped Note repair and independently verify provider
+  content, canonical effect receipt and subsequent Penny readiness.
+- [ ] Consolidate superseded TODO entries against current Penny evidence.
+- [ ] Observe a new natural post-Parakeet Penny capture and its separate archive
+  and downstream receipts; no new capture has arrived since the cutover.
+
 ## Portable Apple app skills — October 2
 
 - [x] Generalize Apple workflows across projects: separate Notes/Reminders skills,

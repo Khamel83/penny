@@ -1,3 +1,19 @@
+## Penny finalization — October 2, 19:15 UTC
+
+This task is Penny only. The unrelated Drop closeout does not establish any
+Penny acceptance. Current `/ready` confirms shared Parakeet, capture, archive,
+backup and delivery queues are healthy; the one capped real Note keeps Apple
+effects unready. Synthetic quarantine and historical exceptions are preserved.
+
+Fresh installed runtime is `c341598c`. Shell-only Doctor omits installed
+configuration; use `/ready` or the installed caller environment. Source repair
+is in `fix/penny-finalize-20261002`, based on fetched `0fdc5ed`; protected dirty
+runtime documentation remains untouched. Local suite: 762 passed, 2 skipped,
+56 subtests; trust check passed. The operator dry run verifies row 770's stored
+payload and absence in the unique target folder. Live mutation is not yet done.
+See [the repair procedure](docs/capped-note-repair.md). Next: publish reviewed
+source, perform the one authorized repair, then record exact runtime/readback.
+
 ## Portable Apple app skills — October 2, 07:12 UTC
 
 Owner requested reusable Apple app workflows across projects. Four skills are

@@ -191,6 +191,7 @@ def _ensure_effect(
     source: str = "",
     find: Callable[[], Any],
     create: Callable[[], Any],
+    operator_retry_at_attempt: int | None = None,
 ) -> AppleEffectReceipt:
     if not isinstance(transcript_id, int) or transcript_id <= 0:
         raise AppleEffectError("canonical_id_required")
@@ -209,6 +210,8 @@ def _ensure_effect(
         requested_target=_normalize_text(requested_target),
         fallback_target=_normalize_text(fallback_target),
         payload_sha256=payload_hash,
+        **({"operator_retry_at_attempt": operator_retry_at_attempt}
+           if operator_retry_at_attempt is not None else {}),
     )
     if not claim.get("claimable"):
         error = claim.get("error_code")
@@ -343,6 +346,7 @@ def ensure_note(
     *,
     folder_name: str | None = None,
     effect_key: str | None = None,
+    operator_retry_at_attempt: int | None = None,
 ) -> AppleEffectReceipt:
     """Ensure one marked Note for a canonical transcript row."""
     if folder_name is not None:
@@ -365,6 +369,7 @@ def ensure_note(
         requested_target=folder,
         fallback_target="",
         source=source,
+        operator_retry_at_attempt=operator_retry_at_attempt,
         find=lambda: reminders.find_note_by_marker(
             effect_key_for(int(transcript_id), "note", folder, "", normalized_payload_sha256(text)),
             folder,

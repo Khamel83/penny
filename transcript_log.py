@@ -5746,6 +5746,7 @@ def claim_apple_effect(
     now: datetime | str | None = None,
     lease_seconds: int = APPLE_EFFECT_LEASE_SECONDS,
     lease_owner: str | None = None,
+    operator_retry_at_attempt: int | None = None,
 ) -> dict[str, Any]:
     """Insert or CAS-claim one effect while holding SQLite's write lock.
 
@@ -5792,6 +5793,10 @@ def claim_apple_effect(
         row = conn.execute(
             "SELECT * FROM apple_effects WHERE effect_key = ?", (effect_key,)
         ).fetchone()
+        if row is None and operator_retry_at_attempt is not None:
+            conn.rollback()
+            return {"effect_key": effect_key, "state": "failed", "claimable": False,
+                    "error_code": "effect_not_found"}
         if row is None:
             conn.execute(
                 """
@@ -5901,7 +5906,23 @@ def claim_apple_effect(
             attempt_count = int(result.get("attempt_count") or 0)
         except (TypeError, ValueError):
             attempt_count = 0
-        if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS:
+        # A deliberate operator repair is bound to one observed capped row.
+        # Count is incremented, never reset. The normal watcher never supplies
+        # this argument; replay with the old count cannot authorize another try.
+        operator_retry = operator_retry_at_attempt is not None
+        if operator_retry and not (
+            type(operator_retry_at_attempt) is int
+            and operator_retry_at_attempt == attempt_count
+            and attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS
+            and result["state"] == "failed"
+            and result.get("last_error_code") == "attempt_cap"
+            and not result.get("provider_id")
+            and not result.get("lease_owner")
+        ):
+            conn.commit()
+            result.update({"claimable": False, "error_code": "invalid_effect"})
+            return result
+        if attempt_count >= APPLE_EFFECT_MAX_ATTEMPTS and not operator_retry:
             conn.execute(
                 """UPDATE apple_effects
                    SET state = 'failed', last_error_code = 'attempt_cap',
@@ -5918,7 +5939,7 @@ def claim_apple_effect(
             result.update({"claimable": False, "error_code": "attempt_cap"})
             return result
 
-        if result["state"] in {"uncertain", "failed"} and not _apple_effect_retry_due(
+        if not operator_retry and result["state"] in {"uncertain", "failed"} and not _apple_effect_retry_due(
             result, now_dt
         ):
             conn.commit()

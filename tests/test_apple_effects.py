@@ -27,6 +27,86 @@ class AppleEffectOrchestrationTests(unittest.TestCase):
         )
         self.addCleanup(self.db_patch.stop)
 
+    def test_operator_retry_is_single_use_and_preserves_attempt_history(self) -> None:
+        text = "capped note"
+        key = apple_effects.effect_key_for(self.row_id, "note", "Penny", payload=text)
+        transcript_log.claim_apple_effect(
+            effect_key=key, transcript_id=self.row_id, effect_type="note",
+            requested_target="Penny",
+            payload_sha256=apple_effects.normalized_payload_sha256(text),
+        )
+        conn = transcript_log._get_conn()
+        conn.execute(
+            "UPDATE apple_effects SET state='failed', attempt_count=5, "
+            "last_error_code='attempt_cap', lease_owner=NULL, lease_expires_at=NULL "
+            "WHERE effect_key=?", (key,),
+        )
+        conn.commit()
+        conn.close()
+        with (
+            patch.object(apple_effects.reminders, "find_note_by_marker", side_effect=[[], ["fixed-note"]]),
+            patch.object(apple_effects.reminders, "create_note_with_marker", return_value="fixed-note") as create,
+        ):
+            result = apple_effects.ensure_note(
+                self.row_id, text, operator_retry_at_attempt=5,
+            )
+            replay = apple_effects.ensure_note(
+                self.row_id, text, operator_retry_at_attempt=5,
+            )
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.attempt_count, 6)
+        self.assertEqual(replay.provider_id, "fixed-note")
+        create.assert_called_once()
+
+    def test_operator_retry_rejects_changed_attempt_and_quarantine(self) -> None:
+        text = "guarded repair"
+        key = apple_effects.effect_key_for(self.row_id, "note", "Penny", payload=text)
+        transcript_log.claim_apple_effect(
+            effect_key=key, transcript_id=self.row_id, effect_type="note",
+            requested_target="Penny",
+            payload_sha256=apple_effects.normalized_payload_sha256(text),
+        )
+        for state, count in [("failed", 6), ("quarantined", 5), ("uncertain", 5)]:
+            conn = transcript_log._get_conn()
+            conn.execute(
+                "UPDATE apple_effects SET state=?,attempt_count=?,last_error_code='attempt_cap',"
+                "lease_owner=NULL,lease_expires_at=NULL WHERE effect_key=?", (state, count, key),
+            )
+            conn.commit()
+            conn.close()
+            with self.subTest(state=state), patch.object(apple_effects.reminders, "create_note_with_marker") as create:
+                with self.assertRaises(apple_effects.AppleEffectError):
+                    apple_effects.ensure_note(self.row_id, text, operator_retry_at_attempt=5)
+                create.assert_not_called()
+                self.assertEqual(transcript_log.get_apple_effect(key)["attempt_count"], count)
+
+    def test_operator_timeout_does_not_allow_same_authorization_twice(self) -> None:
+        text = "repair timeout"
+        key = apple_effects.effect_key_for(self.row_id, "note", "Penny", payload=text)
+        transcript_log.claim_apple_effect(
+            effect_key=key, transcript_id=self.row_id, effect_type="note",
+            requested_target="Penny", payload_sha256=apple_effects.normalized_payload_sha256(text),
+        )
+        conn = transcript_log._get_conn()
+        conn.execute(
+            "UPDATE apple_effects SET state='failed',attempt_count=5,last_error_code='attempt_cap',"
+            "lease_owner=NULL,lease_expires_at=NULL WHERE effect_key=?", (key,),
+        )
+        conn.commit()
+        conn.close()
+        with (
+            patch.object(apple_effects.reminders, "find_note_by_marker", return_value=[]),
+            patch.object(apple_effects.reminders, "create_note_with_marker",
+                         side_effect=reminders.AppleScriptError("timeout_uncertain", ambiguous=True)) as create,
+        ):
+            for _ in range(2):
+                with self.assertRaises(apple_effects.AppleEffectError):
+                    apple_effects.ensure_note(self.row_id, text, operator_retry_at_attempt=5)
+        create.assert_called_once()
+        stored = transcript_log.get_apple_effect(key)
+        self.assertEqual(stored["state"], "uncertain")
+        self.assertEqual(stored["attempt_count"], 6)
+
     def test_first_create_requires_marker_readback_and_replay_does_not_create(self) -> None:
         with (
             patch.object(transcript_log, "mark_apple_effect_succeeded", wraps=transcript_log.mark_apple_effect_succeeded),
