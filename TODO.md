@@ -409,52 +409,29 @@ The stale Phase A items below are historical generated signals. They do not
 override this active shared-Whisper cutover queue.
 
 <!-- janitor:begin:todo -->
-## Shared Whisper memory acceptance — September 30, 2026
+## Portable Apple app skills — October 2
 
-- [x] Identify Penny ownership and implement unchanged-model cache retention fix with regression coverage.
-- [x] Merge PR #62 and deploy `63591bed23f86347a3cf73d7db27a395d9d49836`; authenticated generated-speech canaries show stable 1.7 GiB post-request footprint and identical short-canary text hashes.
-- [ ] Observe a natural Atlas/Penny completion and sustained busy-workload memory; no multi-day stability claim yet.
-- [ ] Complete approved simulator deletion through the Apple management path; 14.8 GiB remains behind protected internal assets. Recovery is the next coordinated step.
+- [x] Generalize Notes and Reminders workflows across projects, with shared access and receipt contracts and a Penny-specific adapter reference. Source: [Penny PR91](https://github.com/Khamel83/penny/pull/91) at `b8a29e40a0482ec708afa880ee60d53707c91de6`.
+- [x] Validate and install all four skills; source/install hashes agree, references resolve, eight probe regressions pass, and fresh installed Notes/Reminders probes pass. Private receipts: `~/.penny/recovery/20261002-apple-skills/`.
+- [ ] Observe a first requested operation from another project's actual caller and verify that project's exact target, item fields, authorization, and durable receipt.
 
-## Current Voice Memo recovery — September 29, 2026
+## Apple recovery and repair — October 2
 
-- [x] Merge and deploy the long live memo chunk path. PR #57 merged at `61f88908d7693fbac4c4c11fd48ffef2bdf0384f`; the installed Mac watcher reports that exact revision. Focused and hosted tests passed.
-- [x] Recover exact failed Voice Memo PK 440 locally. Transcript row 769 is linked, routing suppressed, archived and included in a verified backup; there are zero Drop, Slack, quality-alert, or Maya delivery rows for it. Mac Doctor is `degraded`, with no current terminal source failure; supervised OCI Doctor receipt is also `degraded` and its service succeeds.
-- [ ] Keep transcript row 769 in private `needs_review`: 15 of 19 chunks triggered consecutive-token repetition. Do not send it downstream on source recovery alone. Verify the next natural OCI health timer after this recovery.
-- [x] Retire the queued public-repository `oci-dev` GitHub health workflow. PR #58 merged as `873f5be7efded2210339198fd3ae1aaf61f29e6a` after hosted Python 3.11/3.12 CI and exact-head review; the merged-main CI passed. Historical queued Health Check run 36589491752 and AI Review run 36491923787 were canceled.
+- [x] Verify Reminders shell/launchd list access and reconcile one existing marker/provider ID/target with its canonical succeeded receipt. Evidence: `docs/reminders-recovery-20261002.md`.
+- [x] Install the evidence-backed delivery procedure and withdraw the protected-service kickstart instruction after error 150 under enabled SIP. Keep SIP/TCC unchanged.
+- [ ] Observe a new natural Penny capture/write/archive/downstream receipt; probes and synthetic acceptance do not prove this boundary.
+- [ ] Prepare a separate receipt-backed capped-Note repair decision. Preserve the synthetic quarantine and failed receipt; do not replay, reset the cap, or mark delivery successful from marker absence.
+- [ ] Track Finder window-count timeout independently; no Calendar, Mail, or Messages adapter is accepted.
 
-## Active synchronized task: Atlas/MinusPod shared-Whisper cutover
+## ASR hardening closeout — October 2, 05:24 UTC
 
-This Penny queue is synchronized with the Atlas execution authority at
-`/Volumes/2TB_SSD/GitHub/atlas/.worktrees/minuspod-reliability-fix/docs/superpowers/plans/2026-09-17-shared-whisper-cutover-handover.md`.
-The user authorized the live cutover. The Penny source is locally integrated
-on `main` at `f6e531d7919d19e61b7a65d73f5073e39a23e4e3`.
+- [x] Deploy and verify Penny `c341598c`, legacy `0d75`, and native `74f4cada`; restore original admission, activate timers, and verify hashes/cleanup. Receipt: `asr-hardening-final-acceptance-20261002.json`.
+- [x] Pass Atlas PR176 exact-head hosted syntax/tests, review, and local nonlive checks. Source closeout: `0d2c8196251275c332b3038ce6fb777ee6495173`.
+- [ ] Observe a new natural Penny capture's actual model, ledger, archive, and downstream receipt independently.
 
-- [x] Shared protocol, authenticated server, one-worker supervisor, worker isolation, Penny client, launchd template, and Doctor probe implemented.
-- [x] Focused shared-Whisper suite after the timestamp change: `16 passed`, Ruff clean, and `python3 -m compileall -q shared_whisper` passed.
-- [ ] Penny full suite is not fully green: `602 passed, 2 skipped, 1 failed`. The remaining failure is the pre-existing malformed RFC3339 timestamp contract test (`TranscriptContractTests.test_checked_maya_schema_uses_full_json_schema_and_format_validation`).
-- [x] Merge the validated source into local Penny `main` without pushing.
-- [x] Render and back up the `com.penny.shared-whisper` plist with the internal token supplied only through the local runtime configuration.
-- [x] Capture source/runtime/process/memory evidence, replace the old `com.atlas.minuspod-whisper` owner on port 10311, and preserve rollback.
-- [x] Verify authenticated MagicDNS health, one worker at most, pinned model identity, SSD temp state, and unchanged `com.wyoming.whisper`.
-- [x] Disable shared-Whisper word timestamps by default; explicit `word_timestamps=true` remains supported. Live idle memory after restart: 33.3M physical footprint with zero loaded model workers.
-- [x] Keep Penny's quality retry path and Atlas's whole-chunk retry path separate from process liveness; record durable and downstream receipts in the synchronized Atlas cutover receipt.
-- [x] Observe one current MinusPod episode through durable finalization: one post-cutover processing-history row completed at `2026-09-18T03:52:05Z`, with zero post-cutover Whisper-unreachable or generic worker-error rows.
-- [x] Run the tracked non-private Penny canary against the local shared owner; it returned HTTP 200 with nonempty validated metadata and the pinned model.
-- [ ] Continue observing the remaining repaired backlog; the live queue at `2026-09-18T19:31 PDT` was 55 completed, 22 pending, and 1 processing. The episode interrupted during restart completed durably with 2 review markers.
-- [x] Atlas overlay `91ce1f08` makes shared-Whisper chunk failures fail closed instead of returning a partial transcript; Homelab image `2.96.24` is built and deployed, with the patched source verified in the container.
-- [x] Keep rollback artifacts ready and synchronize this TODO/HANDOFF with Atlas after this bounded task. A live Penny-preemption contention receipt remains explicitly unexercised because no real Penny capture arrived.
-- [ ] Exercise rollback in a disposable or separately approved maintenance window; do not disturb the healthy production owner solely to create proof.
+## Historical recovery checkpoints
 
-The stale Phase A items below are historical generated signals. They do not override this active shared-Whisper cutover queue.
-
-## OCI GitHub worker path — 2026-09-29
-
-- [x] Retire the queued legacy `oci-ts` AI Review workflow after exact-head review. The separate OCI reviewer handled Penny PR #53, and PR #54 merged the retirement as `37f338e355b9ee05983b3d46f12ec9e9270df6e7`.
-- [x] Retire the unmatched public-repository `oci-dev` health workflow. PR #58 merged as `873f5be7efded2210339198fd3ae1aaf61f29e6a`; the queued GitHub runs were canceled. The OCI `macmini` SSH alias is verified separately.
-- [x] Align native runtime with reviewed main `ce48505f1f2e81a924443e5cf878e41dd761fb46`: controlled deployment, verified backup, five loaded revisions and follow-up current check passed September 30. `/ready` reports the same revision and remains degraded.
-- [ ] Restore and prove the natural OCI Doctor schedule. A direct OCI-to-Mac Doctor run previously returned `unready` (`launchd_unavailable`, Voice Memos `terminal_failure`); later supervised OCI Doctor evidence was degraded but successful. Do not call the path healthy without the next natural timer receipt.
-- [ ] Verify Homelab's corrected Penny monitoring observes real Doctor/readiness degradation and the next natural OCI Doctor receipt; source alignment alone does not close health or downstream delivery acceptance.
+Older unfinished deployment/CI checkpoints are superseded by the ASR closeout above. Other provider, storage, publication, and runtime-acceptance tasks remain separate; source merges or canaries do not resolve them.
 <!-- janitor:end:todo -->
 ## OCI GitHub worker path — 2026-09-29
 

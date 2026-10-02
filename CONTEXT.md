@@ -525,25 +525,33 @@ Detached worktrees:
 <!-- janitor:end:branches -->
 
 <!-- janitor:begin:recent -->
-## Shared Whisper memory deployment — September 30, 2026
+## Current checkpoint — October 2, 07:12 UTC
 
-PR #62 merged and deployed `63591bed23f86347a3cf73d7db27a395d9d49836`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.
+Penny source is at `b8a29e40a0482ec708afa880ee60d53707c91de6`. Four reusable Apple app skills are versioned under `.agents/skills/` and installed under `~/.codex/skills/`: `apple-apps`, `apple-notes`, `apple-reminders`, and `apple-effects-reliability`. All four validators, bundled reference checks, and eight read-only probe regressions pass; installed files match source hashes. Installed probes reached Notes in 0.304s and Reminders in 0.455s. Source: [Penny PR91](https://github.com/Khamel83/penny/pull/91).
 
-Documentation was synchronized at `5192654c2490d1500a7583a4413c31c4993cc37c` after recording the deployed memory results and protected simulator blocker in `23cf6f356744a88266f3dc2cef9b94d5f7ebe991`.
+These are operator skills, not a new unattended write backend or Penny deployment. Each project still needs its own caller, exact target, authorized operation, and private durable receipt. No item, grant, ledger, or pipeline configuration changed. Other apps use computer use; no tested Calendar, Mail, or Messages adapter is claimed.
 
-# Shared Whisper memory work — September 30, 2026
+## Verified Apple recovery boundaries — October 2, 06:52 UTC
 
-Penny owns the shared MLX worker; Atlas calls its API. The owner authorized a memory fix, PR and live verification while retaining transcription quality. The first change bounds free GPU cache to 100 MiB and clears it after each request with the same pinned FP16 turbo model. See `docs/research/2026-09-30-shared-whisper-memory.md`. Source tests do not establish runtime memory reduction.
+Reminders list access passes from the shell and equivalent installed-launchd context. An existing reminder marker, provider ID, and actual target agree with its canonical succeeded receipt. The exact owner action that cleared the pending Ghostty Reminders-data prompt is unknown; later decisions and probes passed, but What's New dismissal alone was not proven sufficient. Finder window-count still times out and is independent of Notes/Reminders reachability. Evidence: `docs/reminders-recovery-20261002.md` and private `~/.penny/recovery/20261002-reminders-diagnostic/`.
 
-Long live Voice Memos use the local shared-Whisper owner with Penny priority and private audio-hash-bound chunk checkpoints. Historical backfill uses its separate backfill priority and existing checkpoint location. Chunk completion does not prove a canonical ledger link, archive, backup or downstream effect.
+The password-only recovery/kickstart instruction is withdrawn: an authenticated attempt returned error 150 under enabled SIP. Keep SIP and TCC unchanged. The failed real Note and synthetic quarantine remain separate unresolved receipts. No delivery success, retry-cap reset, or new item-write canary is inferred.
 
-OCI owns the scheduled, read-only Mac Doctor observation through its native `penny-health.timer` and private receipt. A public Penny GitHub Actions worker is not an authorized health-check execution path. Doctor `degraded` remains a valid observed capability state; it does not authorize delivery of a `needs_review` transcript.
+## Verified ASR activation — October 2, 05:24 UTC
 
-# OCI review and Mac health boundary — 2026-09-29
+Penny runtime `c341598c` and native Atlas/MinusPod `74f4cada` are healthy. The native image is `atlas-minuspod:74f4cada-asr-hardening`, digest `sha256:fe0b45965f9bd396ec5f4e256369302acb4c275752fff4a18cd12ad7dca6a0df`. Both owned jobs completed naturally before activation; admission was restored to its original false value, the drain/watchdog/readiness timers are active, restart count is zero, and installed hash and cleanup checks pass. Final private receipt: `/mnt/fast-storage/appdata/minuspod/asr-hardening-final-acceptance-20261002.json`.
 
-The old `AI Review` workflow requested the retired `oci-ts` runner lane. The separate OCI PR reviewer reviewed Penny PR #53. Public fork code remains on GitHub-hosted CI; the private OCI runner fleet does not enroll public repos. OCI may reach the Mac by the current `macmini` MagicDNS alias for a bounded native Doctor check. SSH reachability does not assign Penny's GitHub job or prove Doctor readiness.
+Atlas PR176 exact-head hosted syntax/tests passed in run `36966127524`; exact-head review and 2,221 local nonlive tests also passed. Penny Doctor separates healthy core/ASR from unrelated Apple provider failure, historical Maya dead letters, and unavailable memos. A new natural Penny model/ledger/archive/downstream receipt and a receipt-backed capped-Note repair remain open. No historical capture release, private replay, or redelivery occurred.
 
-Runtime pins, retained Doctor observation, backup receipt and downstream delivery are separate evidence. Doctor source identity may remain unknown when its checkout is dirty; that does not erase independently verified installed pins. Monitoring observes degradation and has no capture replay or delivery authority.
+## Maya caller cutover — October 2, 02:02 UTC
+
+Installed watcher, webhook, and tasks use `https://maya.khamel.com/ingest/transcript`; loaded launchd configuration and running jobs were independently checked. Existing tokens match Homelab core. The Voice Memo Drop route and ledger remain unchanged, including nine dead letters, 481 ineligible, and 29 sent rows. The next ordinary direct v2 receipt and independent core readback remain unobserved. Private receipts are under `~/.local/state/maya-penny-core-route-20261002/`.
+
+## Runtime recovery and publication — October 2, 2026
+
+Penny runtime `ca6322b697a4bcea8de52849d975d7543a994970` recovered the retained 33-minute Atlas import. The actual word-boundary timing correction passed with one success and no failure/deferral; independent PostgreSQL/file readback verified 35,410 bytes and 6,257 words. The original ASR receipt remained unchanged. A natural postprocess completion later produced the canonical 24,686,598-byte output with HTTP 200 and matching SHA-256 readback. Private Atlas publication proof is on Homelab.
+
+Earlier PR170 activation timeout and safe rollback checkpoints are superseded by the verified ASR activation above. Source `0d2c8196251275c332b3038ce6fb777ee6495173` records the ASR hardening closeout; source `18f1dd70f8c936bbc723c73a2fb58984da74eeba` records the reusable delivery skill and SIP correction.
 <!-- janitor:end:recent -->
 # OCI review and Mac health boundary — 2026-09-29
 
