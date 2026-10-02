@@ -1,4 +1,32 @@
+## Native image activation held — October 2, 2026
+
+Atlas PR170 is source-merged at5086c022 with passing hosted checks and reviewed
+source. Its candidate image did not become healthy within the1020-second startup
+bound, so the installer restored the previous image/manifest. This preventive
+fix is not live. Native publication at02:02:52 was independently proved on the
+previous image; it does not prove this later image activation.
+
+Old-image own health passed before the rollback wait expired. Parent readback
+at02:46 UTC confirms running/healthy image ed39b04e and active user timers
+atlas-minuspod-watchdog, atlas-readiness and atlas-podcast-whisper-drain.
+Original admission=false was restored with zero active/processing jobs and
+all other settings unchanged. Queue/data and the original ASR receipt remain
+preserved. The installer returned candidate failure with rollback evidence;
+that exit is not a successful candidate deployment.
+
+Both candidate and stock rollback showed slow existing-database startup, disk
+wait and zero restarts. The956,526,592-byte SQLite database is on Homelab's hard
+drive. Stock startup performs existing-database search-index count and transcript
+cleanup scans. Existing private slow-query logs measured search-index counts
+at197.0 and240.9 seconds and legacy marker cleanup at370.4 seconds. These
+startup scans are measured bottlenecks; no new instrumentation or content transfer
+was needed. Next: review safe migration gating/optimization, then repeat bounded
+rollback-capable activation. No second candidate attempt was made.
+
 ## PR recovery — October 2, 2026
+
+Historical snapshot before the activation attempt above; its in-progress startup
+statements have been superseded by the rollback evidence.
 
 Owner authorized completion of workflow recovery and repair/review/merge of open
 Penny/Atlas PRs. Penny's four remaining PRs (66,72,73,74) conflicted only in
