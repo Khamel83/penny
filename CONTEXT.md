@@ -166,6 +166,14 @@ Verified inventory: 32 held Penny recordings have local audio, with no ordinary 
 
 Reviewed implementation, installed runtime and private real-input completion receipts are verified. `docs/apple-speech-pilot.md` owns the workflow/acceptance contract; `INFRA.md` records proposed placement. Candidate quality-rule passes do not establish word accuracy or permission to release held rows.
 
+## ASR architecture decision and measurements — October 1, 2026
+
+Owner clarification: shared Penny/Atlas ASR was solely a RAM workaround; sharing is not required if a replacement fits measured peak RAM. Separate workers/sessions and fast serial ownership are both valid candidates.
+
+Local M4 research: Apple modern SpeechTranscriber processed the 93-minute memo in 61 seconds; Phonon MLX in 93 seconds with a 100 MiB free-cache limit, 3.9 GiB physical peak and 1.9 GiB released footprint. Apple processed two synthetic hours concurrently in 53 seconds. Phonon CPU processed a synthetic hour in 78 seconds with 2.9 GiB peak. These are real host observations, not a reproduced 174x M5 benchmark or quality approval. Both memo candidates still trip repetition checks. Total Apple system model RAM remains unproven. See `docs/research/2026-10-01-asr-local-benchmarks.md` and the companion primary review.
+
+Recommendation is an Apple challenger first, with Phonon CPU/GPU alternatives; production remains the pinned shared MLX Whisper worker. No new capture, archive, ledger or downstream receipt is asserted.
+
 ## Shared Whisper memory deployment — September 30, 2026
 
 PR #62 merged and deployed `63591bed`; all five labels activated. Post-request footprint fell from 2.3 GiB to 1.7 GiB on identical generated speech with identical transcript hashes; four varying-length requests also retained 1.7 GiB. See `docs/research/2026-09-30-shared-whisper-live-memory-receipt.md`. Natural application completion and multi-day busy-workload stability remain unproven. Internal simulator deletion remains blocked by protected assets; 14.8 GiB is still present, with Recovery the next coordinated step. Only the external 8.9 GiB cache was removed. Existing dirty Mac files were restored byte-for-byte after deployment.
