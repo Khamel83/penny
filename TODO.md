@@ -72,3 +72,8 @@ checklists are superseded; their evidence remains in the
   capture/Notes/Reminders path. No Calendar/Mail/Messages adapter is claimed.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
+<!-- janitor:begin:todo -->
+- [ ] **P01 — Verify a new post-Parakeet Penny recording.** No canonical capture newer than row 771 is documented. After the next ordinary recording, verify the actual model, canonical row, archive receipt and independent downstream receipts. Synthetic canaries, repair of old row 770 and held row 769 do not satisfy this gate; do not manufacture input or release the held recording to close it.
+- [ ] **P02 — Verify the next eligible direct Maya v2 input.** Endpoint cutover is verified, but no ordinary direct delivery is pending. On the next eligible input, verify a durable v2 receipt and independent core readback. Voice Memo Drop handoff is a separate route, and the nine historical Maya dead letters must remain visible.
+- [ ] **Observe long-term stability.** Treat stability as observation over ordinary processing over time, not as another bulk recognition test, replay of old deliveries, or retranscription of protected/historical material.
+<!-- janitor:end:todo -->
