@@ -1,6 +1,6 @@
 # Penny TODO
 
-Verified October 2, 2026, 19:38 UTC. This is Penny's active queue. Older dated
+Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
 [previous TODO](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/TODO.md) and linked operational documents.
 
@@ -41,17 +41,22 @@ checklists are superseded; their evidence remains in the
 - [x] Consolidate duplicate and obsolete TODO/CONTEXT/HANDOFF checkpoints;
   keep current evidence and genuine input gates separate from historical plans.
 
-## Blocked on ordinary input
+## Natural-capture acceptance completed October 4
 
-- [ ] **P01 — New post-Parakeet Penny recording.** No canonical capture newer
-  than row 771 exists. After the next ordinary recording, verify actual model,
-  canonical row, archive receipt and independent downstream receipts. Synthetic
-  canaries and repair of old row 770 do not prove this. Do not manufacture input
-  or release held row 769 to close this item.
-- [ ] **P02 — Next eligible direct Maya v2 input.** Installed endpoint cutover
-  is verified, but no ordinary direct delivery is pending. On its next eligible
-  input, verify a durable v2 receipt and independent core readback. Voice Memo
-  Drop handoff is a different route. Preserve all nine historical dead letters.
+- [x] **P01 — New post-Parakeet Penny recording.** Ordinary captures 772–774
+  from October 2–3 all used pinned Parakeet, passed quality and routed. Local
+  audio hashes, archive publication receipts, matching Drop archive hashes,
+  independent Slack sent receipts and Maya store-only source-event receipts
+  are verified. [Evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
+- ~~**P02 — Wait for a new direct Maya v2 input.**~~ This is not the active
+  voice-note route: new iCloud captures are Drop-owned and intentionally direct
+  Maya-ineligible. All three already have Maya receipts through Drop. Retain
+  direct-v2 acceptance only if that separate path is explicitly exercised;
+  preserve its nine historical dead letters.
+
+No input-gated implementation or acceptance task remains for the normal Penny
+voice-note path. Observe long-term stability during ordinary use; no new bulk
+benchmark or manufactured capture is required.
 
 ## Deliberately retired or outside this queue
 
@@ -73,7 +78,10 @@ checklists are superseded; their evidence remains in the
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-- [ ] **P01 — Verify a new post-Parakeet Penny recording.** No canonical capture newer than row 771 is documented. After the next ordinary recording, verify the actual model, canonical row, archive receipt and independent downstream receipts. Synthetic canaries, repair of old row 770 and held row 769 do not satisfy this gate; do not manufacture input or release the held recording to close it.
-- [ ] **P02 — Verify the next eligible direct Maya v2 input.** Endpoint cutover is verified, but no ordinary direct delivery is pending. On the next eligible input, verify a durable v2 receipt and independent core readback. Voice Memo Drop handoff is a separate route, and the nine historical Maya dead letters must remain visible.
-- [ ] **Observe long-term stability.** Treat stability as observation over ordinary processing over time, not as another bulk recognition test, replay of old deliveries, or retranscription of protected/historical material.
+- [x] P01 complete: ordinary Parakeet captures 772–774 have canonical, archive,
+  Drop, Slack and Maya receipts. See the October 4 acceptance record above.
+- ~~P02 direct-v2 input wait~~ — retired as an ordinary voice-note blocker;
+  active Maya delivery is via Drop and verified for all three captures.
+- Ongoing observation: long-term stability during ordinary use, not an open
+  implementation task or a request to retranscribe protected material.
 <!-- janitor:end:todo -->
