@@ -4,7 +4,7 @@ Verified October 4 by read-only inspection of Penny's ledger, local audio,
 Drop's archived bytes, Slack's receipt ledger and Maya's live source-event
 receipt table. No recognition, capture insertion or delivery replay was run.
 
-| Penny row | Captured (UTC) | Audio | Recorded transcription elapsed |
+| Penny row | Ledger created (UTC) | Audio | Recorded transcription elapsed |
 | --- | --- | --- | --- |
 | 772 | October 2, 21:43 | 117.56 seconds | 9.847 seconds |
 | 773 | October 3, 22:16 | 42.27 seconds | 6.030 seconds |
