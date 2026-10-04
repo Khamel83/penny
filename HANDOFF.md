@@ -1,5 +1,24 @@
 # Penny handoff
 
+## Current acceptance — October 4, 2026
+
+P01 is complete: three ordinary voice notes (772–774, October 2–3) used pinned
+Parakeet, passed quality and routed. Local audio hashes and published archive
+receipts, matching Drop archive bytes, Slack sent receipts and live Maya
+store-only source-event receipts are verified. [Evidence and limitations](docs/natural-parakeet-acceptance-20261004.md).
+Private metadata receipt: `~/.penny/recovery/20261004-natural-parakeet/receipts.json`.
+No new transcription, test capture, replay, provider write or runtime change.
+
+P02 is retired as a normal voice-note gate: new iCloud captures intentionally
+use Penny → Drop → Maya and are direct-v2-ineligible. Maya already received all
+three. The separate legacy direct-v2 route would need its own acceptance only
+when explicitly used; preserve its nine dead letters.
+
+There is no remaining input-gated work for the ordinary Penny voice-note path.
+Continue normal monitoring. Recheck `/ready` and inspect new capture/delivery
+receipts separately if a future failure appears. Atlas publication is not
+asserted by Penny's receipts. The October 2 repair details below remain history.
+
 ## Done — October 2, 2026, 19:38 UTC
 
 Penny PR94–96 are merged. The Note correction is installed; one existing Note
@@ -30,14 +49,11 @@ receipts separately; never infer delivery from healthy services or passing tests
 - Earlier shared ASR activation/hardening receipts and accepted consumer state:
   [ASR evidence](docs/asr-hardening-20261002.md).
 
-## No running implementation work; two input gates remain
+## Rechecking the installed runtime
 
-P01 needs the next ordinary Penny recording: latest canonical row is still 771.
-P02 needs the next eligible ordinary direct Maya v2 input; none is pending.
-Do not replay old deliveries or synthesize a personal recording to manufacture
-acceptance. Exact conditions are in [TODO.md](TODO.md). No owner command or
-machine restart is required to unblock normal capture; these checks wait for
-normal use.
+The earlier P01/P02 input waits are superseded by the October 4 acceptance above.
+Keep local routing, independent Slack and independent Maya v2 evidence separate;
+Maya's Drop receipt verifies the active route without accepting legacy direct v2.
 
 Recheck the actual installed caller, not a shell Doctor missing its environment:
 
