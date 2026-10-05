@@ -78,10 +78,20 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-- [x] P01 complete: ordinary Parakeet captures 772–774 have canonical, archive,
-  Drop, Slack and Maya receipts. See the October 4 acceptance record above.
-- ~~P02 direct-v2 input wait~~ — retired as an ordinary voice-note blocker;
-  active Maya delivery is via Drop and verified for all three captures.
-- Ongoing observation: long-term stability during ordinary use, not an open
-  implementation task or a request to retranscribe protected material.
+## Natural-capture acceptance completed October 4
+
+- [x] **P01 — New post-Parakeet Penny recording.** Ordinary captures 772–774
+  from October 2–3 all used pinned Parakeet, passed quality and routed. Local
+  audio hashes, archive publication receipts, matching Drop archive hashes,
+  independent Slack sent receipts and Maya store-only source-event receipts
+  are verified. [Evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
+- ~~**P02 — Wait for a new direct Maya v2 input.**~~ This is not the active
+  voice-note route: new iCloud captures are Drop-owned and intentionally direct
+  Maya-ineligible. All three already have Maya receipts through Drop. Retain
+  direct-v2 acceptance only if that separate path is explicitly exercised;
+  preserve its nine historical dead letters.
+
+No input-gated implementation or acceptance task remains for the normal Penny
+voice-note path. Observe long-term stability during ordinary use; no new bulk
+benchmark or manufactured capture is required.
 <!-- janitor:end:todo -->

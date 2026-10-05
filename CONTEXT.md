@@ -63,9 +63,23 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-- **2026-10-03 — Documentation evidence boundaries closed out.** Source `f80b2516bcc436a53b76871d10b47fa951831c74` merged PR98, containing commit `90ee99301e46cde81b866823415d387d86e1977f` to preserve explicit independent delivery evidence in the Penny handoff. This is documentation guidance only; it does not establish new deployed code, provider state, or downstream receipt evidence.
-- **2026-10-02 — Penny repair state consolidated.** PR97 merged at `1179fe31a3b7d23ca015d903a7f7184c91881d94`, with closeout and consolidation at `2a9454148e7ea43e685bef0a13909af52195b84b`. Current documented state remains: final repair merge `6ccf2286a2c6af1919e43b4eaba72465f8eb614b`; local suite 765 passed, 2 skipped, 60 subtests; trust suite 497 tests, 2 skipped, PASS; PR96 hosted checks passed. The reviewed Apple components are installed through a scoped update while protected dirty root files and their existing revision are preserved.
-- **2026-10-02 — Provider and routing evidence reconciled.** Canonical row 770 was repaired without recreating its Note; normalized content and exact-folder membership were read back, and the existing provider ID was reconciled at attempt seven. Notes' advertised `container` getter remained unreliable after creation, so that probe's failure remains uncertain. Ordinary watcher routing covered row 770 and Voice Memo 443 at 19:36:51 UTC; archive and accepted Drop receipts remained unchanged, and no direct Slack or Maya delivery was added.
-- **2026-10-02 — Operational readiness remains degraded, not unready.** `/ready` returns HTTP 200 with no unready component. The pinned shared Parakeet primary is idle with zero resident workers; model, offline and memory checks pass. Capture coverage gaps and current terminal failures are zero, while historical quarantine, dead-letter and unavailable-input exceptions remain visible.
-- **October 4 evidence supersedes the input gates.** P01 is complete with real Parakeet rows 772–774 and independent delivery receipts. P02 is retired as a normal voice-note blocker because Maya receives these captures through Drop.
+## Natural-capture acceptance — October 4
+
+Penny received three ordinary Parakeet voice notes, rows 772–774, on October 2–3.
+All passed quality and routed. Local audio hashes, archive publication, Drop
+archive hashes, Slack sent receipts and live Maya store-only source-event
+receipts match. [Exact evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
+
+P01 is complete. P02 was a misleading gate for this workflow: Drop ownership
+intentionally suppresses direct Maya eligibility for new iCloud captures. These
+three notes already reached Maya through Drop. The legacy direct-v2 route is
+not newly accepted by this evidence, and no pending work or dead letter was
+replayed. New direct-v2 verification is conditional on future explicit use of
+that separate route. Normal Penny voice-note acceptance has no remaining input
+gate. Long-term stability remains observation over ordinary use.
+
+Source commit `f045c72898d2bdba2621b5fc62fa0c83e369cae3` (PR #100) merged the
+natural-acceptance documentation. Recent commits `f9c7fc6` and `3b61a9a`
+labeled ledger timestamps precisely and verified natural Parakeet voice notes
+with active Maya delivery.
 <!-- janitor:end:recent -->
