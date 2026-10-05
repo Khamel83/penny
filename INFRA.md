@@ -99,3 +99,16 @@ See `docs/shared-parakeet.md`. The earlier staging phase retained Whisper;
 the verified activation below records the subsequent Parakeet service cutover.
 
 Verified October 1 shared Parakeet activation: five installed Penny agents select `PENNY_SHARED_ASR_BACKEND=parakeet`; the shared service uses the pinned SSD Python/model paths above. Port 10311 and bearer/header contract are unchanged. Whisper remains available for bounded serial retries; Apple pilot is disabled. Runtime revision `f4909d33d0a15db660c9eec35a02318aab297ca2`; see live activation receipts in HANDOFF.md.
+<!-- janitor:begin:catalog -->
+## Repository identity
+Infrastructure authority: `Khamel83/infra:config/project-catalog.yml`.
+This INFRA.md is this project's projection of that authority. The owning
+project declares its deploy, config, data and health evidence here;
+shared machine/tool/environment policy stays in infra's registries.
+- project_id: penny
+- name: Penny
+- state: observing
+- lifecycle: active
+- classification: unclassified
+- repository: https://github.com/Khamel83/penny
+<!-- janitor:end:catalog -->
