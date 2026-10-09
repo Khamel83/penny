@@ -17,7 +17,12 @@ The root Python environment and existing Whisper weights remain unchanged.
 
 Parakeet uses native 30-second chunks with 2-second overlap and reconstructs
 words from timed wordpieces. No diarization or speaker naming is implied.
-For new Parakeet output, brief restarts are accepted; eight consecutive repeated
+Sentence boundaries can overlap by well under a second: a word start no more
+than 1.0 s behind the previous word start is clamped to that start instead of
+failing the whole transcript, and the shared protocol validator applies the
+same 1.0 s tolerance. A larger backward jump still fails as
+`backwards_parakeet_token_time`. For new Parakeet output, brief restarts are
+accepted; eight consecutive repeated
 tokens or the existing low-diversity suffix signal trigger review. Existing
 Whisper quality-held records/policy are unchanged. A malformed output or severe
 repetition-quality failure triggers at most one
