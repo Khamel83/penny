@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import sys
 
+from .protocol import WORD_START_OVERLAP_TOLERANCE_SECONDS
+
 # Bind approved bytes, including tokenizer, without permitting a hub lookup.
 MODEL_HASHES = {
     "model.safetensors": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592",
@@ -72,16 +74,21 @@ def verbose_result(result, duration: float) -> dict:
                     # Wordpieces and punctuation may align before another piece
                     # of the same word. Validate the word starts consumers use.
                     if start < previous:
-                        raise ParakeetTimingError(
-                            "backwards_parakeet_token_time",
-                            {
-                                "sentence_index": sentence_index,
-                                "token_index": token_index,
-                                "start": start,
-                                "end": end,
-                                "previous_start": previous,
-                            },
-                        )
+                        if previous - start > WORD_START_OVERLAP_TOLERANCE_SECONDS:
+                            raise ParakeetTimingError(
+                                "backwards_parakeet_token_time",
+                                {
+                                    "sentence_index": sentence_index,
+                                    "token_index": token_index,
+                                    "start": start,
+                                    "end": end,
+                                    "previous_start": previous,
+                                },
+                            )
+                        # Sentence boundaries overlap by well under a second;
+                        # clamp the start instead of rejecting the transcript.
+                        start = previous
+                        end = max(end, start)
                     previous = start
                     words.append({"word": text.strip(), "start": start, "end": end})
             elif words:

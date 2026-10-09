@@ -48,7 +48,7 @@ def test_worker_cannot_declare_invalid_fallback_success():
 def test_backward_parakeet_failure_retains_numeric_locality_without_text():
     tokens = [
         SimpleNamespace(text=" First", start=120.0, end=120.2),
-        SimpleNamespace(text=" second", start=119.8, end=120.4),
+        SimpleNamespace(text=" second", start=118.0, end=120.4),
     ]
     result = SimpleNamespace(
         text="First second",
@@ -59,11 +59,26 @@ def test_backward_parakeet_failure_retains_numeric_locality_without_text():
     assert caught.value.timing_context == {
         "sentence_index": 0,
         "token_index": 1,
-        "start": 119.8,
+        "start": 118.0,
         "end": 120.4,
         "previous_start": 120.0,
     }
     assert "First" not in str(caught.value.timing_context)
+
+
+@pytest.mark.parametrize("delta", [0.08, 0.56])
+def test_sub_second_sentence_overlap_is_clamped_not_a_quality_failure(delta):
+    tokens = [
+        SimpleNamespace(text=" First", start=120.0, end=120.2),
+        SimpleNamespace(text=" second", start=120.0 - delta, end=120.4),
+    ]
+    result = SimpleNamespace(
+        text="First second",
+        sentences=[SimpleNamespace(text="First second", tokens=tokens)],
+    )
+    words = verbose_result(result, 180.0)["segments"][0]["words"]
+    assert words[1]["start"] == 120.0
+    assert words[1]["end"] >= words[1]["start"]
 
 
 def test_quality_error_becomes_review_without_retry_or_invented_text(tmp_path):

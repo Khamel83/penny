@@ -1,5 +1,31 @@
 # Penny handoff
 
+## In flight — Parakeet sentence-boundary overlap (issue #108)
+
+Branch `g2k/issue-108`, not yet merged. `shared_whisper/parakeet_worker.py` no
+longer fails a whole transcript when a word start falls at most
+`WORD_START_OVERLAP_TOLERANCE_SECONDS` (1.0 s, defined in
+`shared_whisper/protocol.py`) behind the previous word start: the start is
+clamped to the previous start and `end = max(end, start)`. A backward jump over
+1.0 s still raises `backwards_parakeet_token_time`, and the protocol validator's
+segment/word monotonic checks use the same tolerance.
+
+Operator step after merge (not done by this change, and not automatable from
+here): clear the 22 Atlas holds in
+`/Volumes/2TB_SSD/atlas-whisper/audio/*.quality-review.json` (all backend
+`parakeet`, `token_index: 0`) so the held episodes are re-transcribed. Three of
+those holds carry an empty `timing_context`; they cannot be this overlap
+failure, because `backwards_parakeet_token_time` always carries numeric
+`segment`/`token` locality. Read each sidecar's own reason
+(`empty_parakeet_output` or `parakeet_output_invalid` are the only paths that
+emit no context) before clearing it.
+
+Recheck:
+
+```bash
+python3 -m pytest tests/test_parakeet_adapter.py tests/test_asr_timing_contract.py tests/test_shared_whisper_protocol.py -q
+```
+
 ## Current acceptance — October 4, 2026
 
 P01 is complete: three ordinary voice notes (772–774, October 2–3) used pinned
