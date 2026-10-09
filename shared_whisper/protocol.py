@@ -8,6 +8,12 @@ import math
 from typing import Any, Mapping
 
 
+# Parakeet emits small word-start overlaps at sentence boundaries (observed
+# 0.08-0.56 s). A start inside this window of the previous word start is
+# clamped instead of rejected; a larger backward jump is a real timing failure.
+WORD_START_OVERLAP_TOLERANCE_SECONDS = 1.0
+
+
 class ClientKind(StrEnum):
     """Known callers of the single shared Whisper worker."""
 
@@ -130,12 +136,12 @@ def validate_segments(segments: list[Any]) -> None:
         if not isinstance(segment, Mapping) or not isinstance(segment.get("text"), str):
             reject("success response has invalid segment", context)
         start = time_range(segment, context)
-        if start < previous:
+        if start < previous - WORD_START_OVERLAP_TOLERANCE_SECONDS:
             reject(
                 "success response has backwards segment timestamps",
                 {**context, "start": start, "previous_start": previous},
             )
-        previous = start
+        previous = max(previous, start)
         has_text = has_text or bool(segment["text"].strip())
         words = segment.get("words")
         if words is None:
@@ -152,7 +158,7 @@ def validate_segments(segments: list[Any]) -> None:
             ):
                 reject("success response has invalid word", word_context)
             word_start = time_range(word, word_context)
-            if word_start < previous_word:
+            if word_start < previous_word - WORD_START_OVERLAP_TOLERANCE_SECONDS:
                 reject(
                     "success response has backwards word timestamps",
                     {
@@ -161,7 +167,7 @@ def validate_segments(segments: list[Any]) -> None:
                         "previous_start": previous_word,
                     },
                 )
-            previous_word = word_start
+            previous_word = max(previous_word, word_start)
     if not has_text:
         reject("success response missing segment text", {})
 

@@ -53,10 +53,36 @@ def test_piece_alignment_can_overlap_while_word_starts_remain_ordered():
 
 def test_genuinely_backwards_word_starts_still_require_review():
     result = SimpleNamespace(text="Hello there.", sentences=[SimpleNamespace(
-        text="Hello there.", tokens=[token(" Hello", 0.5, 0.7), token(" there.", 0.4, 0.9)],
+        text="Hello there.", tokens=[token(" Hello", 5.5, 5.7), token(" there.", 0.4, 0.9)],
     )])
     with pytest.raises(ValueError, match="backwards_parakeet_token_time"):
-        verbose_result(result, 1.0)
+        verbose_result(result, 10.0)
+
+
+@pytest.mark.parametrize("start,previous_start", [(2437.2, 2437.76), (365.52, 365.6)])
+def test_sentence_boundary_overlap_is_clamped_not_rejected(start, previous_start):
+    """Atlas holds of 2026-10-09: 0.08-0.56 s overlaps between sentences."""
+    result = SimpleNamespace(
+        text="First sentence. Second sentence.",
+        sentences=[
+            SimpleNamespace(
+                text="First sentence.",
+                tokens=[token(" First", previous_start, previous_start + 0.4)],
+            ),
+            SimpleNamespace(
+                text="Second sentence.",
+                tokens=[token(" Second", start, start + 0.48)],
+            ),
+        ],
+    )
+    output = verbose_result(result, previous_start + 1.0)
+    starts = [segment["start"] for segment in output["segments"]]
+    assert starts == [previous_start, previous_start]
+    second = output["segments"][1]["words"][0]
+    assert second["word"] == "Second"
+    assert second["start"] == previous_start
+    assert second["end"] == max(start + 0.48, previous_start)
+    assert second["end"] >= second["start"]
 
 
 @pytest.mark.parametrize(
