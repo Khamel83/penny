@@ -10,8 +10,10 @@
 - [ ] Add bounded retry retention on SSD while preserving pending review:
   https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
   is not implemented by this storage operation.
-- [ ] Reconcile the pre-existing uncertain Drop receipt through its receipt-bound
-  procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
+- [ ] Resolve transcript 779 uncertain Drop handoff via [Drop158](https://github.com/Khamel83/drop/issues/158).
+  Frozen bytes remain in Penny; archive metadata/content both 404 and exact
+  ledger lookup has zero matches. Drop must check R2 before any resend.
+  `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
 
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the

@@ -10,13 +10,25 @@ system logs on SSD. Four continuous services run; scheduled backup is idle. Orig
 identity is retained for watcher/webhook/tasks; fresh Voice Memos access passes.
 SQLite integrity, archive, backup and transcription checks pass. `/ready`
 remains 503 for the same pre-existing uncertain Drop effect. No downstream
-receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record:
-[PR113](https://github.com/Khamel83/penny/pull/113), review/merge pending.
+receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
+as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
+and old component stamps remain distinct.
 Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
 
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.
 The owner authorized completion of Penny repairs and self-review/normal merge
 when hosted review is delayed. Protected dirty runtime files remain intact.
+
+## Drop handoff diagnosis — October 9 local / October 10 UTC
+
+One uncertain item is transcript 779 (outbox 335), attempted October 8
+04:04:04 UTC during the earlier R2 incident. The frozen 50,334-byte payload
+is preserved in SSD SQLite. Its named Drop ID and payload hash have no OCI
+archive receipt; both private metadata/content APIs return 404. That does
+not prove absent R2 data. Current Drop status reports all five pieces and
+four consumers healthy. Filed [Drop158](https://github.com/Khamel83/drop/issues/158) for exact R2
+sidecar/raw readback and receipt-bound, duplicate-safe recovery. No resend,
+provider effect, ledger mutation or source-runtime change was made.
 
 ## Decisions
 
