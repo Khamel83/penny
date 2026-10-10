@@ -79,8 +79,9 @@ def installed(label: str) -> tuple[Path, dict]:
     command_args = args
     guard = str(Path.home() / '.local/libexec/compost/with-storage-volume.py')
     ssd_guard = str(ROOT / 'scripts/storage_guard.py')
-    guarded = args[:2] in (['/opt/homebrew/bin/python3', guard],
-                           ['/opt/homebrew/bin/python3', ssd_guard])
+    guarded = (len(args) >= 2 and args[1] in {guard, ssd_guard}
+               and args[0] in {'/opt/homebrew/bin/python3',
+                               str((ROOT / 'venv/bin/python3').resolve())})
     if guarded:
         command_args = args[2:]
     if (data.get('Label') != label or data.get('WorkingDirectory') not in ({str(ROOT), str(Path.home())} if guarded else {str(ROOT)})

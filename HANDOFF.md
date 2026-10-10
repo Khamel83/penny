@@ -3,7 +3,7 @@
 ## Current checkpoint — October 9, 2026
 
 Done: immediate SSD relocation, checksum verification, SQLite integrity check,
-SSD mount guards and restored continuous services. Internal disk free space is
+SSD mount guards, restored continuous services and fresh Voice Memos access. Internal disk free space is
 26 GiB; SSD approximately 37 GiB. Actual checkout is
 `/Volumes/2TB_SSD/penny-runtime`; home paths resolve to SSD. Owner edits remain.
 [Evidence and private receipt location](docs/ssd-storage-20261009.md).

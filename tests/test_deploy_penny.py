@@ -135,10 +135,11 @@ def test_all_penny_jobs_preserve_known_volume_guard(tmp_path, monkeypatch, label
 
 
 @pytest.mark.parametrize('label', deploy.LABELS)
-def test_penny_ssd_guard_allows_neutral_launch_directory(tmp_path, monkeypatch, label):
+@pytest.mark.parametrize('runner', ['/opt/homebrew/bin/python3', str((deploy.ROOT / 'venv/bin/python3').resolve())])
+def test_penny_ssd_guard_allows_neutral_launch_directory(tmp_path, monkeypatch, label, runner):
     path = make_installed(tmp_path, monkeypatch, label, deploy.ENTRYPOINTS[label])
     data = plistlib.loads(path.read_bytes())
-    data['ProgramArguments'] = ['/opt/homebrew/bin/python3',
+    data['ProgramArguments'] = [runner,
         str(deploy.ROOT / 'scripts/storage_guard.py'), *data['ProgramArguments']]
     data['WorkingDirectory'] = str(tmp_path)
     path.write_bytes(plistlib.dumps(data))

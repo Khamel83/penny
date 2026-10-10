@@ -38,6 +38,14 @@ existing SSD system log, then executes the real entrypoint. This preserves logs
 without bulk writes on the internal disk. Both correct-volume success (0) and
 wrong-identity refusal (75) were verified through all five installed guards.
 
+The watcher/webhook/tasks guard uses the original resolved runtime Python
+interpreter as its launcher. Launching these through Homebrew Python caused
+Voice Memos database access to fail after exec; restoring the original
+interpreter identity restored source access without changing any privacy grant.
+Final source readback: 334 Apple records, 335 ledger records, zero coverage gap,
+fresh healthy watcher. Shared ASR subsequently resumed an ordinary Atlas request
+with one worker; no completion or publication is inferred.
+
 Four continuous services are running; scheduled export is registered and idle.
 Shared ASR is idle, pinned Parakeet, zero workers. `/ready` reports archive,
 backup, SQLite, services and transcription ready. HTTP 503 remains due to
@@ -50,7 +58,7 @@ Time Machine snapshot deletion was needed. Private before-images, content
 verification, migration scripts and readback live under
 `/Volumes/2TB_SSD/AI/Penny/storage-migration-20261009/`.
 
-Focused checks: 36 tests and 10 subtests passed (configuration, deployment guard
+Focused checks: 41 tests and 10 subtests passed (configuration, deployment guard
 compatibility and mount refusal). Scoped runtime changes include the mirror
 configuration, storage guard and deployment guard recognition. Existing runtime
 component revision stamps remain unchanged; this is not a full source release.

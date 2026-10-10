@@ -6,7 +6,8 @@ Owner requires Penny-owned data on the 2 TB SSD. Actual state and checkout are
 now `/Volumes/2TB_SSD/AI/Penny/state` and `/Volumes/2TB_SSD/penny-runtime`; old
 home paths are compatibility symlinks. Future mirror writes, caches and scratch
 are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
-system logs on SSD. Four continuous services run; scheduled backup is idle.
+system logs on SSD. Four continuous services run; scheduled backup is idle. Original Python launcher
+identity is retained for watcher/webhook/tasks; fresh Voice Memos access passes.
 SQLite integrity, archive, backup and transcription checks pass. `/ready`
 remains 503 for the same pre-existing uncertain Drop effect. No downstream
 receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record:

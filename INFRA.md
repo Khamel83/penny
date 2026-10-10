@@ -13,7 +13,8 @@ All five labels execute the scoped `scripts/storage_guard.py`, validating
 to `PENNY_RUNTIME_ROOT` and opening SSD `PENNY_RUNTIME_LOG`. Launchd itself
 starts from home with `/dev/null` diagnostic descriptors to avoid the observed
 external-path EX_CONFIG; logs are opened by the guarded Python caller on SSD.
-No port, token or privacy grant changed. The compost maintenance job retains
+Watcher/webhook/tasks use the original resolved runtime Python as guard launcher
+to preserve the established Mac caller identity. No port, token or privacy grant changed. The compost maintenance job retains
 its existing guard. [Exact evidence](docs/ssd-storage-20261009.md).
 Older placement and revision entries below are historical.
 
