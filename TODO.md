@@ -10,12 +10,11 @@
 - [ ] Add bounded retry retention on SSD while preserving pending review:
   https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
   is not implemented by this storage operation.
-- [ ] Resolve transcript 779 uncertain Drop handoff via [Drop158](https://github.com/Khamel83/drop/issues/158).
-  Frozen bytes remain in Penny; archive metadata/content both 404 and exact
-  ledger lookup has zero matches. Both named R2 objects are absent; full event inventory has no unarchived
-  events. This 64-minute note needs quality review. Owner preference for skipping
-  versus retrying delivery is pending; no resend authorized by that choice.
-  `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
+- [x] Retire note 779's Drop delivery at the owner's request; keep audio,
+  transcript, frozen payload and original failure receipt locally.
+  `/ready` HTTP 200, Drop uncertain=0 and skipped=1.
+  [Evidence](docs/drop-owner-skip-779-20261010.md),
+  [Drop158](https://github.com/Khamel83/drop/issues/158).
 
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
