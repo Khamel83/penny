@@ -9,11 +9,27 @@ SSD mount guards, restored continuous services and fresh Voice Memos access. Int
 [Evidence and private receipt location](docs/ssd-storage-20261009.md).
 
 In flight: [PR113](https://github.com/Khamel83/penny/pull/113) is published;
-source review/merge remains pending. Runtime
+source review/merge remains pending. Retry retention
+[#112](https://github.com/Khamel83/penny/issues/112) is implemented in this
+worktree and awaits review/merge: receipts default to
+`/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while the SSD volume is
+mounted, a terminal receipt drops its `audio.*` copy and keeps `receipt.json`,
+receipt directories older than 14 days are pruned by directory age, and
+receipts still pending operator review are kept. Focused verification:
+`python3 -m pytest -q tests/test_retry_receipt.py` (10 passed). Runtime
 configuration is installed; old component revision stamps are retained.
-Still open: retry retention [#112](https://github.com/Khamel83/penny/issues/112)
-and the pre-existing uncertain Drop receipt. `/ready` is 503 for that same
+Still open: deployment of the retention change and the pre-existing uncertain
+Drop receipt. `/ready` is 503 for that same
 reason; archive, backup, SQLite, services and transcription are ready.
+
+One-off migration note for the PR description: retry receipts were relocated to
+`/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` during the October 9 SSD move
+(see [evidence](docs/ssd-storage-20261009.md)); the code now defaults there
+while the volume is mounted. Operator: confirm that directory holds the prior
+195 receipts (`ls /Volumes/2TB_SSD/penny-asr-runtime/asr-retries | wc -l`) and
+that no `~/.penny/asr-retries` residue remains (`readlink ~/.penny/asr-retries`);
+the old path would now resolve onto the SSD through the `~/.penny` compatibility
+symlink.
 
 Next verification: `curl -s http://127.0.0.1:10311/health`,
 `curl -s http://127.0.0.1:5678/ready`, and

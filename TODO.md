@@ -7,13 +7,16 @@
   SQLite integrity, restored services and fresh Voice Memos source access. Internal free space is 26 GiB.
   [Evidence](docs/ssd-storage-20261009.md),
   [PR113](https://github.com/Khamel83/penny/pull/113).
-- [ ] Add bounded retry retention on SSD while preserving pending review:
-  https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
-  is not implemented by this storage operation.
+- [x] Add bounded retry retention on SSD while preserving pending review:
+  https://github.com/Khamel83/penny/issues/112. Source now selects the SSD
+  retry root while mounted, releases terminal `audio.*`, and prunes receipt
+  directories older than 14 days without pruning pending-review receipts.
+  Focused evidence: `python3 -m pytest -q tests/test_retry_receipt.py`
+  (10 passed). Deployment remains pending review/merge.
 - [ ] Reconcile the pre-existing uncertain Drop receipt through its receipt-bound
   procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
 
-Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
+Updated October 9, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
 [previous TODO](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/TODO.md) and linked operational documents.
 
