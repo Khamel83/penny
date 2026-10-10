@@ -17,7 +17,8 @@ acceptance. `/ready` HTTP 200 with zero unready components. Drop ready with
 uncertain=0, failed=0, pending=0 and skipped=1. Shared ASR healthy.
 [Evidence](docs/drop-owner-skip-779-20261010.md).
 
-In flight: source publication of explicit skipped-count reporting and this record;
+In flight: [PR115](https://github.com/Khamel83/penny/pull/115) publishes explicit
+skipped-count reporting and this record;
 the scoped Doctor update is installed and 51 focused tests pass. Drop158
 is retired as owner-declined delivery. Retry retention #112 is separate
 previously tracked work; it is not a readiness blocker.
