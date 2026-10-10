@@ -1,5 +1,15 @@
 # Penny current context
 
+## Current readiness — October 10 UTC
+
+Owner approved intentionally skipping delivery of old quality-held note 779
+while retaining it locally. Outbox row 335 is skipped, not accepted; payload,
+audio, transcript and original failure receipt remain. `/ready` is HTTP 200
+with zero unready components. Drop ready: pending=0, failed=0, uncertain=0,
+skipped=1. Scoped Doctor skip-count visibility is installed; 51 focused tests
+pass. [Evidence](docs/drop-owner-skip-779-20261010.md). Source publication of
+this small reporting change is in PR114; live effect is already verified.
+
 ## Current storage decision and state — October 9
 
 Owner requires Penny-owned data on the 2 TB SSD. Actual state and checkout are
@@ -8,8 +18,7 @@ home paths are compatibility symlinks. Future mirror writes, caches and scratch
 are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
 system logs on SSD. Four continuous services run; scheduled backup is idle. Original Python launcher
 identity is retained for watcher/webhook/tasks; fresh Voice Memos access passes.
-SQLite integrity, archive, backup and transcription checks pass. `/ready`
-remains 503 for the same pre-existing uncertain Drop effect. No downstream
+SQLite integrity, archive, backup and transcription checks pass. `/ready` now returns HTTP 200 after owner-directed skip of note 779. No downstream
 receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
 as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
 and old component stamps remain distinct.
@@ -28,8 +37,8 @@ archive receipt; both private metadata/content APIs return 404. That did
 not alone prove absent R2 data. Subsequent installed OCI R2 readback found both
 named objects absent, no matching ID at any date, and 1,062 event keys all
 archived. Note 779 is 64 minutes and quality-held (`needs_review`); the owner
-asked not to spend forever. Keep the original safe; skip-versus-retry preference
-is pending and no resend was made. Current Drop status reports all five pieces and
+asked not to spend forever. Keep the original safe; owner selected keeping locally and skipping delivery;
+no resend was made. Current Drop status reports all five pieces and
 four consumers healthy. Filed [Drop158](https://github.com/Khamel83/drop/issues/158) for exact R2
 sidecar/raw readback and receipt-bound, duplicate-safe recovery. No resend,
 provider effect, ledger mutation or source-runtime change was made.
