@@ -8,7 +8,7 @@ audio, transcript and original failure receipt remain. `/ready` is HTTP 200
 with zero unready components. Drop ready: pending=0, failed=0, uncertain=0,
 skipped=1. Scoped Doctor skip-count visibility is installed; 51 focused tests
 pass. [Evidence](docs/drop-owner-skip-779-20261010.md). Source publication of
-this small reporting change is in PR114; live effect is already verified.
+this small reporting change is pending in its repair PR; live effect is verified.
 
 ## Current storage decision and state — October 9
 
