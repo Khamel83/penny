@@ -22,8 +22,16 @@ than 1.0 s behind the previous word start is clamped to that start instead of
 failing the whole transcript, and the shared protocol validator applies the
 same 1.0 s tolerance. A larger backward jump still fails as
 `backwards_parakeet_token_time`. For new Parakeet output, brief restarts are
-accepted; eight consecutive repeated
-tokens or the existing low-diversity suffix signal trigger review. Existing
+accepted. Eight consecutive repeated
+tokens or the existing low-diversity suffix signal trigger review, but on the
+Parakeet path a repeated run is a repetition failure only when its
+acoustically aligned word starts show a decoder loop: the run has 20 or more
+repeats, or the repeats share a start, or their median start-to-start gap is
+under 0.12 s. A genuinely spoken repeated word (for example an ad read that
+says one brand eight times) occupies real speaking time and passes. Word
+timings are used only when they line up token-for-token with the transcript, so
+the Whisper path and records stored without word timings keep the structural
+rule unchanged. Existing
 Whisper quality-held records/policy are unchanged. A malformed output or severe
 repetition-quality failure triggers at most one
 Whisper retry of a bounded upload (maximum 660 seconds including context).

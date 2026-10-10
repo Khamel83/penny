@@ -2,6 +2,16 @@
 
 ## Current checkpoint — October 9, 2026
 
+Blocked on the owner/operator after deploy: archive the held Waveform (MKBHD)
+episode whose Parakeet repeats are real Kayak ad speech. The quality rule fix
+for [#111](https://github.com/Khamel83/penny/issues/111) is implemented on the
+issue branch and locally tested, but not merged or deployed. After the reviewed
+change is deployed to the shared ASR service, archive the held episode in
+`/Volumes/2TB_SSD/atlas-whisper/audio/` (audio sha `9c9d84d7…`, retry receipt
+`~/.penny/asr-retries/9d9ba2c2-be55-4646-8db6-6a96e689bfd2/`) and confirm Atlas
+`/readiness` no longer reports the hold. Do not replay the recording or erase its
+receipt. [Change evidence](docs/parakeet-repetition-timing-20261009.md).
+
 Done: immediate SSD relocation, checksum verification, SQLite integrity check,
 SSD mount guards, restored continuous services and fresh Voice Memos access. Internal disk free space is
 26 GiB; SSD approximately 37 GiB. Actual checkout is

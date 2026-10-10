@@ -100,3 +100,87 @@ def test_transcription_stops_after_two_bad_results_and_needs_review():
     )
     assert result.attempts == 2
     assert client.transcribe.call_count == 2
+
+
+# Real Atlas hold, 2026-10-09: a Kayak read in a 2-hour Waveform episode says
+# "kayak" eight times in a row in ordinary speech.
+KAYAK_REPEATS_TEXT = (
+    "Kayak thinks you won't remember that so kayak asked me to say kayak as "
+    f"many times as possible {'kayak ' * 8}search and compare travel"
+)
+
+
+def timed_segments(text: str, *, spacing: float) -> list[dict]:
+    """Build Parakeet-shaped segments whose words start ``spacing`` apart."""
+    words = []
+    start = 0.0
+    for word in text.split():
+        words.append({"word": word, "start": start, "end": start + 0.2})
+        start += spacing
+    return [{"start": 0.0, "end": start, "text": text, "words": words}]
+
+
+def test_spoken_word_repeats_with_word_timings_pass():
+    result = evaluate_transcript(
+        KAYAK_REPEATS_TEXT,
+        tolerant_restarts=True,
+        segments=timed_segments(KAYAK_REPEATS_TEXT, spacing=0.4),
+    )
+
+    assert result.passed is True
+    # The same text without word timings keeps the structural failure.
+    assert not evaluate_transcript(KAYAK_REPEATS_TEXT, tolerant_restarts=True).passed
+
+
+@pytest.mark.parametrize("spacing", [0.0, 0.01])
+def test_repeats_without_speaking_time_still_fail(spacing):
+    result = evaluate_transcript(
+        KAYAK_REPEATS_TEXT,
+        tolerant_restarts=True,
+        segments=timed_segments(KAYAK_REPEATS_TEXT, spacing=spacing),
+    )
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
+
+def test_long_loop_at_speaking_rate_still_fails():
+    text = f"A valid memo first. {'kayak ' * 25}"
+    result = evaluate_transcript(
+        text, tolerant_restarts=True, segments=timed_segments(text, spacing=0.4)
+    )
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
+
+def test_word_timings_that_do_not_match_the_text_are_ignored():
+    result = evaluate_transcript(
+        KAYAK_REPEATS_TEXT,
+        tolerant_restarts=True,
+        segments=timed_segments("completely different words", spacing=0.4),
+    )
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
+
+def test_transcription_accepts_parakeet_repeats_with_word_timings():
+    from shared_whisper.backends import PARAKEET_ID, PARAKEET_REVISION
+    from shared_whisper.protocol import WhisperResult
+
+    client = Mock()
+    client.model_id = PARAKEET_ID
+    client.transcribe.return_value = WhisperResult(
+        KAYAK_REPEATS_TEXT,
+        timed_segments(KAYAK_REPEATS_TEXT, spacing=0.4),
+        PARAKEET_ID,
+        PARAKEET_REVISION,
+        "request-1",
+    )
+
+    result = transcribe_with_quality(Path("/tmp/penny-test.m4a"), client=client)
+
+    assert result.quality.passed is True
+    assert result.model_id == PARAKEET_ID
+    assert client.transcribe.call_count == 1

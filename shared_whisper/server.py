@@ -189,7 +189,11 @@ def create_app(
             if allow_whisper_fallback and result.model_id == PARAKEET_ID:
                 from transcript_quality import evaluate_transcript
 
-                quality = evaluate_transcript(result.text, tolerant_restarts=True)
+                quality = evaluate_transcript(
+                    result.text,
+                    tolerant_restarts=True,
+                    segments=result.segments,
+                )
                 if not quality.passed:
                     result = whisper_retry(
                         quality.reason, failed_model_id=result.model_id

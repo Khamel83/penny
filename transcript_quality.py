@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
+import statistics
 import stat
 import unicodedata
 
@@ -26,6 +29,12 @@ NATURAL_EMPHASIS_TRIPLICATE_TOKENS = frozenset({"no"})
 SUFFIX_TOKEN_WINDOW = 20
 LOW_DIVERSITY_SUFFIX_MAX_UNIQUE_TOKENS = 2
 MAX_QUALITY_DETAIL_CHARACTERS = 255
+# Parakeet word starts are acoustically aligned, so a genuinely repeated word
+# occupies real speaking time. A run of repeated tokens separated by less than
+# this median start-to-start gap, or by shared starts, is a decoder loop rather
+# than speech; a run this long is a loop even at speaking rate.
+REPETITION_TIMING_MIN_GAP_SECONDS = 0.12
+REPETITION_TIMING_LOOP_RUN = 20
 
 _WEIGHT_FILENAMES = {
     "weights.npz",
@@ -457,8 +466,70 @@ def _normalized_tokens(text: str) -> list[str]:
     return TOKEN_RE.findall(normalized)
 
 
-def evaluate_transcript(text: str, *, tolerant_restarts: bool = False) -> QualityResult:
-    """Evaluate transcript quality without modifying its content."""
+def _timed_word_tokens(segments: object) -> list[tuple[str, float]]:
+    """Flatten wired word timings into one (token, start) pair per token.
+
+    Returns an empty list when the result carries no usable word timings, so a
+    caller falls back to the structural rule instead of guessing at timing.
+    """
+    if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
+        return []
+    timed: list[tuple[str, float]] = []
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            return []
+        words = segment.get("words")
+        if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+            return []
+        for word in words:
+            if not isinstance(word, Mapping):
+                return []
+            start = word.get("start")
+            if (
+                not isinstance(start, (int, float))
+                or isinstance(start, bool)
+                or not math.isfinite(start)
+            ):
+                return []
+            for token in _normalized_tokens(str(word.get("word") or "")):
+                timed.append((token, float(start)))
+    return timed
+
+
+def _identical_token_runs(tokens: Sequence[str]):
+    """Yield (start, end, token) for every run of identical tokens."""
+    start = 0
+    for index in range(1, len(tokens) + 1):
+        if index < len(tokens) and tokens[index] == tokens[start]:
+            continue
+        yield start, index, tokens[start]
+        start = index
+
+
+def _repetition_has_speaking_rate(
+    timed_tokens: Sequence[tuple[str, float]], start: int, end: int
+) -> bool:
+    """Return True only when every repeat is separated by real speaking time."""
+    starts = [timed_tokens[index][1] for index in range(start, end)]
+    gaps = [later - earlier for earlier, later in zip(starts, starts[1:])]
+    if not gaps or min(gaps) <= 0:
+        return False
+    return statistics.median(gaps) >= REPETITION_TIMING_MIN_GAP_SECONDS
+
+
+def evaluate_transcript(
+    text: str,
+    *,
+    tolerant_restarts: bool = False,
+    segments: object = None,
+) -> QualityResult:
+    """Evaluate transcript quality without modifying its content.
+
+    ``segments`` carries Parakeet's acoustically aligned word timings. On the
+    tolerant (Parakeet) path a repeated run is only a quality failure when those
+    timings show a loop: no speaking time between repeats, or an implausibly
+    long run. Without usable timings the structural failure is retained.
+    """
     if not text or not text.strip():
         return QualityResult(False, "empty_output")
     if CONTROL_TOKEN_RE.search(text):
@@ -469,16 +540,25 @@ def evaluate_transcript(text: str, *, tolerant_restarts: bool = False) -> Qualit
         return QualityResult(False, "empty_output")
 
     repetition_limit = 8 if tolerant_restarts else MAX_CONSECUTIVE_TOKEN_REPETITION
-    consecutive = 1
-    for previous, current in zip(tokens, tokens[1:]):
-        consecutive = consecutive + 1 if current == previous else 1
-        if consecutive >= repetition_limit:
-            if (
-                consecutive == MAX_CONSECUTIVE_TOKEN_REPETITION
-                and current in NATURAL_EMPHASIS_TRIPLICATE_TOKENS
+    timed_tokens = _timed_word_tokens(segments) if tolerant_restarts else []
+    if [token for token, _ in timed_tokens] != tokens:
+        # Misaligned timings cannot describe the tokens under test.
+        timed_tokens = []
+    for start, end, token in _identical_token_runs(tokens):
+        length = end - start
+        if length < repetition_limit:
+            continue
+        if (
+            length == MAX_CONSECUTIVE_TOKEN_REPETITION
+            and token in NATURAL_EMPHASIS_TRIPLICATE_TOKENS
+        ):
+            continue
+        if tolerant_restarts and length < REPETITION_TIMING_LOOP_RUN:
+            if timed_tokens and _repetition_has_speaking_rate(
+                timed_tokens, start, end
             ):
                 continue
-            return QualityResult(False, "consecutive_token_repetition")
+        return QualityResult(False, "consecutive_token_repetition")
 
     suffix = tokens[-SUFFIX_TOKEN_WINDOW:]
     if (
@@ -514,6 +594,7 @@ def transcribe_with_quality(
         )
 
     selected_text = ""
+    selected_segments = None
     selected_model = None
     failure_reasons: list[str] = []
     for attempts, options in enumerate(
@@ -550,9 +631,18 @@ def transcribe_with_quality(
             if hasattr(response, "text")
             else str(response.get("text", ""))
         )
+        selected_segments = (
+            response.segments
+            if hasattr(response, "segments")
+            else response.get("segments")
+            if isinstance(response, Mapping)
+            else None
+        )
         selected_model = getattr(response, "model_id", None)
         quality = evaluate_transcript(
-            selected_text, tolerant_restarts=selected_model == PARAKEET_ID
+            selected_text,
+            tolerant_restarts=selected_model == PARAKEET_ID,
+            segments=selected_segments,
         )
         if quality.passed:
             return TranscriptionResult(

@@ -300,6 +300,63 @@ def test_long_quality_review_preserves_primary_without_loading_whisper(monkeypat
     assert (receipts[0].parent / "audio.mp3").read_bytes() == b"audio"
 
 
+def test_long_unbounded_parakeet_repeats_with_word_timing_are_not_held(
+    monkeypatch, tmp_path
+):
+    """A spoken "kayak" run in a 2-hour episode must not hold the episode."""
+    monkeypatch.setenv("PENNY_ASR_RETRY_DIR", str(tmp_path / "retries"))
+    text = (
+        "Kayak asked me to say kayak as many times as possible "
+        + "kayak " * 8
+        + "search and compare travel"
+    )
+    words = []
+    start = 0.0
+    for word in text.split():
+        words.append({"word": word, "start": start, "end": start + 0.2})
+        start += 0.4
+    primary = WhisperResult(
+        text,
+        [
+            {
+                "start": words[0]["start"],
+                "end": words[-1]["end"],
+                "text": text,
+                "words": words,
+            }
+        ],
+        PARAKEET_ID,
+        PARAKEET_REVISION,
+        "primary",
+    )
+
+    class Supervisor:
+        def expire_idle(self):
+            pass
+
+        def handle_request(self, client, *, audio_path, options):
+            assert options.get("_backend") != "whisper"
+            return primary
+
+    monkeypatch.setattr("shared_whisper.retry.audio_duration", lambda path: 7200.0)
+    app = create_app(
+        Supervisor(),
+        auth_token="secret",
+        model_id=PARAKEET_ID,
+        model_revision=PARAKEET_REVISION,
+        allow_whisper_fallback=True,
+    )
+    response = app.test_client().post(
+        "/v1/audio/transcriptions",
+        headers={"Authorization": "Bearer secret", "X-Whisper-Client": "atlas"},
+        data={"model": PARAKEET_ID, "file": (io.BytesIO(b"audio"), "episode.mp3")},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["text"] == text
+    assert list((tmp_path / "retries").glob("*/receipt.json")) == []
+
+
 @pytest.mark.parametrize("reason,expected", [
     ("backwards_parakeet_token_time", "backwards_parakeet_token_time"),
     ("invalid_parakeet_token_time", "invalid_parakeet_token_time"),

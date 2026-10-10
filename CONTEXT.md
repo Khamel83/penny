@@ -23,8 +23,11 @@ when hosted review is delayed. Protected dirty runtime files remain intact.
 Use one shared pinned Parakeet v3 primary, bounded Whisper second opinions and
 serial model loading/unloading. Apple pilot remains disabled. Structural quality
 checks can hold malformed/repetitive output; they do not reliably detect fluent
-omissions or establish ground truth. Do not replay held recordings or old
-external deliveries. [ASR contract](docs/shared-parakeet.md).
+omissions or establish ground truth. Repetition holds on the Parakeet path now
+require word-timing evidence of a loop — 20-plus repeats, shared starts, or a
+median start-to-start gap under 0.12 s — so a spoken repeated word at speaking
+rate passes ([#111](https://github.com/Khamel83/penny/issues/111)).
+Do not replay held recordings or old external deliveries. [ASR contract](docs/shared-parakeet.md).
 
 ## Verified state
 
