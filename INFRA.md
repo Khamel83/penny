@@ -111,8 +111,13 @@ No root-venv or Whisper-weight migration. `PENNY_SHARED_ASR_BACKEND=parakeet`,
 `PENNY_PARAKEET_PYTHON` and `PENNY_PARAKEET_MODEL_PATH` will select the staged
 child at cutover. Existing port 10311 and launchd label are retained; both
 engines share one supervisor slot and never load concurrently. Retry audio and
-both model results remain owner-only under `~/.penny/asr-retries`, separate
-from canonical ledger/archive/delivery. Source/staging is not deployment proof.
+both model results remain owner-only under
+`/Volumes/2TB_SSD/penny-asr-runtime/asr-retries`, the code default while the SSD
+volume is mounted (`PENNY_ASR_RETRY_DIR` overrides it; a missing volume falls
+back to `~/.penny/asr-retries`), separate from canonical ledger/archive/delivery.
+A terminal receipt drops its `audio.*` copy, and receipt directories older than
+14 days are pruned; receipts still pending operator review keep both.
+Source/staging is not deployment proof.
 See `docs/shared-parakeet.md`. The earlier staging phase retained Whisper;
 the verified activation below records the subsequent Parakeet service cutover.
 

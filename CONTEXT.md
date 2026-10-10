@@ -19,7 +19,10 @@ remains 503 for the same pre-existing uncertain Drop effect. No downstream
 receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
 as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
 and old component stamps remain distinct.
-Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
+Retry retention in [#112](https://github.com/Khamel83/penny/issues/112) is
+implemented in source: the SSD retry root is the default while the volume is
+mounted, a terminal receipt releases its `audio.*` copy, directories older than
+14 days are pruned, and pending-review receipts are kept. Review/merge pending.
 
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.
 The owner authorized completion of Penny repairs and self-review/normal merge
