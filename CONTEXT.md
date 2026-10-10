@@ -1,5 +1,17 @@
 # Penny current context
 
+## Current storage decision and state — October 9
+
+Owner requires Penny-owned data on the 2 TB SSD. Actual state and checkout are
+now `/Volumes/2TB_SSD/AI/Penny/state` and `/Volumes/2TB_SSD/penny-runtime`; old
+home paths are compatibility symlinks. Future mirror writes, caches and scratch
+are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
+system logs on SSD. Four continuous services run; scheduled backup is idle.
+SQLite integrity, archive, backup and transcription checks pass. `/ready`
+remains 503 for the same pre-existing uncertain Drop effect. No downstream
+receipt was manufactured. [Verification](docs/ssd-storage-20261009.md).
+Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
+
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.
 The owner authorized completion of Penny repairs and self-review/normal merge
 when hosted review is delayed. Protected dirty runtime files remain intact.

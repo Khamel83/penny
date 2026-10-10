@@ -78,9 +78,12 @@ def installed(label: str) -> tuple[Path, dict]:
     args = data.get('ProgramArguments', [])
     command_args = args
     guard = str(Path.home() / '.local/libexec/compost/with-storage-volume.py')
-    if label == 'com.penny.export' and args[:2] == ['/opt/homebrew/bin/python3', guard]:
+    ssd_guard = str(ROOT / 'scripts/storage_guard.py')
+    guarded = args[:2] in (['/opt/homebrew/bin/python3', guard],
+                           ['/opt/homebrew/bin/python3', ssd_guard])
+    if guarded:
         command_args = args[2:]
-    if (data.get('Label') != label or data.get('WorkingDirectory') != str(ROOT)
+    if (data.get('Label') != label or data.get('WorkingDirectory') not in ({str(ROOT), str(Path.home())} if guarded else {str(ROOT)})
             or not command_args or command_args[0] not in {str(ROOT / 'venv/bin/python'), str(ROOT / 'venv/bin/python3')}
             or command_args[1:] != ENTRYPOINTS[label]
             or data.get('Program', args[0]) != args[0]):

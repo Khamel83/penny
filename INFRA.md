@@ -1,5 +1,22 @@
 # Penny infrastructure
 
+## Current storage placement — October 9, 2026
+
+Actual runtime root is `/Volumes/2TB_SSD/penny-runtime`; canonical state/ledger
+is `/Volumes/2TB_SSD/AI/Penny/state/transcripts.db`. The historical home paths
+are compatibility symlinks. All Penny data, logs, caches and scratch are SSD
+backed; future mirror writes use `/Volumes/2TB_SSD/AI/Penny/archive-mirror`.
+Scheduled backup and pinned Parakeet paths retain their existing SSD placement.
+
+All five labels execute the scoped `scripts/storage_guard.py`, validating
+`COMPOST_STORAGE_VOLUME` and enrolled `COMPOST_STORAGE_UUID`, then changing
+to `PENNY_RUNTIME_ROOT` and opening SSD `PENNY_RUNTIME_LOG`. Launchd itself
+starts from home with `/dev/null` diagnostic descriptors to avoid the observed
+external-path EX_CONFIG; logs are opened by the guarded Python caller on SSD.
+No port, token or privacy grant changed. The compost maintenance job retains
+its existing guard. [Exact evidence](docs/ssd-storage-20261009.md).
+Older placement and revision entries below are historical.
+
 ## Current installed state — October 2, 2026, 19:38 UTC
 
 Runtime root: `/Users/macmini/penny`; canonical ledger: `~/.penny/transcripts.db`.

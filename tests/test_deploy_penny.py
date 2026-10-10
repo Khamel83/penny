@@ -115,3 +115,31 @@ def test_wrapped_export_rejects_unknown_wrapper_or_stale_target(tmp_path, monkey
     path.write_bytes(plistlib.dumps(data))
     with pytest.raises(deploy.DeploymentError, match='runtime_path_mismatch'):
         deploy.installed('com.penny.export')
+
+
+@pytest.mark.parametrize("label", deploy.LABELS)
+def test_all_penny_jobs_preserve_known_volume_guard(tmp_path, monkeypatch, label):
+    path = make_installed(tmp_path, monkeypatch, label, deploy.ENTRYPOINTS[label])
+    data = plistlib.loads(path.read_bytes())
+    data["ProgramArguments"] = [
+        "/opt/homebrew/bin/python3",
+        str(tmp_path / ".local/libexec/compost/with-storage-volume.py"),
+        *data["ProgramArguments"],
+    ]
+    path.write_bytes(plistlib.dumps(data))
+    assert deploy.installed(label) == (path, data)
+    data["ProgramArguments"][1] = "/tmp/unknown-wrapper.py"
+    path.write_bytes(plistlib.dumps(data))
+    with pytest.raises(deploy.DeploymentError, match="runtime_path_mismatch"):
+        deploy.installed(label)
+
+
+@pytest.mark.parametrize('label', deploy.LABELS)
+def test_penny_ssd_guard_allows_neutral_launch_directory(tmp_path, monkeypatch, label):
+    path = make_installed(tmp_path, monkeypatch, label, deploy.ENTRYPOINTS[label])
+    data = plistlib.loads(path.read_bytes())
+    data['ProgramArguments'] = ['/opt/homebrew/bin/python3',
+        str(deploy.ROOT / 'scripts/storage_guard.py'), *data['ProgramArguments']]
+    data['WorkingDirectory'] = str(tmp_path)
+    path.write_bytes(plistlib.dumps(data))
+    assert deploy.installed(label) == (path, data)

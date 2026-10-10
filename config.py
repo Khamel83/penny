@@ -225,7 +225,7 @@ def get_config() -> Config:
             "PENNY_ARCHIVE_MIRROR_ROOT",
             archive_section.get(
                 "mirror_root",
-                "~/Library/Mobile Documents/com~apple~CloudDocs/Penny Archive",
+                "/Volumes/2TB_SSD/AI/Penny/archive-mirror",
             ),
         )
     ).expanduser()

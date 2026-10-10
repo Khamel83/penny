@@ -1,5 +1,25 @@
 # Penny handoff
 
+## Current checkpoint — October 9, 2026
+
+Done: immediate SSD relocation, checksum verification, SQLite integrity check,
+SSD mount guards and restored continuous services. Internal disk free space is
+26 GiB; SSD approximately 37 GiB. Actual checkout is
+`/Volumes/2TB_SSD/penny-runtime`; home paths resolve to SSD. Owner edits remain.
+[Evidence and private receipt location](docs/ssd-storage-20261009.md).
+
+In flight: source publication/review of this scoped storage correction. Runtime
+configuration is installed; old component revision stamps are retained.
+Still open: retry retention [#112](https://github.com/Khamel83/penny/issues/112)
+and the pre-existing uncertain Drop receipt. `/ready` is 503 for that same
+reason; archive, backup, SQLite, services and transcription are ready.
+
+Next verification: `curl -s http://127.0.0.1:10311/health`,
+`curl -s http://127.0.0.1:5678/ready`, and
+`df -h /System/Volumes/Data /Volumes/2TB_SSD`; inspect ordinary new receipts
+without replaying existing effects. Source review/merge is separate from the
+verified relocation and loaded runtime configuration.
+
 ## Current acceptance — October 4, 2026
 
 P01 is complete: three ordinary voice notes (772–774, October 2–3) used pinned
