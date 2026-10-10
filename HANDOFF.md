@@ -8,18 +8,22 @@ SSD mount guards, restored continuous services and fresh Voice Memos access. Int
 `/Volumes/2TB_SSD/penny-runtime`; home paths resolve to SSD. Owner edits remain.
 [Evidence and private receipt location](docs/ssd-storage-20261009.md).
 
-In flight: [PR113](https://github.com/Khamel83/penny/pull/113) is published;
-source review/merge remains pending. Runtime
-configuration is installed; old component revision stamps are retained.
+Source: [PR113](https://github.com/Khamel83/penny/pull/113) merged as
+`5d63847073dd00ac874611a8b0273611277b520b`. Runtime configuration is installed;
+old component revision stamps are retained.
 Still open: retry retention [#112](https://github.com/Khamel83/penny/issues/112)
-and the pre-existing uncertain Drop receipt. `/ready` is 503 for that same
+and transcript 779 uncertain Drop handoff, tracked in [Drop158](https://github.com/Khamel83/drop/issues/158). `/ready` is 503 for that same
 reason; archive, backup, SQLite, services and transcription are ready.
 
 Next verification: `curl -s http://127.0.0.1:10311/health`,
 `curl -s http://127.0.0.1:5678/ready`, and
 `df -h /System/Volumes/Data /Volumes/2TB_SSD`; inspect ordinary new receipts
-without replaying existing effects. Source review/merge is separate from the
-verified relocation and loaded runtime configuration.
+without replaying existing effects. Done for Drop158: named R2 sidecar/raw objects both 404; full event inventory
+has zero unarchived objects or matching attempt IDs. Note 779 is 64 minutes,
+marked needs_review. Next: owner preference for keep-local/skip versus retry
+is pending; no resend or waiver has been performed. Only a matching durable
+receipt can reconcile Penny. Current Drop status is healthy; one older handoff
+remains unresolved.
 
 ## Current acceptance — October 4, 2026
 
