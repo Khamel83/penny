@@ -9,7 +9,8 @@ are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
 system logs on SSD. Four continuous services run; scheduled backup is idle.
 SQLite integrity, archive, backup and transcription checks pass. `/ready`
 remains 503 for the same pre-existing uncertain Drop effect. No downstream
-receipt was manufactured. [Verification](docs/ssd-storage-20261009.md).
+receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record:
+[PR113](https://github.com/Khamel83/penny/pull/113), review/merge pending.
 Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
 
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.

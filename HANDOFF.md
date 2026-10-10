@@ -8,7 +8,8 @@ SSD mount guards and restored continuous services. Internal disk free space is
 `/Volumes/2TB_SSD/penny-runtime`; home paths resolve to SSD. Owner edits remain.
 [Evidence and private receipt location](docs/ssd-storage-20261009.md).
 
-In flight: source publication/review of this scoped storage correction. Runtime
+In flight: [PR113](https://github.com/Khamel83/penny/pull/113) is published;
+source review/merge remains pending. Runtime
 configuration is installed; old component revision stamps are retained.
 Still open: retry retention [#112](https://github.com/Khamel83/penny/issues/112)
 and the pre-existing uncertain Drop receipt. `/ready` is 503 for that same

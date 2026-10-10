@@ -5,7 +5,8 @@
 - [x] Remove Penny-owned state, archive, models, logs, cache, scratch and actual
   runtime checkout/environment from the internal disk; verify copied bytes,
   SQLite integrity and restored services. Internal free space is 26 GiB.
-  [Evidence](docs/ssd-storage-20261009.md).
+  [Evidence](docs/ssd-storage-20261009.md),
+  [PR113](https://github.com/Khamel83/penny/pull/113).
 - [ ] Add bounded retry retention on SSD while preserving pending review:
   https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
   is not implemented by this storage operation.
