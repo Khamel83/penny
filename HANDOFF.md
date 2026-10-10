@@ -11,19 +11,21 @@ SSD mount guards, restored continuous services and fresh Voice Memos access. Int
 Source: [PR113](https://github.com/Khamel83/penny/pull/113) merged as
 `5d63847073dd00ac874611a8b0273611277b520b`. Runtime configuration is installed;
 old component revision stamps are retained.
-Still open: retry retention [#112](https://github.com/Khamel83/penny/issues/112)
-and transcript 779 uncertain Drop handoff, tracked in [Drop158](https://github.com/Khamel83/drop/issues/158). `/ready` is 503 for that same
-reason; archive, backup, SQLite, services and transcription are ready.
+Done: owner-directed local retirement of note 779 Drop delivery. Audio,
+transcript and original failure evidence remain; no resend or fabricated
+acceptance. `/ready` HTTP 200 with zero unready components. Drop ready with
+uncertain=0, failed=0, pending=0 and skipped=1. Shared ASR healthy.
+[Evidence](docs/drop-owner-skip-779-20261010.md).
 
-Next verification: `curl -s http://127.0.0.1:10311/health`,
-`curl -s http://127.0.0.1:5678/ready`, and
-`df -h /System/Volumes/Data /Volumes/2TB_SSD`; inspect ordinary new receipts
-without replaying existing effects. Done for Drop158: named R2 sidecar/raw objects both 404; full event inventory
-has zero unarchived objects or matching attempt IDs. Note 779 is 64 minutes,
-marked needs_review. Next: owner preference for keep-local/skip versus retry
-is pending; no resend or waiver has been performed. Only a matching durable
-receipt can reconcile Penny. Current Drop status is healthy; one older handoff
-remains unresolved.
+In flight: [PR115](https://github.com/Khamel83/penny/pull/115) publishes explicit
+skipped-count reporting and this record;
+the scoped Doctor update is installed and 51 focused tests pass. Drop158
+is retired as owner-declined delivery. Retry retention #112 is separate
+previously tracked work; it is not a readiness blocker.
+
+Next: observe ordinary new captures. Recheck `curl -s
+http://127.0.0.1:5678/ready` and `curl -s http://127.0.0.1:10311/health`.
+Keep skipped 779 locally; do not requeue it automatically.
 
 ## Current acceptance — October 4, 2026
 
