@@ -63,7 +63,11 @@ label or date prefix is not recording identity and must never substitute
 another memo's audio. Pathless source rows stay indexed as missing audio;
 standalone files can still be captured by the separate safe disk scan.
 
-## Archive and iCloud mirror
+## Archive and mirror
+
+October 9 placement: future rebuildable mirror writes use the SSD. Historical
+iCloud trios are preserved. The trio/hash contract below applies to both;
+[storage evidence](ssd-storage-20261009.md) defines the current paths.
 
 Each audio-bearing canonical row may have one immutable local object and a
 complete `Penny Archive` mirror trio. Text-only, Maya, and Tasks rows may be

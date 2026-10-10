@@ -1,5 +1,9 @@
 # Penny
 
+Current Mac storage: Penny-owned state, runtime, models, logs, caches, scratch
+and future mirror writes live on the 2 TB SSD. Home paths are compatibility
+symlinks. See [verified placement](docs/ssd-storage-20261009.md).
+
 Penny is a local-first voice-capture pipeline for an Apple Watch, iPhone, and
 Mac. A capture is staged and written to the canonical SQLite ledger before any
 transcription, routing, or provider work. The current Phase A source is Voice
