@@ -24,8 +24,12 @@ when hosted review is delayed. Protected dirty runtime files remain intact.
 One uncertain item is transcript 779 (outbox 335), attempted October 8
 04:04:04 UTC during the earlier R2 incident. The frozen 50,334-byte payload
 is preserved in SSD SQLite. Its named Drop ID and payload hash have no OCI
-archive receipt; both private metadata/content APIs return 404. That does
-not prove absent R2 data. Current Drop status reports all five pieces and
+archive receipt; both private metadata/content APIs return 404. That did
+not alone prove absent R2 data. Subsequent installed OCI R2 readback found both
+named objects absent, no matching ID at any date, and 1,062 event keys all
+archived. Note 779 is 64 minutes and quality-held (`needs_review`); the owner
+asked not to spend forever. Keep the original safe; skip-versus-retry preference
+is pending and no resend was made. Current Drop status reports all five pieces and
 four consumers healthy. Filed [Drop158](https://github.com/Khamel83/drop/issues/158) for exact R2
 sidecar/raw readback and receipt-bound, duplicate-safe recovery. No resend,
 provider effect, ledger mutation or source-runtime change was made.

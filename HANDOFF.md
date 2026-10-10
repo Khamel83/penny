@@ -18,8 +18,10 @@ reason; archive, backup, SQLite, services and transcription are ready.
 Next verification: `curl -s http://127.0.0.1:10311/health`,
 `curl -s http://127.0.0.1:5678/ready`, and
 `df -h /System/Volumes/Data /Volumes/2TB_SSD`; inspect ordinary new receipts
-without replaying existing effects. Next for Drop158: check named R2 sidecar/raw objects and existing queue
-evidence; archive 404 alone must not trigger a resend. Only a matching durable
+without replaying existing effects. Done for Drop158: named R2 sidecar/raw objects both 404; full event inventory
+has zero unarchived objects or matching attempt IDs. Note 779 is 64 minutes,
+marked needs_review. Next: owner preference for keep-local/skip versus retry
+is pending; no resend or waiver has been performed. Only a matching durable
 receipt can reconcile Penny. Current Drop status is healthy; one older handoff
 remains unresolved.
 
