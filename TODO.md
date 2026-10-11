@@ -112,3 +112,7 @@ No input-gated implementation or acceptance task remains for the normal Penny
 voice-note path. Observe long-term stability during ordinary use; no new bulk
 benchmark or manufactured capture is required.
 <!-- janitor:end:todo -->
+
+## Owning repository plan
+
+Use [the ordered reconciliation](docs/REPO_PLAN.md) and [coordinator #116](https://github.com/Khamel83/penny/issues/116). It maps every observed open source record. Existing incomplete acceptance and holds remain in force.
