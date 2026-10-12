@@ -165,6 +165,17 @@ def test_word_timings_that_do_not_match_the_text_are_ignored():
     assert result.reason == "consecutive_token_repetition"
 
 
+def test_spoken_repeats_pass_when_an_unrelated_segment_has_no_words():
+    # One wordless segment must not discard the timings of every other segment.
+    text = "Opening words here. " + KAYAK_REPEATS_TEXT
+    segments = timed_segments(KAYAK_REPEATS_TEXT, spacing=0.4)
+    segments.insert(0, {"start": 0.0, "end": 1.0, "text": "Opening words here."})
+
+    result = evaluate_transcript(text, tolerant_restarts=True, segments=segments)
+
+    assert result.passed is True
+
+
 def test_transcription_accepts_parakeet_repeats_with_word_timings():
     from shared_whisper.backends import PARAKEET_ID, PARAKEET_REVISION
     from shared_whisper.protocol import WhisperResult

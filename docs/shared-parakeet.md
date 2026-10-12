@@ -29,10 +29,11 @@ acoustically aligned word starts show a decoder loop: the run has 20 or more
 repeats, or the repeats share a start, or their median start-to-start gap is
 under 0.12 s. A genuinely spoken repeated word (for example an ad read that
 says one brand eight times) occupies real speaking time and passes. Word
-timings are used only when they line up token-for-token with the transcript, so
-the Whisper path and records stored without word timings keep the structural
-rule unchanged. Existing
-Whisper quality-held records/policy are unchanged. A malformed output or severe
+pieces are aligned to the transcript token by token, so a segment without words
+leaves only its own tokens untimed and an untimed run keeps the structural
+rule. Whisper quality-held
+records/policy are unchanged, and records stored without word timings keep the
+structural rule. A malformed output or severe
 repetition-quality failure triggers at most one
 Whisper retry of a bounded upload (maximum 660 seconds including context).
 Longer flagged uploads return a review error, requiring an excerpt rather than

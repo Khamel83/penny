@@ -35,6 +35,10 @@ MAX_QUALITY_DETAIL_CHARACTERS = 255
 # than speech; a run this long is a loop even at speaking rate.
 REPETITION_TIMING_MIN_GAP_SECONDS = 0.12
 REPETITION_TIMING_LOOP_RUN = 20
+# Word pieces and the transcript's own tokenization can diverge slightly, and a
+# segment may carry no words at all. Alignment skips only this many stray pieces
+# before it treats a token as untimed.
+WORD_ALIGNMENT_LOOKAHEAD = 4
 
 _WEIGHT_FILENAMES = {
     "weights.npz",
@@ -469,31 +473,56 @@ def _normalized_tokens(text: str) -> list[str]:
 def _timed_word_tokens(segments: object) -> list[tuple[str, float]]:
     """Flatten wired word timings into one (token, start) pair per token.
 
-    Returns an empty list when the result carries no usable word timings, so a
-    caller falls back to the structural rule instead of guessing at timing.
+    Unreadable pieces are skipped rather than discarding the whole payload: a
+    segment without words, or a word without a usable start, leaves the tokens
+    it would have covered untimed, and an untimed run still fails.
     """
     if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
         return []
     timed: list[tuple[str, float]] = []
     for segment in segments:
         if not isinstance(segment, Mapping):
-            return []
+            continue
         words = segment.get("words")
         if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
-            return []
+            continue
         for word in words:
             if not isinstance(word, Mapping):
-                return []
+                continue
             start = word.get("start")
             if (
                 not isinstance(start, (int, float))
                 or isinstance(start, bool)
                 or not math.isfinite(start)
             ):
-                return []
+                continue
             for token in _normalized_tokens(str(word.get("word") or "")):
                 timed.append((token, float(start)))
     return timed
+
+
+def _aligned_word_starts(
+    tokens: Sequence[str], timed: Sequence[tuple[str, float]]
+) -> list[float | None]:
+    """Return the word start for each text token, or None when it is untimed."""
+    starts: list[float | None] = [None] * len(tokens)
+    text_index = 0
+    timed_index = 0
+    while text_index < len(tokens) and timed_index < len(timed):
+        if tokens[text_index] == timed[timed_index][0]:
+            starts[text_index] = timed[timed_index][1]
+            text_index += 1
+            timed_index += 1
+            continue
+        limit = min(timed_index + WORD_ALIGNMENT_LOOKAHEAD, len(timed))
+        match = timed_index + 1
+        while match < limit and timed[match][0] != tokens[text_index]:
+            match += 1
+        if match < limit:
+            timed_index = match
+        else:
+            text_index += 1
+    return starts
 
 
 def _identical_token_runs(tokens: Sequence[str]):
@@ -507,11 +536,13 @@ def _identical_token_runs(tokens: Sequence[str]):
 
 
 def _repetition_has_speaking_rate(
-    timed_tokens: Sequence[tuple[str, float]], start: int, end: int
+    starts: Sequence[float | None], start: int, end: int
 ) -> bool:
     """Return True only when every repeat is separated by real speaking time."""
-    starts = [timed_tokens[index][1] for index in range(start, end)]
-    gaps = [later - earlier for earlier, later in zip(starts, starts[1:])]
+    run = starts[start:end]
+    if any(value is None for value in run):
+        return False
+    gaps = [later - earlier for earlier, later in zip(run, run[1:])]
     if not gaps or min(gaps) <= 0:
         return False
     return statistics.median(gaps) >= REPETITION_TIMING_MIN_GAP_SECONDS
@@ -528,7 +559,9 @@ def evaluate_transcript(
     ``segments`` carries Parakeet's acoustically aligned word timings. On the
     tolerant (Parakeet) path a repeated run is only a quality failure when those
     timings show a loop: no speaking time between repeats, or an implausibly
-    long run. Without usable timings the structural failure is retained.
+    long run. Word pieces are aligned to the text token by token, so a segment
+    without words leaves only its own tokens untimed; untimed tokens keep the
+    structural failure.
     """
     if not text or not text.strip():
         return QualityResult(False, "empty_output")
@@ -540,10 +573,9 @@ def evaluate_transcript(
         return QualityResult(False, "empty_output")
 
     repetition_limit = 8 if tolerant_restarts else MAX_CONSECUTIVE_TOKEN_REPETITION
-    timed_tokens = _timed_word_tokens(segments) if tolerant_restarts else []
-    if [token for token, _ in timed_tokens] != tokens:
-        # Misaligned timings cannot describe the tokens under test.
-        timed_tokens = []
+    word_starts: Sequence[float | None] = [None] * len(tokens)
+    if tolerant_restarts:
+        word_starts = _aligned_word_starts(tokens, _timed_word_tokens(segments))
     for start, end, token in _identical_token_runs(tokens):
         length = end - start
         if length < repetition_limit:
@@ -554,9 +586,7 @@ def evaluate_transcript(
         ):
             continue
         if tolerant_restarts and length < REPETITION_TIMING_LOOP_RUN:
-            if timed_tokens and _repetition_has_speaking_rate(
-                timed_tokens, start, end
-            ):
+            if _repetition_has_speaking_rate(word_starts, start, end):
                 continue
         return QualityResult(False, "consecutive_token_repetition")
 

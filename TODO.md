@@ -14,8 +14,10 @@
   procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
 - [ ] Stop holding spoken word repeats on the Parakeet path and clear the held
   Waveform episode after deploy: https://github.com/Khamel83/penny/issues/111.
-  Implemented on this branch (timing-aware `consecutive_token_repetition`); merge,
-  deploy and the `atlas-whisper/audio` archive step are not done.
+  Source fixed on this branch (timing-aware `consecutive_token_repetition`, word
+  pieces aligned per token); the PR description carries the post-deploy
+  `atlas-whisper/audio` archive step. Merge, deploy and that archive step are not
+  done.
   [Evidence](docs/parakeet-repetition-timing-20261009.md).
 
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated

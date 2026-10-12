@@ -30,15 +30,66 @@ a repetition failure only when the aligned word starts show a decoder loop:
 - the median start-to-start gap of the run is under 0.12 s.
 
 `shared_whisper/server.py` passes `result.segments`; `transcribe_with_quality`
-passes the response segments when the wire type carries them. Word timings count
-only when they line up token-for-token with the transcript text; otherwise the
-previous structural rule is retained. The Whisper path, the low-diversity suffix
-signal, the bounded-excerpt rule for long uploads and stored records without word
-timings are unchanged.
+passes the response segments when the wire type carries them. Word pieces are
+aligned to the transcript token by token with a bounded lookahead, so a segment
+without words leaves only its own tokens untimed instead of discarding every
+timing; an untimed run keeps the previous structural failure. The Whisper path,
+the low-diversity suffix signal, the bounded-excerpt rule for long uploads and
+stored records without word timings are unchanged.
+
+## Pull request description
+
+Published with this change (the archive instruction is an acceptance criterion):
+
+```markdown
+Refs #111.
+
+## Summary
+
+Stop holding real spoken-word repeats on the Parakeet path so a two-hour episode
+is transcribed instead of held.
+
+## Change
+
+`evaluate_transcript(..., tolerant_restarts=True, segments=...)` now requires
+word-timing evidence of a decoder loop before it fails an identical-token run:
+the run has 20 or more repeats, any two repeats share a start, or the median
+start-to-start gap is under 0.12 s. Word pieces are aligned to the transcript
+locally, so one segment without words no longer discards every other timing. The
+Whisper path is unchanged.
+
+## Evidence
+
+- Kayak text, 8 repeats at 0.4 s spacing passes; the same text without timings
+  still fails.
+- 8 repeats at 0.0 s and 0.01 s spacing still return
+  `consecutive_token_repetition`.
+- 25 repeats at 0.4 s spacing still fail (a real loop).
+- A 7200 s Atlas upload with timed Parakeet repeats returns HTTP 200 with no
+  retry receipt.
+
+## Operator step after deploy
+
+Archive the held Waveform (MKBHD) episode in
+`/Volumes/2TB_SSD/atlas-whisper/audio/` (audio sha `9c9d84d7…`; retry receipt
+`~/.penny/asr-retries/9d9ba2c2-be55-4646-8db6-6a96e689bfd2/`), then confirm Atlas
+`/readiness` no longer reports the hold. Do not replay the recording or erase its
+receipt.
+
+## Merge danger
+
+Two-way door. The Whisper path and stored records without word timings are
+unchanged.
+
+## Remaining gates
+
+Source only. Deployment to the shared ASR service, the Atlas re-run of the held
+episode, that archive step and downstream delivery are not done here.
+```
 
 ## Verification
 
-Local suite on this branch: 779 passed, 2 skipped, 60 subtests
+Local suite on this branch: 780 passed, 2 skipped, 60 subtests
 (`python3 -m pytest -q --ignore=tests/test_apple_pilot.py`, minus one
 pre-existing environment failure noted below). New tests:
 
@@ -52,6 +103,9 @@ pre-existing environment failure noted below). New tests:
   — 25 repeats at 0.4 s spacing still fail.
 - `tests/test_transcript_quality.py::test_word_timings_that_do_not_match_the_text_are_ignored`
   — unaligned timings do not weaken the rule.
+- `tests/test_transcript_quality.py::test_spoken_repeats_pass_when_an_unrelated_segment_has_no_words`
+  — a wordless segment leaves only its own tokens untimed; the timed Kayak run
+  still passes.
 - `tests/test_parakeet_adapter.py::test_long_unbounded_parakeet_repeats_with_word_timing_are_not_held`
   — a 7200 s Atlas upload whose Parakeet result holds the Kayak run returns HTTP
   200 with no retry receipt; the existing no-word-timings test still returns
