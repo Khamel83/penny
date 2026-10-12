@@ -21,6 +21,16 @@ Next verification: `curl -s http://127.0.0.1:10311/health`,
 without replaying existing effects. Source review/merge is separate from the
 verified relocation and loaded runtime configuration.
 
+
+## Issue #110 source checkpoint — October 12
+
+The local candidate implements a guarded, ledger-backed owner skip for unresolved
+Drop rows and exposes `skipped_count` in metadata-only Doctor output. Focused
+tests cover validation, preserved evidence, claim/accepted protections, and
+readiness visibility. The candidate is not installed or deployed. Native CI,
+trusted exact-head review, merge, deployment, and downstream recovery remain
+pending. Refs #110.
+
 ## Current acceptance — October 4, 2026
 
 P01 is complete: three ordinary voice notes (772–774, October 2–3) used pinned

@@ -10,12 +10,14 @@ fetched default branch `origin/main` = `6e975d7fb7e2d67a49c544b138bd353f6d98e53e
 ("Reconcile all open work into the owning repository plan (#118)"); the local worktree branch
 `g2k/issue-110` is two commits behind that tip. Retained-candidate facts are read from
 `refs/pull/115/head` = `192aeb07e4548a46156967ba4d58ed4d1a3d5845` (no checkout, `git diff`
-only). No code, configuration, secret, issue, or follow-up issue was modified. This report is
-the only file written. The infra-side catalog (`Khamel83/infra:config/project-catalog.yml`,
-named in `INFRA.md`) and the OCI observer were not fetched or executed; no credentials, browser
-session, or file outside this worktree was accessed. The report is a research-v1 artifact: it
-identifies exact current source, gap and acceptance path, and deliberately makes no live
-runtime claim.
+only). At inspection, the worktree also contained staged source edits in `doctor.py` and
+`transcript_log.py`; this artifact records the origin/retained-candidate facts separately from
+that local candidate. No code, configuration, secret, issue, or follow-up issue was modified
+while collecting the original evidence. The infra-side catalog
+(`Khamel83/infra:config/project-catalog.yml`, named in `INFRA.md`) and the OCI observer were not
+fetched or executed; no credentials, browser session, or file outside this worktree was
+accessed. The report is a research-v1 artifact: it identifies exact current source, gap and
+acceptance path, and deliberately makes no live runtime claim.
 
 ## Question
 
@@ -157,6 +159,15 @@ Retained candidate (issue said "inspect current owning source and retained candi
   "installed readiness HTTP 200, zero unready components, Drop skipped=1", "only scoped Doctor
   counters were installed; only webhook was reloaded". No source revision or content hash is
   named, and the same reviewer pass flags exactly that traceability gap.
+
+The bounded local candidate now differs from that retained PR: `transcript_log.py`
+adds additive `owner_skip_ref`/`skipped_at` columns and
+`owner_skip_drop_delivery`, which requires a bounded decision reference and refuses
+accepted or live-claimed rows; `doctor.py` exposes `skipped_count` without counting
+skipped rows as pending, failed, or uncertain. Focused tests cover reference
+validation, evidence preservation, live-claim/accepted-row protection, and
+metadata-only Doctor visibility. This remains source-only until native CI, exact-head
+review, merge, deployment, and downstream acceptance.
 
 Post-issue record movement: `origin/main` advanced from `5d63847` to `6e975d7` via `cfcae61`
 ("docs: track unresolved Drop handoff 779 (#114)") and `6e975d7` ("Reconcile all open work

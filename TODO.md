@@ -13,6 +13,12 @@
 - [ ] Reconcile the pre-existing uncertain Drop receipt through its receipt-bound
   procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
 
+
+- [ ] Issue #110 source candidate: guarded owner-approved Drop skip and
+  metadata-only `skipped_count` are implemented locally with focused tests;
+  native CI, exact-head review/merge, deployment, and downstream recovery remain
+  pending. [Research](docs/research/g2k-issue-110.md). Refs #110.
+
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
 [previous TODO](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/TODO.md) and linked operational documents.

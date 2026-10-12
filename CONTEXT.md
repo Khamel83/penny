@@ -18,6 +18,16 @@ Current capture acceptance verified October 4, 2026; the repair checkpoint below
 The owner authorized completion of Penny repairs and self-review/normal merge
 when hosted review is delayed. Protected dirty runtime files remain intact.
 
+
+## Issue #110 source checkpoint — October 12
+
+The local source candidate adds an audited owner-approved Drop skip operation
+with additive ledger fields and reports skipped rows as metadata without treating
+them as pending, failed, or uncertain. Focused tests cover invalid references,
+evidence preservation, live-claim/accepted-row protection, and Doctor visibility.
+This is not installed or deployed; native CI, trusted exact-head review, merge,
+runtime deployment, and downstream recovery remain separate gates. Refs #110.
+
 ## Decisions
 
 Use one shared pinned Parakeet v3 primary, bounded Whisper second opinions and
