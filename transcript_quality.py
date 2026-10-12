@@ -35,10 +35,6 @@ MAX_QUALITY_DETAIL_CHARACTERS = 255
 # than speech; a run this long is a loop even at speaking rate.
 REPETITION_TIMING_MIN_GAP_SECONDS = 0.12
 REPETITION_TIMING_LOOP_RUN = 20
-# Word pieces and the transcript's own tokenization can diverge slightly, and a
-# segment may carry no words at all. Alignment skips only this many stray pieces
-# before it treats a token as untimed.
-WORD_ALIGNMENT_LOOKAHEAD = 4
 
 _WEIGHT_FILENAMES = {
     "weights.npz",
@@ -470,58 +466,50 @@ def _normalized_tokens(text: str) -> list[str]:
     return TOKEN_RE.findall(normalized)
 
 
-def _timed_word_tokens(segments: object) -> list[tuple[str, float]]:
-    """Flatten wired word timings into one (token, start) pair per token.
+def _aligned_word_starts(
+    tokens: Sequence[str], segments: object
+) -> list[float | None]:
+    """Align each segment's word timings to the matching transcript words.
 
-    Unreadable pieces are skipped rather than discarding the whole payload: a
-    segment without words, or a word without a usable start, leaves the tokens
-    it would have covered untimed, and an untimed run still fails.
+    Alignment is deliberately segment-local and conservative. A timing payload
+    that does not describe the transcript at its current segment boundary
+    cannot weaken a repetition hold later in the text.
     """
+    starts: list[float | None] = [None] * len(tokens)
     if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
-        return []
-    timed: list[tuple[str, float]] = []
+        return starts
+
+    text_index = 0
     for segment in segments:
         if not isinstance(segment, Mapping):
-            continue
+            return [None] * len(tokens)
+        segment_tokens = _normalized_tokens(str(segment.get("text") or ""))
         words = segment.get("words")
-        if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
-            continue
-        for word in words:
-            if not isinstance(word, Mapping):
-                continue
-            start = word.get("start")
-            if (
-                not isinstance(start, (int, float))
-                or isinstance(start, bool)
-                or not math.isfinite(start)
-            ):
-                continue
-            for token in _normalized_tokens(str(word.get("word") or "")):
-                timed.append((token, float(start)))
-    return timed
+        timed_tokens: list[tuple[str, float]] = []
+        if isinstance(words, Sequence) and not isinstance(words, (str, bytes)):
+            for word in words:
+                if not isinstance(word, Mapping):
+                    continue
+                start = word.get("start")
+                if (
+                    isinstance(start, (int, float))
+                    and not isinstance(start, bool)
+                    and math.isfinite(start)
+                ):
+                    timed_tokens.extend(
+                        (token, float(start))
+                        for token in _normalized_tokens(str(word.get("word") or ""))
+                    )
 
-
-def _aligned_word_starts(
-    tokens: Sequence[str], timed: Sequence[tuple[str, float]]
-) -> list[float | None]:
-    """Return the word start for each text token, or None when it is untimed."""
-    starts: list[float | None] = [None] * len(tokens)
-    text_index = 0
-    timed_index = 0
-    while text_index < len(tokens) and timed_index < len(timed):
-        if tokens[text_index] == timed[timed_index][0]:
-            starts[text_index] = timed[timed_index][1]
-            text_index += 1
-            timed_index += 1
-            continue
-        limit = min(timed_index + WORD_ALIGNMENT_LOOKAHEAD, len(timed))
-        match = timed_index + 1
-        while match < limit and timed[match][0] != tokens[text_index]:
-            match += 1
-        if match < limit:
-            timed_index = match
-        else:
-            text_index += 1
+        if not segment_tokens:
+            segment_tokens = [token for token, _ in timed_tokens]
+        end = text_index + len(segment_tokens)
+        if end > len(tokens) or list(tokens[text_index:end]) != segment_tokens:
+            return [None] * len(tokens)
+        if timed_tokens and [token for token, _ in timed_tokens] == segment_tokens:
+            for offset, (_, start) in enumerate(timed_tokens):
+                starts[text_index + offset] = start
+        text_index = end
     return starts
 
 
@@ -575,7 +563,7 @@ def evaluate_transcript(
     repetition_limit = 8 if tolerant_restarts else MAX_CONSECUTIVE_TOKEN_REPETITION
     word_starts: Sequence[float | None] = [None] * len(tokens)
     if tolerant_restarts:
-        word_starts = _aligned_word_starts(tokens, _timed_word_tokens(segments))
+        word_starts = _aligned_word_starts(tokens, segments)
     for start, end, token in _identical_token_runs(tokens):
         length = end - start
         if length < repetition_limit:

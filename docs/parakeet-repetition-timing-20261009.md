@@ -30,16 +30,16 @@ a repetition failure only when the aligned word starts show a decoder loop:
 - the median start-to-start gap of the run is under 0.12 s.
 
 `shared_whisper/server.py` passes `result.segments`; `transcribe_with_quality`
-passes the response segments when the wire type carries them. Word pieces are
-aligned to the transcript token by token with a bounded lookahead, so a segment
-without words leaves only its own tokens untimed instead of discarding every
-timing; an untimed run keeps the previous structural failure. The Whisper path,
-the low-diversity suffix signal, the bounded-excerpt rule for long uploads and
-stored records without word timings are unchanged.
+passes the response segments when the wire type carries them. Segment text and
+word timings are matched at each transcript boundary; a mismatched segment
+cannot lend timing evidence to a later repeated run. A segment without words
+leaves only its own tokens untimed; an untimed run keeps the previous structural
+failure. The Whisper path, the low-diversity suffix signal, the bounded-excerpt
+rule for long uploads and stored records without word timings are unchanged.
 
-## Pull request description
+## Candidate pull request description
 
-Published with this change (the archive instruction is an acceptance criterion):
+The source PR must carry the following description (including the archive instruction):
 
 ```markdown
 Refs #111.
@@ -54,9 +54,9 @@ is transcribed instead of held.
 `evaluate_transcript(..., tolerant_restarts=True, segments=...)` now requires
 word-timing evidence of a decoder loop before it fails an identical-token run:
 the run has 20 or more repeats, any two repeats share a start, or the median
-start-to-start gap is under 0.12 s. Word pieces are aligned to the transcript
-locally, so one segment without words no longer discards every other timing. The
-Whisper path is unchanged.
+start-to-start gap is under 0.12 s. Segment text and word timings are matched
+at each transcript boundary, so mismatched timings cannot weaken a later run.
+The Whisper path and records without word timings are unchanged.
 
 ## Evidence
 
@@ -89,10 +89,9 @@ episode, that archive step and downstream delivery are not done here.
 
 ## Verification
 
-Local suite on this branch: 780 passed, 2 skipped, 60 subtests
+Local suite on this branch: 781 passed, 2 skipped, 60 subtests
 (`python3 -m pytest -q --ignore=tests/test_apple_pilot.py`, minus one
 pre-existing environment failure noted below). New tests:
-
 - `tests/test_transcript_quality.py::test_spoken_word_repeats_with_word_timings_pass`
   — the Kayak text with eight repeats at 0.4 s spacing passes; the same text
   without word timings still fails.
@@ -106,6 +105,9 @@ pre-existing environment failure noted below). New tests:
 - `tests/test_transcript_quality.py::test_spoken_repeats_pass_when_an_unrelated_segment_has_no_words`
   — a wordless segment leaves only its own tokens untimed; the timed Kayak run
   still passes.
+- `tests/test_transcript_quality.py::test_mismatched_segment_cannot_lend_timing_to_a_later_repeat`
+  — a later matching repeat cannot borrow timings after a segment-boundary
+  mismatch.
 - `tests/test_parakeet_adapter.py::test_long_unbounded_parakeet_repeats_with_word_timing_are_not_held`
   — a 7200 s Atlas upload whose Parakeet result holds the Kayak run returns HTTP
   200 with no retry receipt; the existing no-word-timings test still returns

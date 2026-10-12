@@ -5,13 +5,15 @@
 Blocked on the owner/operator after deploy: archive the held Waveform (MKBHD)
 episode whose Parakeet repeats are real Kayak ad speech. The quality rule fix
 for [#111](https://github.com/Khamel83/penny/issues/111) is on the issue branch
-and locally tested, but its source PR is not published, merged or deployed. The
-PR description carries the archive step. After the reviewed change is deployed
+and locally tested; its latest source correction matches segment text and word
+timings at each transcript boundary, so unrelated timings cannot weaken a later
+repeat hold. The source PR is not published, merged or deployed. The PR
+description carries the archive step. After the reviewed change is deployed
 to the shared ASR service, archive the held episode in
 `/Volumes/2TB_SSD/atlas-whisper/audio/` (audio sha `9c9d84d7…`, retry receipt
 `~/.penny/asr-retries/9d9ba2c2-be55-4646-8db6-6a96e689bfd2/`) and confirm Atlas
-`/readiness` no longer reports the hold. Do not replay the recording or erase its
-receipt. [Change evidence](docs/parakeet-repetition-timing-20261009.md).
+`/readiness` no longer reports the hold. Do not replay the recording or erase
+its receipt. [Change evidence](docs/parakeet-repetition-timing-20261009.md).
 
 Recheck the source change locally:
 `python3 -m pytest -q tests/test_transcript_quality.py tests/test_parakeet_adapter.py`.

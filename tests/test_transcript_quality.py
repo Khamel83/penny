@@ -165,6 +165,16 @@ def test_word_timings_that_do_not_match_the_text_are_ignored():
     assert result.reason == "consecutive_token_repetition"
 
 
+def test_mismatched_segment_cannot_lend_timing_to_a_later_repeat():
+    text = "A valid memo first. " + ("kayak " * 8)
+    segments = timed_segments("unrelated words", spacing=0.4)
+    segments.append(timed_segments("kayak " * 8, spacing=0.4)[0])
+
+    result = evaluate_transcript(text, tolerant_restarts=True, segments=segments)
+
+    assert result.passed is False
+    assert result.reason == "consecutive_token_repetition"
+
 def test_spoken_repeats_pass_when_an_unrelated_segment_has_no_words():
     # One wordless segment must not discard the timings of every other segment.
     text = "Opening words here. " + KAYAK_REPEATS_TEXT
