@@ -1,243 +1,278 @@
-# Penny declared check and deployment contract — infra incident on `penny.doctor-readiness`
+# Penny declared check and deployment contract — infra incident `penny.doctor-readiness`
 
-Incident marker (verbatim, for traceability): `infra-incident:70f416e08012bef7550c690ec152cade6eac6763c3ce1d555d704a420f2dfac8:1`
-Issue: https://github.com/Khamel83/penny/issues/110 (state OPEN, label `g2k:acceptance-pending`)
-Refs #110
+Incident marker (verbatim, for traceability):
+`infra-incident:70f416e08012bef7550c690ec152cade6eac6763c3ce1d555d704a420f2dfac8:1`
+Issue: https://github.com/Khamel83/penny/issues/110 (OPEN, label `g2k:acceptance-pending`,
+created 2026-10-10T00:20:42Z, updated 2026-10-12T02:52:44Z). Refs #110.
 
-Scope of this worker: read-only investigation inside this worktree at
-`5d63847073dd00ac874611a8b0273611277b520b` (`origin/main`, also the worktree HEAD).
-No code, configuration, secret, issue, or follow-up issue was modified; this report
-is the only file written. The infra-side catalog (`Khamel83/infra:config/project-catalog.yml`,
-named in `INFRA.md`) and the OCI observer are outside this worktree and were not
-fetched or executed.
+Scope and method: read-only investigation inside this worktree. Source facts are read from the
+fetched default branch `origin/main` = `6e975d7fb7e2d67a49c544b138bd353f6d98e53e`
+("Reconcile all open work into the owning repository plan (#118)"); the local worktree branch
+`g2k/issue-110` is two commits behind that tip. Retained-candidate facts are read from
+`refs/pull/115/head` = `192aeb07e4548a46156967ba4d58ed4d1a3d5845` (no checkout, `git diff`
+only). No code, configuration, secret, issue, or follow-up issue was modified. This report is
+the only file written. The infra-side catalog (`Khamel83/infra:config/project-catalog.yml`,
+named in `INFRA.md`) and the OCI observer were not fetched or executed; no credentials, browser
+session, or file outside this worktree was accessed. The report is a research-v1 artifact: it
+identifies exact current source, gap and acceptance path, and deliberately makes no live
+runtime claim.
 
 ## Question
 
-1. Which check does the owning repository declare, and does it correspond to the
-   incident's `check_id` / `project_id` / `severity` / `declaration_hash`?
-2. What deployment contract does the repository declare for that check, and is it
-   currently satisfied?
-3. What does the declared check actually evaluate, and which current, documented
-   state would produce `failures: 3` as a *fresh* failure?
+1. Which check does the owning repository declare, and does it correspond to the incident's
+   `check_id` / `project_id` / `severity` / `declaration_hash`?
+2. What deployment contract does the repository declare for that check, and is it satisfied?
+3. What does the declared check evaluate, and which current, documented state produces
+   `failures: 3` as a *fresh* failure?
+4. Does a retained candidate already close the source-side gap, and what is actually left?
 
 Out of scope: changing the check, the catalog, the runtime, or the declarations.
 
 ## Sources or evidence
 
-Incident payload as given in the issue:
+Incident payload as given in issue #110:
 
 ```json
 {"check_id":"penny.doctor-readiness","declaration_hash":"5231cdb63a84213204f2b465f337d41681a7b5de492e1c2684f406854ac9fd01",
  "failures":3,"project_id":"penny","severity":"high"}
 ```
 
-Repository declarations (`homelab.yaml`, unchanged at HEAD: sha256
-`74a39a950a3e7e8da8eddb731be2072880f09dd2b7f5ed960d82a809c44941f9`):
+Repository declarations — `homelab.yaml` at `origin/main`, unchanged since 2026-08-10,
+sha256 `74a39a950a3e7e8da8eddb731be2072880f09dd2b7f5ed960d82a809c44941f9` (identical to the
+hash of the same file one commit earlier at `5d63847`, i.e. no declaration change in the two
+newest `main` commits):
 
-- `homelab.yaml:36-45` — health checks are `id: penny.doctor, type: readiness,
-  severity: high, repair_id: null` and `id: penny.backup, type: verification-receipt,
-  severity: high, repair_id: null`. There is no second readiness check.
-- `homelab.yaml:9-12` — `monitoring.state: observing`, `monitoring.source: penny-doctor`,
-  `monitoring.evidence: metadata-only`.
+- `homelab.yaml:36-45` — checks are `id: penny.doctor, type: readiness, severity: high,
+  repair_id: null` and `id: penny.backup, type: verification-receipt, severity: high,
+  repair_id: null`. There is no second readiness check and no literal `penny.doctor-readiness`.
+- `homelab.yaml:9-12` — `monitoring.state: observing`, `source: penny-doctor`,
+  `evidence: metadata-only`.
 - `homelab.yaml:13-18` — `runtime.production`: `host: macmini`, `managed_by: user-launchd`,
   `unit: penny`, `deployment_proof: exact-source-revision-plus-doctor`.
-- `homelab.yaml:46-50` — `event_sink: homelab-api:/observations`,
+- `homelab.yaml:47-50` — `event_sink: homelab-api:/observations`,
   `event_sink_status: target-only-unverified`, `evidence_policy: sanitized`.
-- `homelab.yaml:65-67` (operations) — `repair_ids: []`, `destructive_actions: disabled`.
-- `INFRA.md` janitor catalog block — infra authority is
-  `Khamel83/infra:config/project-catalog.yml`; this `INFRA.md` is the project's projection.
+- `homelab.yaml:66-67` — `operations.repair_ids: []`, `destructive_actions: disabled`.
+- `INFRA.md` janitor block — infra owns the catalog; this `INFRA.md` is the project projection.
 
-Declaration history (`git log -p --follow -- homelab.yaml`):
+Identity and history of the check id:
 
-- `cf22785` (2026-07-14) first declared the single check `id: penny.launchd, type: catalog,
-  severity: medium, repair_id: null`, with `managed_by: unknown`.
-- `90e63b1` (2026-08-10) replaced it with the current two checks (`penny.doctor` / readiness /
-  high, `penny.backup` / verification-receipt / high) and introduced
-  `managed_by: user-launchd` plus `deployment_proof: exact-source-revision-plus-doctor`.
-- `e01f5b7` (2026-08-10, last commit touching the file) changed only a credential
-  *reference name* (`hermes-notification-credential`); the checks block is unchanged since
-  `90e63b1`. `git log --all -S'doctor-readiness'` returns no commit at all.
+- `grep -rn "penny\.doctor-readiness"` over the worktree and
+  `git log --all -S'doctor-readiness'`: 0 matches. The literal id is infra-composed, not
+  repository text. It is consistent only with `project.id: penny` +
+  `monitoring.source: penny-doctor` + `check.type: readiness` (or `<check.id>-<check.type>`).
+  [INFERENCE] composition happens catalog-side; the repository claims nothing about it.
+- `git log -p --follow -- homelab.yaml`: `cf22785` (2026-07-14) declared one check
+  `penny.launchd` / `catalog` / `medium`; `90e63b1` (2026-08-10) replaced it with the current
+  two checks and `managed_by: user-launchd` + `deployment_proof:
+  exact-source-revision-plus-doctor`; `e01f5b7` (2026-08-10) changed only a credential
+  reference name. The checks block is unchanged since 2026-08-10.
+- `declaration_hash` reproduction attempt (all sha256, none matched): raw bytes of
+  `homelab.yaml` at every revision that contained it (`cf22785`, `90e63b1`, `b40a705`,
+  `9e27593`, `e01f5b7`, `5d63847`, `6e975d7`), stripped variants, the git-blob form
+  (`blob <len>\0<content>`), the `health:` block, the checks list, the single check as JSON
+  (multiple key orders/spacings/sorted variants), YAML→JSON of the document and of the check,
+  ordered separator-joinings of `{project_id, id, type, severity, repair_id}`, and the
+  composed id string. No candidate matched, so `declaration_hash` is computed over an
+  infra-side record schema not present here.
 
-Identity of the incident's check id:
+What the declared readiness check evaluates:
 
-- `grep -rn "penny\.doctor-readiness"` over the worktree: 0 matches. The literal
-  `penny.doctor-readiness` appears nowhere in the repository or anywhere in its history.
-- The only readiness declaration is `penny.doctor` / `readiness` / `high`, and it is the
-  only declaration consistent with `project_id: penny`, `severity: high`, and the
-  `-readiness` suffix under any composition of declared fields
-  (`<project.id>.<monitoring.source minus prefix>-<check.type>` = `penny` + `doctor` + `-readiness`,
-  or `<check.id>-<check.type>`). [INFERENCE] the catalog id is composed by infra from this
-  declaration; the repository makes no such claim itself.
-
-`declaration_hash` reproduction attempt (all sha256, none matched): raw file bytes at every
-revision that ever contained the file (`cf22785`, `90e63b1`, `b40a705`, `9e27593`, `e01f5b7`,
-HEAD), stripped variants, the git-blob form (`blob <len>\0<content>`), the `health:` block,
-the checks list, the single check as JSON (multiple key orders/spacings/sorted variants),
-YAML→JSON of the whole document and of the check, and ordered separator-joinings of
-`{project_id, id, type, severity, repair_id}` plus the composite id string. No candidate matched.
-Conclusion: `declaration_hash` is computed over an infra-side record schema not present in
-this repository, so it cannot confirm or refute drift from worktree bytes alone.
-
-What the declared check evaluates (the check's own policy):
-
-- `scripts/penny_doctor.py:1-6,45-61` — CLI exit status is stable for automation:
-  `0` ready, `1` degraded, `2` unready; output is metadata-only.
-- `README.md:88-104` — the installed caller's `/ready` is the operational readiness source;
-  `/ready` returns `200` for ready/degraded and `503` for unready.
-- `docs/reliability.md:143-160` — Doctor is read-only/metadata-only; current failures and
-  stale/unreadable source evidence remain readiness failures.
-- `doctor.py:691-709` — Drop probe: `state = 'unready' if uncertain or failed or age > 900`,
-  `reason = 'uncertain_effect'` when any Drop delivery row is `uncertain`.
-- `doctor.py:1163-1176` — Voice Memos policy: coverage gap, current terminal failures,
-  retryable failures ⇒ unready; historical acknowledged failures or unavailable rows ⇒
-  degraded (`historical_unavailable`), not ready.
-- `doctor.py:1177-1275` (archive, transcription, shared_whisper, apple_effects, maya, slack,
-  backup, services) — e.g. `apple_effects` `uncertain_count > 0` ⇒ unready, `failed_count > 0`
-  ⇒ unready, `migration_quarantine_count > 0` ⇒ unready, quarantined ⇒ degraded;
-  `backup` unverified/stale/timestamp-invalid ⇒ unready; `services` health-file staleness,
-  coverage gap, or launchd unavailability ⇒ unready.
+- `scripts/penny_doctor.py:1-6,45-61` — CLI exit status is stable for automation: `0` ready,
+  `1` degraded, `2` unready; output is metadata-only; any internal exception becomes an
+  unready report rather than leaking text/paths.
+- `doctor.py:691-710` (`_default_probe_drop`, `origin/main`) — reads `drop_deliveries`
+  read-only; `state = 'unready' if uncertain or failed or age > 900 else ('degraded' if
+  pending else 'ready')`, `reason = 'uncertain_effect'` when any row is `uncertain`. A
+  `skipped` row is already neither uncertain, nor failed, nor pending, so **merged source
+  does not count it** — there is no `skipped` handling in `doctor.py` on `origin/main`
+  (`git show origin/main:doctor.py | grep -n skipped` → empty).
+- `doctor.py:1169-1175` — Voice Memos: current terminal failures over the historical cutoff
+  ⇒ unready; historical-only failures or unavailable rows ⇒ `degraded`,
+  `historical_unavailable`.
+- `tests/test_drop_delivery.py:20-31` — `test_health_is_unready_for_uncertain_handoff` pins
+  the uncertain ⇒ unready contract.
 - `docs/capture-health.md:14-31` — the fixed `voice_memos.historical_failure_before` cutoff
-  (`config.toml:30` = `2026-09-22T16:45:38Z`) makes two pre-existing failures *historical*;
-  historical failures produce **degraded**, and "Do not advance the cutoff merely to make
-  health green". The cutoff lives in the checkout's `config.toml`
-  (`config.py:24`, relative to `config.py`), not in the observer's shell environment.
+  (`config.toml:30` = `2026-09-22T16:45:38Z`) makes two pre-existing failures historical;
+  historical failures produce degraded, and "Do not advance the cutoff merely to make health
+  green".
 
-Documented current runtime state (in-repo record, immediately before the incident):
+Documented current runtime state (in-repo record at `origin/main`, i.e. pre-skip):
 
-- `docs/ssd-storage-20261009.md:51-52` — "HTTP 503 remains due to `drop: uncertain_effect`,
-  also present in the saved pre-migration result"; `:64` — "Existing runtime component
-  revision stamps remain unchanged; this is not a full source release".
-- `docs/ssd-storage-20261009.md:49-51` — four continuous services running, shared ASR idle,
-  archive/backup/SQLite/services/transcription ready.
-- `CONTEXT.md:10-14`, `HANDOFF.md:11-17` — `/ready` 503 for the same pre-existing uncertain
-  Drop effect; PR113 source review/merge pending at that time.
-- `TODO.md:13-14` — open item: "Reconcile the pre-existing uncertain Drop receipt through its
-  receipt-bound procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done."
+- `CONTEXT.md` "Current storage decision and state — October 9" — "`/ready` remains 503 for
+  the same pre-existing uncertain Drop effect"; four continuous services run; SQLite,
+  archive, backup and transcription checks pass.
+- `HANDOFF.md` "Current checkpoint — October 9" — "`/ready` is 503 for that same reason";
+  Drop158 open; last-verified component revisions remain `6ccf2286` (three callers) and
+  `c341598c` (shared ASR/export), while `main` is `5d63847`.
+- `TODO.md:13-20` — transcript 779 / outbox 335 handoff unresolved "via
+  [Drop158](https://github.com/Khamel83/drop/issues/158)"; "/ready remains 503 for
+  `drop: uncertain_effect`. No replay done."; owner preference for skip vs retry pending.
 - `INFRA.md:44-53` — OCI `penny-health.timer` is the observation path; it invokes a bounded
   SSH Doctor that "does not inherit all launchd configuration, so its source is unknown and
-  Drop appears disabled"; its supervised run "recorded degraded with Apple quarantine,
-  historical Maya/Voice Memo exceptions and no unready component"; receipt path is
-  `/home/ubuntu/.local/state/penny-health/receipts/`. `INFRA.md:44-46` records that the
-  natural timer run recorded "the actual Apple provider failure".
-- Preserved non-ready states (`CONTEXT.md:50-52`, `TODO.md` completed entries): one synthetic
-  Apple quarantine, nine Maya dead letters, two old missing-audio failures, one unavailable
-  memo, held row 769, synthetic quarantine row 493.
+  Drop appears disabled"; the supervised run "recorded degraded with Apple quarantine,
+  historical Maya/Voice Memo exceptions and no unready component"; receipts live at
+  `/home/ubuntu/.local/state/penny-health/receipts/`. The natural 09:00 UTC run recorded the
+  actual Apple provider failure.
+- `CONTEXT.md` "Verified state" — retained non-ready states: one synthetic Apple quarantine,
+  nine Maya dead letters, two old missing-audio failures, one unavailable memo, held row 769.
 
-Deployment-contract evidence:
+Deployment contract evidence:
 
-- `docs/macmini-deployment.md:1-6,67-82` — record the exact pushed SHA, runtime checkout SHA,
-  launchd labels and Doctor result before calling a deployment complete; deploy with
-  `venv/bin/python scripts/deploy_penny.py --apply` then the read-only re-run; "A Git push
-  alone is not deployment".
-- `docs/macmini-deployment.md:109-125` — acceptance evidence requires "pushed SHA equals the
-  runtime checkout SHA", registered labels (not itself a health result), `penny doctor`
-  exit/status, `/health` + `/ready` responses, one shared-Whisper owner, bound backup
-  verification receipt, and ingress 401/413 behaviour.
-- `scripts/deploy_penny.py:49-56` — `pushed_revision()` refuses a dirty checkout, a non-`main`
-  branch, or a HEAD that differs from `origin/main`; `:187-211` stamps the revision, reloads
-  labels, and reports `revision_drift` when a loaded `PENNY_SOURCE_REVISION` differs.
-- Installed-state record (`INFRA.md:21-33`, `CONTEXT.md:34-37`): callers at
-  `6ccf2286a2c6af1919e43b4eaba72465f8eb614b`, shared ASR and export at
-  `c341598c484734ace251944f3f7ca56ab0bb0009`, while merged `main` is
-  `5d63847073dd00ac874611a8b0273611277b520b`
-  ("fix(storage): keep Penny data and runtime on the SSD (#113)", committer date
-  2026-10-09 18:00:23 -0700 = 2026-10-10T01:00:23Z).
-- Timing: the incident issue was created 2026-10-10T00:20:42Z, ~40 minutes *before* PR113's
-  merge commit landed on `main`; the SSD relocation described by it was already installed at
-  runtime ("runtime configuration is installed; old component revision stamps are retained",
-  `HANDOFF.md:11-14`).
+- `docs/macmini-deployment.md:1-6` — the runbook "does not claim that the current host is on
+  this revision. Record the exact pushed SHA, runtime checkout SHA, launchd labels, and
+  Doctor result before calling a deployment complete."
+- `docs/macmini-deployment.md:109-125` — acceptance evidence requires pushed SHA == runtime
+  checkout SHA, registered labels (not itself a health result), `penny doctor` exit/status and
+  component reason codes, `/health` and `/ready` responses, one shared-Whisper owner, a bound
+  backup verification receipt, and ingress 401/413 behavior.
+- `scripts/deploy_penny.py:49-56,126,211` — `pushed_revision()` requires a clean checkout on
+  `main` equal to `origin/main`; the deploy stamps `PENNY_SOURCE_REVISION` into every label
+  and reports `revision_drift` when a loaded value differs. "A Git push alone is not
+  deployment" (`docs/macmini-deployment.md:82`).
+- CI is not the check: `.github/workflows/test.yml` runs `pytest tests/` and
+  `scripts/trust_check.py` on hosted runners for `python-version: ["3.11","3.12"]`; there is
+  no doctor/readiness job, and `scripts/trust_check.py:280-285` fails the build if a private
+  `health-check.yml` workflow is reintroduced. Repository CI therefore cannot satisfy or
+  break `penny.doctor-readiness`.
+
+Retained candidate (issue said "inspect current owning source and retained candidate"):
+
+- `refs/pull/115/head` = `192aeb07e4548a46156967ba4d58ed4d1a3d5845`, branch
+  `fix/drop-owner-skip-779`, PR #115 "fix(health): record owner-skipped Drop delivery and
+  restore readiness", OPEN, base `cfcae61`, merge state CLEAN, last updated
+  2026-10-10T07:03:01Z.
+- Its source diff against `origin/main` in `doctor.py` is two lines only: add
+  `"skipped_count"` to `_SAFE_DETAIL_KEYS` and report `skipped_count=states.get('skipped', 0)`
+  in the Drop probe; plus `tests/test_drop_delivery.py::test_owner_skipped_handoff_is_visible_and_never_resent`
+  and documentation edits (`docs/drop-delivery.md`, `docs/drop-owner-skip-779-20261010.md`,
+  `CONTEXT.md`, `HANDOFF.md`, `TODO.md`). It does not change the unready computation.
+- Two OCI reviewer passes are on record for that head: `findings` at `21348c3e` (MEDIUM: any
+  row reaching `skipped` turns `/ready` green through an unguarded transition; LOW: dropped
+  SSD-mount/no-replay guidance; LOW: October 9 section rewritten with October 10 facts; LOW:
+  Drop158 closure asserted without evidence) and `blocked` at `192aeb07` (MEDIUM: contradictory
+  October 9 no-mutation claim; MEDIUM: no audit linkage enforced on skips; LOW: installed
+  runtime not traceable to the reviewed head; LOW: Drop158 status wording). PR #115 is
+  therefore unmerged and currently blocked.
+- PR #115's body claims a runtime effect already occurred out of band: owner skip of note 779,
+  "installed readiness HTTP 200, zero unready components, Drop skipped=1", "only scoped Doctor
+  counters were installed; only webhook was reloaded". No source revision or content hash is
+  named, and the same reviewer pass flags exactly that traceability gap.
+
+Post-issue record movement: `origin/main` advanced from `5d63847` to `6e975d7` via `cfcae61`
+("docs: track unresolved Drop handoff 779 (#114)") and `6e975d7` ("Reconcile all open work
+into the owning repository plan (#118)"). Those commits change only `CONTEXT.md`, `HANDOFF.md`,
+`TODO.md`, and add `docs/REPO_PLAN.md`; `docs/REPO_PLAN.md` parks #110 as "Executor hold
+remains" and lists PR #115 as needing exact-head review before any transcript-779 claim.
 
 ## Conclusion
 
-F1. The owning repository does declare a readiness check that matches the incident:
+F1. The owning repository does declare the readiness check the incident refers to:
 `homelab.yaml:38-41` — `penny.doctor`, `type: readiness`, `severity: high`, `repair_id: null`,
-with `monitoring.source: penny-doctor` and `evidence: metadata-only`. The literal
-`penny.doctor-readiness` is nowhere in the repository or its history; it is infra's composed
-id for this declaration. `penny.backup` (verification-receipt) is the only other declared check.
+under `monitoring.source: penny-doctor`, `evidence: metadata-only`. The literal
+`penny.doctor-readiness` appears nowhere in the repository or its history; it is infra's
+composed id. `penny.backup` is the only other declared check, and the declaration file has not
+changed since 2026-08-10, including across the two commits that landed after the incident.
 
-F2. There is no evidence of declaration drift. The checks block has been stable since
-2026-08-10 (`90e63b1`); the last edit to `homelab.yaml` changed only a credential reference
-name. [INFERENCE] `declaration_hash` cannot be reproduced from any in-worktree
-representation of the declaration, so it is computed by infra over its own record schema —
-its value neither confirms nor refutes a mismatch and must be checked catalog-side.
+F2. There is no evidence of declaration drift from the worktree. `homelab.yaml` at
+`origin/main` hashes to
+`74a39a950a3e7e8da8eddb731be2072880f09dd2b7f5ed960d82a809c44941f9`, and its checks block is
+unchanged since `90e63b1`. [INFERENCE] `declaration_hash` cannot be reproduced from any
+in-worktree representation, so it is computed by infra over its own record schema; its value
+neither confirms nor refutes a mismatch and must be checked catalog-side.
 
-F3. The declared check is a runtime readiness observation, not a build/lint check. `failures: 3`
-therefore records failing *readiness observations* of the deployed Penny, reached through the
-OCI `penny-health.timer` observer (`INFRA.md:44-53`) and/or the installed `/ready` surface.
-The repository's own CI (`.github/workflows/test.yml`) has no doctor/readiness job, and
-`scripts/trust_check.py:280-285` fails the build if a private `health-check.yml` workflow is
-reintroduced, so the check cannot be satisfied or broken by repository CI.
+F3. The declared check is a runtime readiness observation, not a build/lint check.
+`failures: 3` records three failing *readiness observations* of the deployed Penny, taken
+through the OCI `penny-health.timer` observer and/or the installed `/ready` surface.
+Repository CI has no doctor/readiness job (`test.yml`; `trust_check.py:280-285`), so this check
+cannot be satisfied by a source-only change.
 
-F4. On its own declared terms the check is legitimately red today, for two independent,
+F4. On its declared terms the check is legitimately and repeatedly red, for two independent,
 documented reasons:
-- Unready: `/ready` is `503` because a Drop delivery row is `uncertain`
-  (`doctor.py:706-707` ⇒ `reason: uncertain_effect`, `state: unready`), and that condition is
-  still open in `TODO.md:13-14` with "No replay done". An unready Doctor exits `2`.
-- Not fully ready even when that clears: the preserved historical exceptions
-  (`docs/capture-health.md:14-31`, `CONTEXT.md:50-52`) keep components at `degraded`
-  (`historical_unavailable`, `dead_letter`, `quarantine`), Doctor exits `1`, and the observer
-  path additionally sees "Drop appears disabled" because it does not inherit launchd
-  configuration (`INFRA.md:49-51`). Any readiness check keyed to exit `0`/`200` therefore
-  fails repeatedly and by design until either the uncertain Drop effect is reconciled or the
-  history is explicitly re-reviewed — and `docs/capture-health.md:23-24` forbids clearing
-  history merely to make health green.
+- *Unready, pre-skip.* At incident time `/ready` was `503` because one `drop_deliveries` row was
+  `uncertain` (`doctor.py:705-707` ⇒ `reason: uncertain_effect`, `state: unready`; pinned by
+  `tests/test_drop_delivery.py:20-31`), and that condition is still open in `TODO.md:13-20`
+  ("No replay done"). An unready Doctor exits `2`.
+- *Never-ready through the observer path, even after the Drop row clears.* The observer's
+  bounded SSH Doctor does not inherit launchd configuration, so Drop appears disabled, and its
+  supervised run recorded **degraded** from a retained Apple quarantine plus historical
+  Maya/Voice Memo exceptions (`INFRA.md:44-53`; `CONTEXT.md` "Historical exceptions remain
+  visible"). Degraded is not ready. Any readiness check keyed to a ready-only threshold
+  therefore fails repeatedly and by design, on retained history that
+  `docs/capture-health.md:23-24` forbids clearing merely to make health green.
+[INFERENCE] The two reasons above are indistinguishable from worktree evidence when only
+`failures: 3` is known; both are consistent with it, and the observed severity `high` matches
+the declaration.
 
-F5. The declared deployment contract (`deployment_proof: exact-source-revision-plus-doctor`,
-`homelab.yaml:18`; elaborated in `docs/macmini-deployment.md`) is **not satisfied** for current
-`main`. Merged source is `5d63847` (PR #113, merged 2026-10-10T01:00:23Z); installed component
-revisions remain `6ccf2286` (callers) and `c341598c` (shared ASR/export), and the SSD
-relocation itself is documented as "not a full source release"
-(`docs/ssd-storage-20261009.md:64`). `deploy_penny.py` stamps and verifies exact revisions, so
-the "exact reviewed merged source is deployed" acceptance line in issue #110 cannot be closed
-by documentation alone.
+F5. The declared deployment contract (`deployment_proof:
+exact-source-revision-plus-doctor`, `homelab.yaml:18`; elaborated in
+`docs/macmini-deployment.md`) is **not satisfied** for current `main`. Merged source is
+`6e975d7` (upstream tip), installed component revisions remain `6ccf2286` (callers) and
+`c341598c` (shared ASR/export), and the SSD relocation itself is recorded as "not a full
+source release" (`docs/ssd-storage-20261009.md:64`). PR #115's own reviewer flagged that the
+claimed installed Doctor change names no source revision, so the current installed state cannot
+be tied to any reviewed head. The issue's "exact reviewed merged source is deployed"
+acceptance line cannot be closed by documentation or by an unmerged candidate.
 
-F6. Nothing in the repository treats the incident as a declaration/catalog defect: no repair id
-is declared (`repair_id: null`, `operations.repair_ids: []`,
-`destructive_actions: disabled`), and `event_sink_status: target-only-unverified` plus
-`evidence: metadata-only` mean the repository only publishes sanitized metadata observations.
-The failure is an honest red on a real, bounded, already-tracked runtime condition — not a
-missing check, not a stale declaration, and not something a source-only change fixes.
+F6. No source change is required to make a *skipped* Drop row non-blocking: `origin/main`'s
+probe already ignores rows whose status is `skipped` because only `uncertain`/`failed`/fresh
+`pending` are counted (`doctor.py:691-710`; `grep skipped` on `origin/main:doctor.py` → empty).
+The retained candidate PR #115 is therefore not the readiness fix it is titled to be — it adds
+a `skipped_count` visibility counter, a regression test and record edits. Its "restore
+readiness" effect is attributable to the out-of-band SQL status transition on outbox 335, not
+to the diff. That transition is exactly what the two independent reviewer passes blocked on:
+an unguarded `skipped` status with no enforced owner-decision/audit linkage can turn `/ready`
+green for a genuinely uncertain or failed delivery.
 
-F7. Unproven here, and left explicitly unknown rather than inferred: (a) whether infra's
-`readiness` threshold is exit `0` only or exit `2` only — the two readings correspond to F4's
-two reasons and are indistinguishable from worktree evidence; (b) what the three failing
-observations were and when; (c) the catalog-side `declaration_hash` value/derivation; (d) any
-live runtime state newer than `docs/ssd-storage-20261009.md` (this worker has no Mac/OCI access
-and must not create one).
+F7. There is no in-repository declaration defect to repair: `repair_id: null`,
+`operations.repair_ids: []`, `destructive_actions: disabled`, `evidence: metadata-only`,
+`event_sink_status: target-only-unverified` mean the repository only publishes sanitized
+metadata observations of a real, bounded, already-tracked runtime condition. The honest source
+deliverable for #110 is this bounded research artifact plus the retained candidate's completion
+under exact-head review — not a new platform or an invented fix.
+
+F8. Unproven here, and left explicitly unknown rather than inferred: (a) whether infra's
+`readiness` threshold is ready-only or treats degraded as healthy — the two readings correspond
+to F4's two reasons; (b) the three failing observations' times and payloads; (c) the
+catalog-side `declaration_hash` value/derivation; (d) whether the claimed runtime skip and
+partial Doctor install actually occurred, and under which source revision (this worker has no
+Mac/OCI access and must not create one).
 
 ## Next action
 
-Ordered; each step names the evidence it must produce. No step is a closing action on #110, and
-the reference line above stays non-closing (`Refs #110`).
+Ordered; each step names the evidence it must produce. No step closes #110, and the reference
+line at the top stays non-closing (`Refs #110`); `g2k:acceptance-pending` is retained.
 
-1. Infra/catalog owner confirms the composed id and hash: verify in
-   `Khamel83/infra:config/project-catalog.yml` that the `penny` entry contains
-   `penny.doctor` (`type: readiness`, `severity: high`) whose composed id is
-   `penny.doctor-readiness`, and that its `declaration_hash`
-   (`5231cdb6…4ac9fd01`) reproduces from that catalog record, not from `homelab.yaml`
-   bytes (`homelab.yaml` at HEAD hashes to
-   `74a39a950a3e7e8da8eddb731be2072880f09dd2b7f5ed960d82a809c44941f9`). If it does not
-   reproduce, treat it as catalog drift — the only finding that would make this a
-   declaration issue rather than a runtime readiness failure.
+1. Infra/catalog owner confirms the composed id and hash: in
+   `Khamel83/infra:config/project-catalog.yml`, the `penny` entry's
+   `penny.doctor` (`type: readiness`, `severity: high`) must compose to `penny.doctor-readiness`
+   and its `declaration_hash` must reproduce from that catalog record — not from `homelab.yaml`
+   bytes, which hash to `74a39a95…c44941f9`. Non-reproduction is the only finding that would
+   make this a declaration issue rather than a runtime readiness failure.
 2. Infra owner states which Doctor outcome counts as failure for a `readiness` check
-   (exit `0` only, or exit `2` only). This decides whether F4's `503`/unready reason, its
-   permanently-degraded historical reasons, or both are the reported failure.
-3. Resolve the open runtime condition that makes `/ready` unready: run the receipt-bound
-   reconciliation `venv/bin/python scripts/export_drop.py --reconcile --apply`
-   (`scripts/export_drop.py:54,71-73` → `drop_delivery.reconcile_pending_drop`), which is
-   read-only network reconciliation against Drop plus a guarded local receipt write, and
-   record the before/after `drop_deliveries` status counts. Do not replay or fabricate a
-   receipt; if the row cannot be reconciled, it stays `uncertain` and `TODO.md:13-14` stands.
-4. Deploy the exact reviewed merged source and capture the deployment proof, per
-   `docs/macmini-deployment.md:67-82,109-125`: on the Mac mini runtime checkout,
-   `venv/bin/python scripts/deploy_penny.py --apply`, then the read-only re-run, then record
-   pushed SHA == runtime checkout SHA, the five loaded `PENNY_SOURCE_REVISION` values, and the
-   Doctor output; finally `curl -fsS http://127.0.0.1:5678/ready` and
-   `http://127.0.0.1:10311/health`. Metadata-only evidence; no transcript/audio bodies.
-5. Re-observe and record one fresh observer receipt (the `penny-health.timer` path in
-   `INFRA.md:44-53`) showing the post-deploy Doctor overall state and per-component reason
-   codes, so acceptance can be judged on fresh merged source rather than the pre-merge state.
-6. Keep #110 open with `g2k:acceptance-pending` until steps 3-5 give deployed exact-source
-   evidence plus downstream recovery verification. If step 3 is the only blocker left and it is
-   explicitly accepted as a retained exception, that decision is the owner's and must be
-   recorded in `CONTEXT.md`/`TODO.md` — it is not a worker action.
+   (ready-only, or unready-only). This decides whether F4's post-skip observer degradation, its
+   pre-skip uncertain reason, or both are the reported failure.
+3. Land the retained candidate correctly rather than reopening it: PR #115 must either add a
+   guarded skip transition that requires an owner-decision reference and refuses rows in
+   `failed`/`uncertain` state without it (or explicitly document the transition as a manual
+   operator procedure whose rows `/ready` must not silently ignore), plus a negative-control
+   test, or it must be closed as superseded. Verify the exact head, native CI, and trusted
+   exact-head review; do not merge on the existing `blocked` verdict.
+4. Resolve the underlying runtime condition through its receipt-bound path, not by waiver: the
+   skipped/uncertain transcript 779 / outbox 335 row keeps its frozen bytes; owner preference
+   for keep-local-skip versus retry is recorded in `TODO.md:13-20` as still pending, and
+   Drop158 is the tracking record. Record before/after `drop_deliveries` status counts from the
+   installed ledger; no replay, resend, or fabricated receipt.
+5. Deploy the exact reviewed merged source and capture the deployment proof per
+   `docs/macmini-deployment.md:67-82,109-125`: on the Mac mini runtime checkout run
+   `venv/bin/python scripts/deploy_penny.py --apply` (inspect `--help` first), then the
+   read-only re-run, then record pushed SHA == runtime checkout SHA, the five loaded
+   `PENNY_SOURCE_REVISION` values, and Doctor exit/status with component reason codes; finally
+   `curl -fsS http://127.0.0.1:5678/ready` and `http://127.0.0.1:10311/health`. Metadata-only
+   evidence; no transcript or audio bodies.
+6. Re-observe and record one fresh observer receipt on the `penny-health.timer` path
+   (`INFRA.md:44-53`) showing post-deploy overall state and per-component reason codes, so
+   acceptance is judged on fresh merged source rather than the pre-merge state.
+7. Keep #110 open with `g2k:acceptance-pending` until steps 4-6 give deployed exact-source
+   evidence plus downstream recovery verification. If step 4's retained exception is the only
+   remaining blocker, accepting it is the owner's decision and must be recorded in
+   `CONTEXT.md`/`TODO.md` — it is not a worker action.
