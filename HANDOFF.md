@@ -20,11 +20,21 @@ old component revision stamps are retained.
 Retry retention [#112](https://github.com/Khamel83/penny/issues/112) is
 implemented in source in this worktree and awaits review/merge: receipts default
 to `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while the SSD volume is
-mounted, a terminal receipt drops its `audio.*` copy and keeps `receipt.json`,
-receipt directories older than 14 days are pruned by directory age, and
-receipts still pending operator review are kept. Focused verification:
-`python3 -m pytest -q tests/test_retry_receipt.py` (10 passed). Runtime
+mounted, and receipt creation fails closed when it is unavailable unless
+`PENNY_ASR_RETRY_DIR` explicitly selects an absolute override. A terminal
+receipt drops its `audio.*` copy and keeps `receipt.json`, receipt directories
+older than 14 days are pruned by directory age, and receipts still pending
+operator review are kept. Focused verification:
+`python3 -m pytest -q tests/test_retry_receipt.py` (11 passed). Runtime
 configuration is installed; old component revision stamps are retained.
+Related ASR/launchd/server/reliability tests passed: `python3 -m pytest -q
+tests/test_retry_receipt.py tests/test_parakeet_adapter.py
+tests/test_shared_whisper_launchd.py tests/test_shared_whisper_server.py
+tests/test_reliability_contracts.py` (48 passed). The repository-wide pytest
+run is not clean in this worker environment: collection fails because
+`tests.test_shared_whisper_server` is not importable from `test_apple_pilot`;
+the trust check also lacks pytest in its `/usr/bin/python3` runner and reports
+an unrelated transcript-contract failure.
 Still open: deployment of the retention change and the pre-existing uncertain
 Drop receipt. `/ready` is 503 for that same
 reason; archive, backup, SQLite, services and transcription are ready.

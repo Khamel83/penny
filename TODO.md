@@ -9,10 +9,12 @@
   [PR113](https://github.com/Khamel83/penny/pull/113).
 - [x] Add bounded retry retention on SSD while preserving pending review:
   https://github.com/Khamel83/penny/issues/112. Source now selects the SSD
-  retry root while mounted, releases terminal `audio.*`, and prunes receipt
-  directories older than 14 days without pruning pending-review receipts.
-  Focused evidence: `python3 -m pytest -q tests/test_retry_receipt.py`
-  (10 passed). Deployment remains pending review/merge.
+  retry root while mounted and fails closed when it is unavailable unless
+  `PENNY_ASR_RETRY_DIR` explicitly selects an absolute path, releases terminal
+  `audio.*`, and prunes receipt directories older than 14 days without pruning
+  pending-review receipts. Focused evidence:
+  `python3 -m pytest -q tests/test_retry_receipt.py` (11 passed).
+  Deployment remains pending review/merge.
 - [ ] Resolve transcript 779 uncertain Drop handoff via [Drop158](https://github.com/Khamel83/drop/issues/158).
   Frozen bytes remain in Penny; archive metadata/content both 404 and exact
   ledger lookup has zero matches. Both named R2 objects are absent; full event inventory has no unarchived

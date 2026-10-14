@@ -13,7 +13,6 @@ import uuid
 
 SSD_VOLUME = Path("/Volumes/2TB_SSD")
 SSD_RETRY_ROOT = SSD_VOLUME / "penny-asr-runtime" / "asr-retries"
-HOME_RETRY_ROOT = Path("~/.penny/asr-retries")
 TERMINAL_STATES = frozenset({"retry_completed", "retry_failed"})
 PENDING_REVIEW_STATES = frozenset(
     {"quality_review", "quality_review_requires_bounded_excerpt"}
@@ -23,11 +22,7 @@ SECONDS_PER_DAY = 86400
 
 
 def ssd_root_available() -> bool:
-    """True only while the external SSD volume is mounted.
-
-    Copying retry audio onto the internal disk is never a valid fallback for
-    bulk media, so an unmounted volume selects the home compatibility path.
-    """
+    """True only while the external SSD volume is mounted."""
     try:
         return SSD_VOLUME.is_mount()
     except OSError:
@@ -35,9 +30,9 @@ def ssd_root_available() -> bool:
 
 
 def default_root() -> Path:
-    if ssd_root_available():
-        return SSD_RETRY_ROOT
-    return HOME_RETRY_ROOT.expanduser()
+    if not ssd_root_available():
+        raise RuntimeError("ssd_retry_volume_unavailable")
+    return SSD_RETRY_ROOT
 
 
 def retry_root() -> Path:

@@ -56,7 +56,7 @@ def test_receipts_use_the_ssd_root_when_the_volume_is_available(monkeypatch, tmp
 def test_configured_retry_dir_wins_over_the_ssd_default(monkeypatch, tmp_path):
     configured = tmp_path / "configured"
     monkeypatch.setenv("PENNY_ASR_RETRY_DIR", str(configured))
-    monkeypatch.setattr(retry_receipt, "SSD_VOLUME", Path("/"))
+    monkeypatch.setattr(retry_receipt, "SSD_VOLUME", tmp_path / "unmounted")
     monkeypatch.setattr(retry_receipt, "SSD_RETRY_ROOT", tmp_path / "ssd-retries")
     audio = tmp_path / "excerpt.wav"
     audio.write_bytes(b"audio")
@@ -66,16 +66,15 @@ def test_configured_retry_dir_wins_over_the_ssd_default(monkeypatch, tmp_path):
     assert receipt.parent.parent == configured
 
 
-def test_receipts_fall_back_to_home_without_the_volume(monkeypatch, tmp_path):
+def test_receipts_fail_closed_without_the_volume(monkeypatch, tmp_path):
     monkeypatch.delenv("PENNY_ASR_RETRY_DIR", raising=False)
     monkeypatch.setattr(retry_receipt, "SSD_VOLUME", tmp_path / "unmounted")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     audio = tmp_path / "excerpt.wav"
     audio.write_bytes(b"audio")
 
-    receipt, _ = retry_receipt.begin(audio, None, "penny")
-
-    assert receipt.parent.parent == tmp_path / "home" / ".penny" / "asr-retries"
+    with pytest.raises(RuntimeError, match="ssd_retry_volume_unavailable"):
+        retry_receipt.begin(audio, None, "penny")
 
 
 def test_plain_directory_is_not_a_mounted_volume(monkeypatch, tmp_path):
@@ -103,6 +102,18 @@ def test_terminal_receipt_releases_audio_and_keeps_receipt(tmp_path):
     assert not (receipt.parent / "audio.wav").exists()
     assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "retry_completed"
 
+
+def test_failed_terminal_receipt_releases_audio_and_keeps_receipt(tmp_path):
+    root = tmp_path / "retries"
+    root.mkdir()
+    receipt = _receipt(root, "failed", "retry_pending")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["state"] = "retry_failed"
+
+    retry_receipt.save(receipt, payload)
+
+    assert not (receipt.parent / "audio.wav").exists()
+    assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "retry_failed"
 
 def test_pending_review_receipts_are_never_pruned_or_released(tmp_path):
     root = tmp_path / "retries"
