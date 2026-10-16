@@ -1,13 +1,17 @@
 ## Retry retention — October 16, 2026 UTC
 
-- [x] Reassess [#112](https://github.com/Khamel83/penny/issues/112) against
-  actual runtime and reuse its verified retained source: relocation is done;
-  retention is still needed. Preserve native holds/attempts/candidate archives.
-- [ ] Finish the existing #112 retention task: trusted exact-head review/native
-  CI/normal merge, verified complete local backup before scoped activation,
-  installed-byte/idle-ASR health checks and an ordinary retention receipt. Keep
-  pending/unknown/review receipts, original raw bytes and rollback protected;
-  no replay or one-off historical prune. #112 remains acceptance-pending.
+- [x] Reassess [#112](https://github.com/Khamel83/penny/issues/112), preserve its
+  retained source and correct unsafe pending/unknown expiry, durability and
+  symlink/mount boundaries. [PR122](https://github.com/Khamel83/penny/pull/122)
+  merged85900798 after exact trusted PASS and both native checks;837pytest and
+  497trust tests passed (two skips each).
+- [x] Verify complete local SSD backup before scoped helper installation/idle
+  ASR reload; check exact bytes, loaded source, unchanged callers/peers and
+  installed synthetic terminal/pending behavior. [Receipt and rollback](HANDOFF.md).
+- [ ] Verify the next ordinary retry's retention receipt and pending-record
+  preservation for #112. Source and installation are accepted; no owner decision
+  is required. Keep the acceptance-pending guard until actual ordinary evidence;
+  no replay or historical batch prune.
 
 ## Doctor reporting completed — October 16, 2026 UTC
 
