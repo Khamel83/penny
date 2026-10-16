@@ -118,6 +118,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "current_terminal_failure_count",
         "unavailable_count",
         "uncertain_count",
+        "skipped_count",
         "verified",
         "watcher_ok",
         "voicememod_running",
@@ -706,7 +707,8 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
         state = 'unready' if uncertain or failed or age > 900 else ('degraded' if pending else 'ready')
         reason = 'uncertain_effect' if uncertain else ('terminal_failure' if failed else ('backlog' if pending else 'ok'))
         return dict(state=state, reason=reason, configured=True, pending_count=pending,
-                    uncertain_count=uncertain, failed_count=failed, age_seconds=age)
+                    uncertain_count=uncertain, failed_count=failed,
+                    skipped_count=states.get('skipped', 0), age_seconds=age)
     finally:
         conn.close()
 

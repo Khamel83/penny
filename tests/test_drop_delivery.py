@@ -171,3 +171,29 @@ def test_reconcile_requires_one_exact_archived_payload(db):
         def items(self, after): return dict(items=[item,item],has_more=False,next_after=2)
     with pytest.raises(ValueError, match='duplicate'):
         mod.reconcile_drop_delivery(claim, Duplicate())
+
+
+def test_owner_skipped_handoff_is_visible_and_never_resent(db, monkeypatch):
+    import doctor
+    from types import SimpleNamespace
+    row = memo(db)
+    payload = ledger.build_drop_payload(row, 'installation-test', False, True)
+    ledger.queue_drop_delivery(db, row['id'], payload)
+    db.execute("UPDATE drop_deliveries SET status='skipped', error_code='owner_skipped'")
+    db.commit()
+    result = doctor._default_probe_drop(SimpleNamespace(drop=SimpleNamespace(enabled=True, ingest_token='test')))
+    assert result['state'] == 'ready'
+    assert result['skipped_count'] == 1
+    assert result['uncertain_count'] == 0
+    assert 'skipped_count' in doctor._SAFE_DETAIL_KEYS
+    def unexpected(*args, **kwargs):
+        raise AssertionError('owner skipped item must not be submitted or reconciled')
+    mod = adapter()
+    assert mod.process_pending_drop_deliveries(token='test', send=unexpected) == 0
+    monkeypatch.setattr(mod, 'DropReader', unexpected)
+    assert mod.reconcile_pending_drop() == 0
+    saved = db.execute('SELECT * FROM drop_deliveries').fetchone()
+    assert bytes(saved['payload']) == payload
+    assert saved['accepted_at'] is None
+    assert saved['archive_receipt'] is None
+    assert db.execute('SELECT count(*) FROM transcripts').fetchone()[0] == 1
