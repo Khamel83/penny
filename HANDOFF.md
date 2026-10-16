@@ -24,10 +24,17 @@ The original443-file backup remains. Source compact bundles/patches, prior refs
 and reused retained worktree are preserved; no cleanup or source prune is
 part of this task. No raw payload left the local SSD for this recovery.
 
-Next: inspect the next ordinary retry metadata only, verify its terminal audio
-release/receipt durability or pending-review preservation, and retain #112
-acceptance-pending until that receipt. No owner decision is needed. Do not
-manufacture inference/replay or run a one-off historical prune. Recheck
+Acceptance decision, October16 10:15UTC: close #112 after normal review/merge
+of this record. Its original four criteria require tests: SSD-root placement,
+terminal audio removal with receipt retained, pending-review preservation and
+passing existing tests. These passed in PR122 and the installed synthetic probe;
+installation also has independent readback. Waiting for another ordinary retry
+was an added requirement, now removed. No ordinary retry or downstream delivery
+is claimed by this decision.
+
+Next: monitor ordinary retry metadata during normal use for terminal audio
+release/receipt durability or pending-review preservation. No owner decision is
+needed. Do not manufacture inference/replay or run a historical prune. Recheck
 `curl -fsS http://127.0.0.1:10311/health`, loaded ASR source stamp and helper hash;
 check `/ready` separately. #111's useful retained candidatea0bdf579 remains
 unpublished; its earlier baseline environment/judge failures are technical,
@@ -55,7 +62,7 @@ Accepted deployment receipt SHA256:
 No recording, ledger row, delivery or provider replay was performed.
 
 Next: observe ordinary captures, separately verify each downstream receipt, and
-continue the existing #111 quality-rule and #112 retention tasks. Infra owns
+continue the existing #111 quality-rule task; #112 is accepted above. Infra owns
 #110 incident acceptance; this scoped report does not close it. Recheck loaded
 `http://127.0.0.1:5678/ready`, Doctor hash
 `3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`

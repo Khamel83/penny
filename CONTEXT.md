@@ -17,9 +17,13 @@ local `/ready` remains HTTP200, zero unready, Drop pending/failed/uncertain=0,
 skipped=1 and webhook sourcec9b0368a. No inference or delivery was manufactured.
 
 The installed helper's isolated synthetic probe releases terminal audio while
-retaining its receipt and preserves old pending audio. An ordinary retry
-retention receipt remains pending; #112 stays acceptance-pending with no owner
-decision required. All preexisting retry bytes were verified into a durable,
+retaining its receipt and preserves old pending audio. Acceptance decision,
+October16 10:15UTC: #112's original four criteria are tests, all satisfied by
+PR122, passing native CI and the installed probe. The independently verified
+installation completes that task. The extra wait for an ordinary retry is
+removed; its future receipt remains unobserved and is routine monitoring, not
+an owner decision or a reason to keep #112 held. All preexisting retry bytes
+were verified into a durable,
 write-protected local SSD snapshot before activation:449files/10,059,792,302bytes,
 tree3e696430c186638e60d098a3ea701728717cdec0dc5f3121c2b69178f95c77e1.
 The earlier443-file snapshot stays. No migration or historical batch prune ran.
@@ -91,7 +95,7 @@ transcription. Later readiness update, October10UTC: `/ready` returned HTTP200
 after the owner-directed skip of note779. No downstream receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
 as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
 and old component stamps remain distinct.
-Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
+Retry retention is accepted in the current [#112](https://github.com/Khamel83/penny/issues/112) checkpoint above.
 
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.
 The owner authorized completion of Penny repairs and self-review/normal merge
