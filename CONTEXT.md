@@ -210,23 +210,8 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-## Natural-capture acceptance — October 4
-
-Penny received three ordinary Parakeet voice notes, rows 772–774, on October 2–3.
-All passed quality and routed. Local audio hashes, archive publication, Drop
-archive hashes, Slack sent receipts and live Maya store-only source-event
-receipts match. [Exact evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
-
-P01 is complete. P02 was a misleading gate for this workflow: Drop ownership
-intentionally suppresses direct Maya eligibility for new iCloud captures. These
-three notes already reached Maya through Drop. The legacy direct-v2 route is
-not newly accepted by this evidence, and no pending work or dead letter was
-replayed. New direct-v2 verification is conditional on future explicit use of
-that separate route. Normal Penny voice-note acceptance has no remaining input
-gate. Long-term stability remains observation over ordinary use.
-
-Source commit `f045c72898d2bdba2621b5fc62fa0c83e369cae3` (PR #100) merged the
-natural-acceptance documentation. Recent commits `f9c7fc6` and `3b61a9a`
-labeled ledger timestamps precisely and verified natural Parakeet voice notes
-with active Maya delivery.
+- Source commit `bc3c025aa92c4b9d06888950685087dd43a5fdb9`: [#111](https://github.com/Khamel83/penny/issues/111) is accepted and delivered by [PR126](https://github.com/Khamel83/penny/pull/126) (merged as `64d32534`) under [PR127](https://github.com/Khamel83/penny/pull/127). Exact merged quality/server modules installed, callers refreshed (ASR/watcher/webhook PIDs 67159/67194/67201 on `64d32534`), and independent readback verified.
+- Retry retention [#112](https://github.com/Khamel83/penny/issues/112) delivered via [PR122](https://github.com/Khamel83/penny/pull/122) (merge `85900798`); scoped `retry_receipt.py` installed, SSD backup snapshot verified, and acceptance recorded ([PR124](https://github.com/Khamel83/penny/pull/124)).
+- Doctor reporting skip counters published in [PR115](https://github.com/Khamel83/penny/pull/115) (merge `c9b0368a`), webhook reloaded (PID 30252), `/ready` HTTP 200 with skipped=1 verified ([PR121](https://github.com/Khamel83/penny/pull/121)).
+- Shared ASR keeper [PR119](https://github.com/Khamel83/penny/pull/119) merged as `6330b398` and installed with verified health checks ([PR120](https://github.com/Khamel83/penny/pull/120)).
 <!-- janitor:end:recent -->
