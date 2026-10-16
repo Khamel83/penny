@@ -1,13 +1,21 @@
-## Current PR115 source integration — October16 2026 UTC
+## Current Doctor acceptance — October 16, 2026 UTC
 
-PR115's skip-count implementation is still needed in default source; the later
-keeper acceptance and its evidence are preserved. The review-found chronology
-contradiction is corrected: the no-mutation denial belongs only to the earlier
-investigation; the later October10 guarded ledger/Doctor/webhook changes are
-explicitly dated. This integration changes no live ledger, recording, service,
-provider, grant or delivery. Existing runtime evidence stays dated; fresh exact
-source review/native CI and normal merge remain required. Integrated checks:
-61focused tests/1.14s and trust497tests/19.459s/two skips pass.
+[PR115](https://github.com/Khamel83/penny/pull/115) is merged as `c9b0368a`;
+its Doctor skip counter is installed with the exact merged hash. Only the
+webhook was reloaded, with source stamp c9b0368a and fresh PID30252. Local and
+OCI-via-existing-SSH `/ready` pass HTTP200 with no unready components;
+Drop pending/failed/uncertain=0 and skipped=1. The ASR daemon PID2025, keeper,
+other launchd plists, 57 other production Python files and primary HEAD65758e82
+are preserved. This is a component deployment, not a whole-checkout release.
+
+A startup-probe race caused the first attempt to restore the previous bytes;
+independent readiness verified restoration before a distinct bounded-warmup
+attempt succeeded. Fresh SSD/Homelab backup verification and both private
+receipts are retained; [current handoff](HANDOFF.md) records hashes and rollback.
+61 focused tests, 497 trust tests/two skips, exact-head trusted PASS and both
+hosted Python checks pass. No replay or ledger mutation occurred. Historical
+October10 retirement evidence remains dated; #111, #112 and Infra-owned #110
+acceptance retain their separate scope.
 
 ## Current shared ASR keeper checkpoint — October 16, 2026
 

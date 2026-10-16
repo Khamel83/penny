@@ -1,5 +1,24 @@
 # Penny infrastructure
 
+## Doctor component — installed October 16, 2026 UTC
+
+Only Doctor and `com.penny.webhook` were updated from merged PR115/c9b0368a.
+Doctor SHA256 is
+`3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`;
+webhook PID30252 loads the c9b0368a source stamp. Primary Git HEAD65758e82 and
+its keeper branch are preserved; doctor.py is the intentional runtime delta.
+ASR PID2025/source c341598c and all peer plists remain unchanged. The existing
+port5678 `/ready` succeeds locally and from OCI through its existing Mac SSH
+route, with zero unready components and explicit skipped_count=1. No new route,
+credential, grant or observer configuration was introduced. The OCI scheduled
+Doctor observer has a narrower environment; it remains separate evidence.
+
+A first immediate probe raced startup and restored the prior bytes; independent
+readback verified service before a separate bounded-startup attempt accepted.
+Fresh backup verification, both attempts and scoped rollback before-images are
+on SSD in `/Volumes/2TB_SSD/AI/Penny/deployments/20261016-doctor115{,-warmup}/`.
+[Current receipt and validation](HANDOFF.md).
+
 ## Shared ASR keeper — installed October 16, 2026
 
 `com.penny.shared-whisper-keeper` runs every 120 seconds with `RunAtLoad` and
