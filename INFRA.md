@@ -1,5 +1,22 @@
 # Penny infrastructure
 
+## Shared ASR keeper — installed October 16, 2026
+
+`com.penny.shared-whisper-keeper` runs every 120 seconds with `RunAtLoad` and
+`KeepAlive=false`, using macOS system tools from `/`. Its only volatile state
+is an empty strike directory below the validated 0700 Darwin per-user temporary
+root, so late SSD mounts do not prevent probing. After two failed local health
+checks it requests recovery of the existing ASR label. Healthy busy responses
+clear the strike; failed recovery exits nonzero and logs the failure.
+
+Merged source `6330b398` is installed with its exact source stamp. Only the
+keeper was reloaded; the ASR daemon PID stayed unchanged. Installed hash,
+initial and first natural exit-0 runs and independent Homelab health are verified, with an SSD
+before-image/receipt. The shared endpoint is
+`http://omars-mac-mini.deer-panga.ts.net:10311/health` (current IP100.89.194.46).
+Infra owns Kuma monitor `atlas.mac-asr`; its monitor receipt is separate from
+keeper recovery. [Evidence and rollback](docs/shared-whisper-keeper-20261016.md).
+
 ## Current storage placement — October 9, 2026
 
 Actual runtime root is `/Volumes/2TB_SSD/penny-runtime`; canonical state/ledger
