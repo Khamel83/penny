@@ -229,6 +229,40 @@ def test_failed_prune_does_not_report_removal(monkeypatch, tmp_path):
     assert receipt.exists()
 
 
+def test_ancestor_symlink_cannot_release_audio_or_prune(tmp_path):
+    outside = tmp_path / "outside"
+    receipt = _receipt(outside / "retries", "terminal", "retry_completed", age_days=60)
+    link = tmp_path / "linked-parent"
+    link.symlink_to(outside, target_is_directory=True)
+    aliased_root = link / "retries"
+
+    assert retry_receipt.prune(aliased_root) == []
+    assert retry_receipt.release_audio(aliased_root / "terminal" / "receipt.json") == []
+    assert receipt.exists()
+    assert (receipt.parent / "audio.wav").read_bytes() == b"audio"
+
+
+def test_directory_fsync_failure_preserves_terminal_audio(monkeypatch, tmp_path):
+    receipt = _receipt(tmp_path, "terminal", "retry_pending")
+    real_fsync = retry_receipt.os.fsync
+    calls = 0
+
+    def fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory durability unavailable")
+        real_fsync(fd)
+
+    monkeypatch.setattr(retry_receipt.os, "fsync", fsync)
+    with pytest.raises(OSError, match="directory durability unavailable"):
+        retry_receipt.save(receipt, {"state": "retry_completed"})
+
+    assert calls == 2
+    assert (receipt.parent / "audio.wav").read_bytes() == b"audio"
+    assert receipt.exists()
+
+
 def test_saving_a_receipt_prunes_expired_directories(tmp_path):
     root = tmp_path / "retries"
     root.mkdir()

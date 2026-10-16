@@ -42,11 +42,18 @@ def retry_root() -> Path:
     return root
 
 
+def _physical_path(path: Path) -> bool:
+    """Refuse deletion through a symlink at any level of the supplied path."""
+    try:
+        return path.is_absolute() and path.resolve() == path
+    except (OSError, RuntimeError):
+        return False
+
+
 def release_audio(receipt: Path) -> list[Path]:
     """Delete a terminal receipt's copied audio; `receipt.json` is retained."""
     removed = []
-    if (receipt.parent.parent.is_symlink() or receipt.parent.is_symlink()
-            or receipt.is_symlink()):
+    if not _physical_path(receipt):
         return removed
     for audio in sorted(receipt.parent.glob("audio.*")):
         if audio.is_file() and not audio.is_symlink():
@@ -71,7 +78,7 @@ def prune(
     removed: list[Path] = []
     if (
         root.is_relative_to(SSD_VOLUME) and not ssd_root_available()
-        or root.is_symlink()
+        or not _physical_path(root)
         or not root.is_dir()
     ):
         return removed
@@ -122,6 +129,11 @@ def save(path: Path, payload: dict):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
     if payload.get("state") in TERMINAL_STATES:
         release_audio(path)
     prune(path.parent.parent)

@@ -8,14 +8,18 @@ needs-human/acceptance-pending and attempt/grant history stay intact. Reused
 .worktrees/retained/penny-owner-skip from fetched main dba68d0; no new worktree.
 
 Retained code/tests were integrated without old unrelated plan/Drop records.
-Full pytest passes831tests/two skips/60subtests in41.36s; trust passes497tests/
-two skips in23.08s; 28focused retry/server tests pass.
+Full pytest passes833tests/two skips/60subtests in32.20s; trust passes497tests/
+two skips in19.07s and30focused retry/server tests pass. Review5545710932 found durability and symlink-ancestor gaps; both
+are fixed with regressions and require fresh exact-head review/native checks.
 Fixed unsafe expiry of pending/unknown receipts: only explicit terminal states
 expire, using receipt freshness. Invalid/incomplete/review receipts and symlink
 boundaries stay. SSD absence also rejects explicit paths beneath the volume.
 Next: source PR with Refs #112, trusted exact-head review/native CI/normal merge;
-then separately pin/hash/copy the entire current retry tree to a private local
-SSD backup before component activation. No one-off historical prune or replay.
+then revalidate the completed private local SSD backup before component
+activation:443files/10,058,528,230bytes, all file hashes verified, directories
+fsynced and before-images write-protected. Backup and durability receipts are
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/retry-tree-backup{,-durability}.json`;
+tree SHA25602dea867cc8d93f2d3ed2f803b756657574d7c491dbb9a550414bf475a38efff. No one-off historical prune or replay.
 Use existing idle ASR activation only after a fresh no-active-client check and
 source/plist CAS; refuse foreign changes and preserve before-images. Verify
 merged installed hash/health/peers; ordinary retention evidence remains pending.

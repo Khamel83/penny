@@ -12,12 +12,17 @@ Executor handoff is recorded under RepoLock in #112 comment6212285354.
 The recovered source adds the SSD default and terminal-audio/14-day retention.
 It now protects every pending, unknown, malformed or incomplete state, fresh
 receipts in old directories and symlink boundaries; missing SSD fails closed.
-Current full pytest passes831tests/two skips/60subtests in41.36s; trust passes
-497tests/two skips in23.08s. Trusted source review/native CI/merge remain pending.
+Current full pytest passes833tests/two skips/60subtests in32.20s; trust passes
+497tests/two skips in19.07s. Review5545710932
+found a missing directory fsync before audio release and symlink-ancestor gap;
+both are corrected with regressions. New exact-head review/CI/merge are pending.
 Source, installation and an ordinary retry receipt remain separate gates.
 No historical prune, migration, ASR reload, ledger mutation or replay occurred.
-A verified local backup of the complete existing retry tree is required before
-activation. Primary runtime/keeper and Doctor acceptance below are preserved.
+The complete existing retry tree now has a hash-verified, durable, write-protected
+local SSD backup:443files/10,058,528,230bytes, tree SHA256
+`02dea867cc8d93f2d3ed2f803b756657574d7c491dbb9a550414bf475a38efff`.
+Fresh source/backup checks remain required before activation; the primary
+runtime/keeper and Doctor acceptance below are preserved.
 
 ## Current Doctor acceptance — October 16, 2026 UTC
 
