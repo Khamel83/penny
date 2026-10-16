@@ -1,3 +1,20 @@
+## Parakeet timing source recovery — October 16, 2026 UTC
+
+Issue111 still matters: current accepted quality/server source discards available
+word timing when applying the eight-token repetition rule. Retained effective
+tree `a0bdf579` supplies the finite correction; its four production/test base
+blobs are unchanged on fetched default `1956e84a`. Those blobs are reused, with
+only finite/nonnegative/overflow-safe start validation and regressions added.
+Whisper policy, low-diversity checks, bounded fallback and existing holds remain.
+The accepted112 SSD-retention documentation is preserved. High plan review
+3552f1fc returned SATISFIED; 92 focused checks, 848 full-suite tests/two skips/
+60 subtests, 497 trust tests/two skips and 62 unchanged Whisper comparisons pass
+locally on Python3.14. Hosted3.11/3.12 CI, exact-head review and normal merge
+remain separate source gates. No runtime, model, audio, ledger, grant or delivery changed.
+The existing manual recovery handoff6212284252 remains authoritative;
+canonical/lowercase leases and competing PRs are checked before publication.
+[Tests, preservation and next gates](HANDOFF.md).
+
 ## Retry retention installed — October 16, 2026 09:52 UTC
 
 [#112](https://github.com/Khamel83/penny/issues/112) source is delivered by
