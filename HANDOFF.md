@@ -1,3 +1,16 @@
+## PR115 integration — October16 2026 UTC
+
+Done: reused clean retained .worktrees/retained/penny-owner-skip on a new local
+branch from fetched default87c3c4d, preserving prior115 branch192aeb07 and active
+primary keeper work. Normal merge retains current keeper records and all prior
+skip source. Corrected review5544343618's two chronology contradictions in
+CONTEXT.md; no private content was opened and no runtime/ledger/provider effect
+was performed. Focused Doctor/Drop/document-contract checks pass61tests/1.14s; Penny trust
+passes497tests/19.459s/two skips. Next: normal push to existing115 branch, latest
+exact-head review/native CI/normal merge and scoped
+installed-byte/readiness verification. Do not replay skipped or uncertain work.
+Retain the reused worktree/prior refs; no worktree cleanup is authorized here.
+
 ## Current keeper checkpoint — October 16, 2026
 
 Done: PR119 merged `6330b398` after exact-head trusted PASS, both hosted Python

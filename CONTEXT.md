@@ -1,3 +1,14 @@
+## Current PR115 source integration — October16 2026 UTC
+
+PR115's skip-count implementation is still needed in default source; the later
+keeper acceptance and its evidence are preserved. The review-found chronology
+contradiction is corrected: the no-mutation denial belongs only to the earlier
+investigation; the later October10 guarded ledger/Doctor/webhook changes are
+explicitly dated. This integration changes no live ledger, recording, service,
+provider, grant or delivery. Existing runtime evidence stays dated; fresh exact
+source review/native CI and normal merge remain required. Integrated checks:
+61focused tests/1.14s and trust497tests/19.459s/two skips pass.
+
 ## Current shared ASR keeper checkpoint — October 16, 2026
 
 PR119 is merged as `6330b398` after exact-head trusted PASS and Python3.11/3.12
@@ -40,8 +51,9 @@ home paths are compatibility symlinks. Future mirror writes, caches and scratch
 are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
 system logs on SSD. Four continuous services run; scheduled backup is idle. Original Python launcher
 identity is retained for watcher/webhook/tasks; fresh Voice Memos access passes.
-SQLite integrity, archive, backup and transcription checks pass. `/ready` now returns HTTP 200 after owner-directed skip of note 779. No downstream
-receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
+The October9 storage checks passed SQLite integrity, archive, backup and
+transcription. Later readiness update, October10UTC: `/ready` returned HTTP200
+after the owner-directed skip of note779. No downstream receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
 as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
 and old component stamps remain distinct.
 Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
@@ -62,8 +74,13 @@ archived. Note 779 is 64 minutes and quality-held (`needs_review`); the owner
 asked not to spend forever. Keep the original safe; owner selected keeping locally and skipping delivery;
 no resend was made. Current Drop status reports all five pieces and
 four consumers healthy. Filed [Drop158](https://github.com/Khamel83/drop/issues/158) for exact R2
-sidecar/raw readback and receipt-bound, duplicate-safe recovery. No resend,
-provider effect, ledger mutation or source-runtime change was made.
+sidecar/raw readback and receipt-bound, duplicate-safe recovery. During that
+earlier diagnostic investigation, no resend, provider effect, ledger mutation
+or source-runtime change was made. The later October10 owner-approved recovery
+did change outbox335 from uncertain to skipped, installed the scoped Doctor
+counter update and reloaded only the webhook; original content/failure evidence
+remained and no archive acceptance was fabricated.
+[Later recovery evidence](docs/drop-owner-skip-779-20261010.md).
 
 ## Decisions
 

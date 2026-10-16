@@ -1,3 +1,12 @@
+## Current PR115 integration — October16 2026 UTC
+
+- [x] Preserve current default keeper acceptance while integrating115's still-needed
+ skip-count source; correct the prior investigation versus October10 recovery
+ chronology without changing any live ledger/provider state.
+- [x] Pass61focused Doctor/Drop/document-contract tests and497trust tests/two skips.
+- [ ] Finish exact-head review/native CI/normal merge and verify the scoped
+ installed Doctor bytes/readiness; no recording or delivery replay.
+
 # Penny TODO
 
 ## Shared ASR keeper — October 16, 2026
