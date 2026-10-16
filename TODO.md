@@ -11,7 +11,8 @@
 - [x] Accept [#112](https://github.com/Khamel83/penny/issues/112) against its
   original four test criteria: SSD-root placement, terminal audio release with
   receipt preservation, pending-review protection, and passing existing tests.
-  PR122 and the installed probe satisfy these checks; installation is independently
+  [PR122](https://github.com/Khamel83/penny/pull/122) and the installed probe satisfy
+  these checks; installation is independently
   verified above. A future ordinary retry remains unobserved, but was not an
   original completion requirement. Remove the extra acceptance hold; observe
   normal use without replay or historical batch prune.

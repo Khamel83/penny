@@ -24,7 +24,7 @@ The original443-file backup remains. Source compact bundles/patches, prior refs
 and reused retained worktree are preserved; no cleanup or source prune is
 part of this task. No raw payload left the local SSD for this recovery.
 
-Acceptance decision, October16 10:15UTC: close #112 after normal review/merge
+Acceptance decision, October16 10:13UTC: close #112 after normal review/merge
 of this record. Its original four criteria require tests: SSD-root placement,
 terminal audio removal with receipt retained, pending-review preservation and
 passing existing tests. These passed in PR122 and the installed synthetic probe;

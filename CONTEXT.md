@@ -18,7 +18,7 @@ skipped=1 and webhook sourcec9b0368a. No inference or delivery was manufactured.
 
 The installed helper's isolated synthetic probe releases terminal audio while
 retaining its receipt and preserves old pending audio. Acceptance decision,
-October16 10:15UTC: #112's original four criteria are tests, all satisfied by
+October16 10:13UTC: #112's original four criteria are tests, all satisfied by
 PR122, passing native CI and the installed probe. The independently verified
 installation completes that task. The extra wait for an ordinary retry is
 removed; its future receipt remains unobserved and is routine monitoring, not
