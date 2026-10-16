@@ -210,10 +210,12 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-- Source commit `bc3c025aa92c4b9d06888950685087dd43a5fdb9`: [#111](https://github.com/Khamel83/penny/issues/111) is accepted and delivered by [PR126](https://github.com/Khamel83/penny/pull/126) (merged as `64d32534`) under [PR127](https://github.com/Khamel83/penny/pull/127). Exact merged quality/server modules installed, callers refreshed (ASR/watcher/webhook PIDs 67159/67194/67201 on `64d32534`), and independent readback verified.
-- Retry retention [#112](https://github.com/Khamel83/penny/issues/112) delivered via [PR122](https://github.com/Khamel83/penny/pull/122) (merge `85900798`); scoped `retry_receipt.py` installed, SSD backup snapshot verified, and acceptance recorded ([PR124](https://github.com/Khamel83/penny/pull/124)).
-- Doctor reporting skip counters published in [PR115](https://github.com/Khamel83/penny/pull/115) (merge `c9b0368a`), webhook reloaded (PID 30252), `/ready` HTTP 200 with skipped=1 verified ([PR121](https://github.com/Khamel83/penny/pull/121)).
-- Shared ASR keeper [PR119](https://github.com/Khamel83/penny/pull/119) merged as `6330b398` and installed with verified health checks ([PR120](https://github.com/Khamel83/penny/pull/120)).
+- Source commit `75636dd1` ticks TODO lines finished by merged work ([#130](https://github.com/Khamel83/penny/pull/130)).
+- Superseded pull request cancellation merged in `f5835ddf` ([PR129](https://github.com/Khamel83/penny/pull/129)).
+- [#111](https://github.com/Khamel83/penny/issues/111) timing accepted against tested/deployed contract ([bc3c025a](https://github.com/Khamel83/penny/commit/bc3c025a92c4b9d06888950685087dd43a5fdb9)); PR126 merged (`64d32534`) and installed with ASR/watcher/webhook refresh and verified readiness.
+- [#112](https://github.com/Khamel83/penny/issues/112) retry retention accepted; PR122 merged (`85900798`) with verified local SSD backup and synthetic terminal/pending probe ([1956e84a](https://github.com/Khamel83/penny/commit/1956e84a5707e4fe44923f029c5b95b2b39bb6dd), [7704e080](https://github.com/Khamel83/penny/commit/7704e08020311494f3de65585bc092548b025ce8)).
+- PR115 merged (`c9b0368a`); Doctor skip counter installed with webhook reload and verified readiness.
+- PR119 merged (`6330b398`); shared ASR keeper installed and verified healthy on scheduled runs.
 <!-- janitor:end:recent -->
 ## Fleet CI cancellation - source checkpoint (October 16, 2026)
 
