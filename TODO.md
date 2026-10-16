@@ -1,3 +1,15 @@
+## Shared ASR keeper — October 16, 2026
+
+- [ ] Finish [PR119](https://github.com/Khamel83/penny/pull/119): repair the
+  unsafe marker, health parsing, recovery reporting and timed-agent CI contract;
+  require fresh exact-head review/CI/merge, then install and verify keeper-only
+  bytes. Local repair verification passes; installed keeper still uses old bytes.
+  [Evidence and next gate](docs/shared-whisper-keeper-20261016.md).
+- [x] Verify shared ASR liveness locally and from Homelab: expected service,
+  pinned Parakeet, one idle worker, no active client. Existing keeper is scheduled
+  every 120 seconds; this does not prove automatic recovery or new delivery.
+  [Evidence](docs/shared-whisper-keeper-20261016.md).
+
 # Penny TODO
 
 ## Immediate SSD relocation — October 9
