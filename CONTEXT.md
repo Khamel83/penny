@@ -1,3 +1,17 @@
+## Current shared ASR keeper checkpoint — October 16, 2026
+
+PR119 needs a repair before merge: exact-head reviewer findings and failed
+hosted CI were confirmed. The existing clean branch now has a locally verified
+repair for private state handling, JSON separator whitespace, truthful recovery
+status and the timed-agent template contract. The trust check is unchanged.
+Installed keeper still uses old bytes; no service was restarted. Local and
+Homelab ASR are healthy/idle with one pinned Parakeet worker. Penny `/ready` has
+no unready components; Drop current pending/failed/uncertain counts are zero.
+[Evidence, limitations and remaining gate](docs/shared-whisper-keeper-20261016.md).
+
+These live observations supersede older runtime snapshots below. Historical
+source tasks and receipts are preserved; no downstream replay was performed.
+
 ## Current repository-plan checkpoint — October 11, 2026
 
 The owner requested one owning plan for every open TODO, issue and PR. [docs/REPO_PLAN.md](docs/REPO_PLAN.md) maps 2 unchecked source references and 6 open native records observed from `cfcae61fd36bb9ac0cf573d76d6f57493c59b536`. G2K is the executor; coordinator116 tracks project-owned acceptance. Previous source prose below is retained as dated evidence, not refreshed runtime attestation.

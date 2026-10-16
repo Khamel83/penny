@@ -1,3 +1,21 @@
+## Current keeper checkpoint — October 16, 2026
+
+Done: fetched `main` at `6e975d7f`; reproduced PR119 CI and reviewer findings;
+prepared the bounded keeper repair on the existing clean PR branch. Local
+checks pass: full suite 805 passed/2 skipped/60 subtests, final keeper regressions
+15 passed, trust PASS, plist lint and diff check. Shared ASR health is verified
+locally and from Homelab, idle with one pinned worker. Existing keeper is
+scheduled every 120 seconds, last exit 0, but still loads old unsafe bytes.
+[Full evidence](docs/shared-whisper-keeper-20261016.md).
+
+In flight: review/push repair, exact-head CI/trusted PASS, native merge and
+independent merge receipt, then keeper-only installation with old plist backup.
+Next: inspect `git diff`, `gh pr view 119 --json headRefOid,state,statusCheckRollup,reviews`,
+and compare the accepted template to the installed keeper before reloading only
+that label. Recheck `/health` locally and from Homelab. Never restart busy ASR or
+manufacture a failed-health event. No new worktree was created; retained existing
+worktrees and runtime state need no cleanup for this task.
+
 ## Current repository-plan checkpoint — October 11, 2026
 
 The owner requested one owning plan for every open TODO, issue and PR. [docs/REPO_PLAN.md](docs/REPO_PLAN.md) maps 2 unchecked source references and 6 open native records observed from `cfcae61fd36bb9ac0cf573d76d6f57493c59b536`. G2K is the executor; coordinator116 tracks project-owned acceptance. Previous source prose below is retained as dated evidence, not refreshed runtime attestation.
