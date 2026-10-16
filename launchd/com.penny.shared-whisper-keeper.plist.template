@@ -20,6 +20,11 @@ endpoint through the infra check atlas.mac-asr.
 <dict>
     <key>Label</key>
     <string>com.penny.shared-whisper-keeper</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/sh</string>
