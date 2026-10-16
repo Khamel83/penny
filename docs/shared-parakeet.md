@@ -40,8 +40,8 @@ old Whisper text as new Parakeet output. Mixed chunk results identify both.
 
 Retry receipts keep the copied upload and both model results owner-only. They
 are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
-volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute path and overrides
-the default. If the volume is unavailable and no explicit absolute override is
+volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path
+(no symlink aliases or `..`) and overrides the default. If the volume is unavailable and no explicit absolute override is
 set, retry receipt creation fails closed rather than copying bulk audio to the
 internal disk. Retention is bounded: once a receipt reaches a terminal state
 (`retry_completed` or `retry_failed`), its `audio.*` copy is deleted and only

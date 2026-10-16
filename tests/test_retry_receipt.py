@@ -92,6 +92,39 @@ def test_explicit_ssd_path_fails_closed_when_mount_is_absent(monkeypatch, tmp_pa
     assert not volume.exists()
 
 
+@pytest.mark.parametrize("alias", ["dotdot", "symlink"])
+def test_equivalent_ssd_overrides_cannot_bypass_missing_mount(monkeypatch, tmp_path, alias):
+    volume = tmp_path / "unmounted"
+    monkeypatch.setattr(retry_receipt, "SSD_VOLUME", volume)
+    if alias == "dotdot":
+        configured = tmp_path / "spare" / ".." / "unmounted" / "retries"
+    else:
+        link = tmp_path / "alias"
+        link.symlink_to(volume, target_is_directory=True)
+        configured = link / "retries"
+    monkeypatch.setenv("PENNY_ASR_RETRY_DIR", str(configured))
+    audio = tmp_path / "excerpt.wav"
+    audio.write_bytes(b"audio")
+
+    with pytest.raises(ValueError, match="physical_retry_receipt_root_required"):
+        retry_receipt.begin(audio, None, "penny")
+    assert not volume.exists()
+
+
+def test_save_refuses_symlink_alias_before_writing_or_deleting(monkeypatch, tmp_path):
+    volume = tmp_path / "unmounted"
+    receipt = _receipt(volume / "retries", "pending", "retry_pending")
+    link = tmp_path / "alias"
+    link.symlink_to(volume, target_is_directory=True)
+    monkeypatch.setattr(retry_receipt, "SSD_VOLUME", volume)
+    before = receipt.read_bytes()
+
+    with pytest.raises(ValueError, match="physical_retry_receipt_path_required"):
+        retry_receipt.save(link / "retries" / "pending" / "receipt.json", {"state": "retry_completed"})
+    assert receipt.read_bytes() == before
+    assert (receipt.parent / "audio.wav").read_bytes() == b"audio"
+
+
 def test_lost_mount_does_not_write_or_prune_an_existing_receipt(monkeypatch, tmp_path):
     receipt = _receipt(tmp_path, "terminal", "retry_completed", age_days=60)
     monkeypatch.setattr(retry_receipt, "SSD_VOLUME", tmp_path)

@@ -37,6 +37,8 @@ def retry_root() -> Path:
     root = Path(configured).expanduser() if configured else default_root()
     if not root.is_absolute():
         raise ValueError("absolute_retry_receipt_root_required")
+    if not _physical_path(root):
+        raise ValueError("physical_retry_receipt_root_required")
     if root.is_relative_to(SSD_VOLUME) and not ssd_root_available():
         raise RuntimeError("ssd_retry_volume_unavailable")
     return root
@@ -120,6 +122,8 @@ def save(path: Path, payload: dict):
     A terminal receipt loses its copied audio, and directories past the
     retention window are pruned. Pending-review receipts keep both.
     """
+    if not _physical_path(path):
+        raise ValueError("physical_retry_receipt_path_required")
     if path.is_relative_to(SSD_VOLUME) and not ssd_root_available():
         raise RuntimeError("ssd_retry_volume_unavailable")
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as handle:
