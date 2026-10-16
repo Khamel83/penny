@@ -1,5 +1,25 @@
 # Penny infrastructure
 
+## ASR retry component — installed October 16, 2026 09:52 UTC
+
+Merged PR122/85900798 retry_receipt.py is installed with SHA256
+`c568bd45bde9ae5d3d801740471ed7503fd72566a8bbf32aa0fafa289ea8dd2b`.
+Only idle `com.penny.shared-whisper` was reloaded, now PID58688/source85900798.
+Callers, keeper and other plists stay unchanged; webhook remains c9b0368a.
+Primary HEAD65758e82 is preserved with intentional Doctor/retry-helper deltas.
+ASR health200/idle declares pinned Parakeet with no resident worker; a future
+ordinary retry is a separate acceptance receipt.
+
+Actual retry root remains `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` on
+the enrolled mounted SSD. No migration was necessary. The helper now defaults
+there and rejects missing mounts/nonphysical overrides before receipt writes.
+Terminal receipt rename is fsynced before copied audio release;14day expiry
+preserves pending/unknown/malformed/symlink-containing records. Before activation,
+449files/10,059,792,302bytes were hash-verified into a durable write-protected
+local snapshot; original backup and source/plist before-images remain under
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/`.
+[Acceptance, limits and rollback](HANDOFF.md).
+
 ## Doctor component — installed October 16, 2026 UTC
 
 Only Doctor and `com.penny.webhook` were updated from merged PR115/c9b0368a.

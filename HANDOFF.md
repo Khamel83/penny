@@ -1,33 +1,37 @@
-## Retry-retention source in flight — October 16, 2026 UTC
+## Retry retention accepted — October 16, 2026 09:52 UTC
 
-Recovered #112 from its preserved OCI compact source rather than repeating
-implementation: exact effective tree6670b56e, verified bundle/patch hashes,
-suspended manifest, absent worktree, zero lease and no open source PR. Under
-RepoLock, native handoff6212285354 reserves this bounded recovery; existing
-needs-human/acceptance-pending and attempt/grant history stay intact. Reused
-.worktrees/retained/penny-owner-skip from fetched main dba68d0; no new worktree.
+Done: PR122 exactb5ab29f passed trusted review5545840725 and both native hosted
+checks38881833594; normal merge85900798 verified. Native Python3.11 reports
+837passed/two skipped/60subtests and trust497/two skips. Installed helper SHA256
+`c568bd45bde9ae5d3d801740471ed7503fd72566a8bbf32aa0fafa289ea8dd2b`;
+only the idle ASR label was reloaded, now PID58688/source85900798. Independent
+health200/idle declares pinned Parakeet, worker PIDnull. Installed synthetic
+terminal-release and old-pending preservation probe passed. Local `/ready`
+HTTP200/zero unready, Drop pending/failed/uncertain=0/skipped=1; webhook remains
+c9b0368a. Callers/keeper/other plists and production code were preserved.
+Primary keeper branch/HEAD65758e82 stay; Doctor and retry helper are its two
+intentional tracked runtime deltas.
 
-Retained code/tests were integrated without old unrelated plan/Drop records.
-Full pytest passed836tests/two skips/60subtests in31.17s before the final
-symlink-entry preservation fix; current34focused retry/server tests pass. Review5545710932 found durability and symlink-ancestor gaps; both
-are fixed with regressions. Review5545766004 also found equivalent paths could
-bypass mount checks; nonphysical paths now fail before writes, with regressions.
-Review5545803745 also found expiry removed symlink entries; terminal directories
-with symlinks or unknown subdirectories now stay (regression red then green).
-Fresh exact-head review/native checks are required.
-Fixed unsafe expiry of pending/unknown receipts: only explicit terminal states
-expire, using receipt freshness. Invalid/incomplete/review receipts and symlink
-boundaries stay. SSD absence also rejects explicit paths beneath the volume.
-Next: source PR with Refs #112, trusted exact-head review/native CI/normal merge;
-then revalidate the completed private local SSD backup before component
-activation:443files/10,058,528,230bytes, all file hashes verified, directories
-fsynced and before-images write-protected. Backup and durability receipts are
-`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/retry-tree-backup{,-durability}.json`;
-tree SHA25602dea867cc8d93f2d3ed2f803b756657574d7c491dbb9a550414bf475a38efff. No one-off historical prune or replay.
-Use existing idle ASR activation only after a fresh no-active-client check and
-source/plist CAS; refuse foreign changes and preserve before-images. Verify
-merged installed hash/health/peers; ordinary retention evidence remains pending.
-Do not auto-close #112. Original archive and all prior refs/worktrees stay.
+Private SSD root: `/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/`.
+`deployment.json` and `independent-readback.json` pin source/native/process
+proof; deployment SHA256
+`b5b43054bb231711c10903e6a7c879cc047806ad50aafd7d51a9f4bba345bec0`.
+Source/plist before-images support helper-only rollback using the existing idle
+reload helper. Generation2 backup contains449hash-verified files/10,059,792,302bytes;
+all files/directories were fsynced and write-protected. Snapshot tree SHA256
+`3e696430c186638e60d098a3ea701728717cdec0dc5f3121c2b69178f95c77e1`.
+The original443-file backup remains. Source compact bundles/patches, prior refs
+and reused retained worktree are preserved; no cleanup or source prune is
+part of this task. No raw payload left the local SSD for this recovery.
+
+Next: inspect the next ordinary retry metadata only, verify its terminal audio
+release/receipt durability or pending-review preservation, and retain #112
+acceptance-pending until that receipt. No owner decision is needed. Do not
+manufacture inference/replay or run a one-off historical prune. Recheck
+`curl -fsS http://127.0.0.1:10311/health`, loaded ASR source stamp and helper hash;
+check `/ready` separately. #111's useful retained candidatea0bdf579 remains
+unpublished; its earlier baseline environment/judge failures are technical,
+not proof that the owner must reprioritize it. Infra owns #110 acceptance.
 
 ## Current Doctor acceptance — October 16, 2026 UTC
 
