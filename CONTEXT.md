@@ -12,12 +12,14 @@ Executor handoff is recorded under RepoLock in #112 comment6212285354.
 The recovered source adds the SSD default and terminal-audio/14-day retention.
 It now protects every pending, unknown, malformed or incomplete state, fresh
 receipts in old directories and symlink boundaries; missing SSD fails closed.
-Current full pytest passes836tests/two skips/60subtests in31.17s; trust passes
-497tests/two skips in19.07s. Review5545710932
+Full pytest passed836tests/two skips/60subtests in31.17s before the final
+symlink-entry preservation regression; current34focused retry/server tests pass. Review5545710932
 found a missing directory fsync before audio release and symlink-ancestor gap;
 both are corrected with regressions. Review5545766004 also found equivalent
 path spelling could bypass mount checks; nonphysical paths now fail before
-creation/save, with absent-mount alias regressions. New review/CI/merge are pending.
+creation/save, with absent-mount alias regressions. Review5545803745 found
+expiry still removed symlink entries; those terminal directories now stay, with
+a red-then-green regression. New exact-head review/CI/merge are pending.
 Source, installation and an ordinary retry receipt remain separate gates.
 No historical prune, migration, ASR reload, ledger mutation or replay occurred.
 The complete existing retry tree now has a hash-verified, durable, write-protected

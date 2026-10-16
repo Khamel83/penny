@@ -102,6 +102,9 @@ def prune(
         if not isinstance(state, str) or state not in TERMINAL_STATES:
             continue
         try:
+            if any(entry.is_symlink() or not entry.is_file()
+                   for entry in directory.iterdir()):
+                continue
             stamp = receipt.stat().st_mtime
         except OSError:
             continue

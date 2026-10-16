@@ -8,10 +8,12 @@ needs-human/acceptance-pending and attempt/grant history stay intact. Reused
 .worktrees/retained/penny-owner-skip from fetched main dba68d0; no new worktree.
 
 Retained code/tests were integrated without old unrelated plan/Drop records.
-Full pytest passes836tests/two skips/60subtests in31.17s; trust passes497tests/
-two skips in19.07s and33focused retry/server tests pass. Review5545710932 found durability and symlink-ancestor gaps; both
+Full pytest passed836tests/two skips/60subtests in31.17s before the final
+symlink-entry preservation fix; current34focused retry/server tests pass. Review5545710932 found durability and symlink-ancestor gaps; both
 are fixed with regressions. Review5545766004 also found equivalent paths could
 bypass mount checks; nonphysical paths now fail before writes, with regressions.
+Review5545803745 also found expiry removed symlink entries; terminal directories
+with symlinks or unknown subdirectories now stay (regression red then green).
 Fresh exact-head review/native checks are required.
 Fixed unsafe expiry of pending/unknown receipts: only explicit terminal states
 expire, using receipt freshness. Invalid/incomplete/review receipts and symlink

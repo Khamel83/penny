@@ -251,6 +251,20 @@ def test_terminal_save_preserves_symlink_audio_and_target(tmp_path):
     assert target.read_bytes() == b"original"
 
 
+def test_expired_terminal_with_symlink_audio_is_preserved(tmp_path):
+    root = tmp_path / "retries"
+    receipt = _receipt(root, "terminal", "retry_completed", audio=False, age_days=60)
+    target = tmp_path / "original.wav"
+    target.write_bytes(b"original")
+    link = receipt.parent / "audio.wav"
+    link.symlink_to(target)
+
+    assert retry_receipt.prune(root) == []
+    assert receipt.exists()
+    assert link.is_symlink()
+    assert target.read_bytes() == b"original"
+
+
 def test_failed_prune_does_not_report_removal(monkeypatch, tmp_path):
     receipt = _receipt(tmp_path, "terminal", "retry_completed", age_days=60)
 
