@@ -1,4 +1,53 @@
-# Shared ASR keeper repair — October 16, 2026
+# Shared ASR keeper acceptance — October 16, 2026
+
+PR119 is merged as `6330b39844903e8e3a7c9b1e03307ec14cfeaf1c` and its keeper
+is installed. The earlier repair checkpoint below is retained as dated source
+history. Automatic recovery during a real outage or reboot was not exercised.
+
+## Merged source and independent receipt
+
+- Exact accepted head: `e14adbea944da1d93ab4d541af55704c002ce7dc`.
+  Trusted Bot review [5544379490](https://github.com/Khamel83/penny/pull/119#pullrequestreview-5544379490)
+  is PASS for that head, submitted 07:29:14 UTC.
+- [Native CI38867505542](https://github.com/Khamel83/penny/actions/runs/38867505542)
+  completed successfully on Python 3.11 and 3.12: each had 807 passed, 2 skipped,
+  60 subtests and trust PASS (497 tests, 2 skipped). Native merge occurred at
+  07:30:50 UTC; separate PR endpoint, timeline and fetched default branch agree.
+  Accepted keeper template and tests match the merged bytes.
+- OCI `/home/ubuntu/.local/state/janitor/merge-receipts.jsonl` has successful
+  merge run `merge-fb4e2b1a8d254bd18067d56c60167755`, retaining that reviewed
+  head, review ID, both successful native checks and merge SHA. The installed
+  worker's source reads back GitHub merged/head/SHA before this success receipt.
+
+## Keeper-only installation
+
+At 07:32:46 UTC, the existing installed keeper plist was backed up on SSD;
+merged template bytes were rendered with exact source revision, linted and
+installed atomically. Only `com.penny.shared-whisper-keeper` was unloaded and
+bootstrapped. The ASR daemon PID remained unchanged; installed bytes and loaded
+script/revision match the rendered plist. Initial keeper run exited 0 with its
+120-second interval registered. Local and independent Homelab health checks
+returned the expected pinned Parakeet service and one idle worker. The first
+ordinary scheduled tick was observed at 07:34:46 UTC: keeper runs=2, last exit=0,
+and the ASR daemon PID still unchanged. This verifies natural healthy probing.
+
+Private SSD deployment receipt and before-image:
+`/Volumes/2TB_SSD/AI/Penny/state/deployments/20261016T073246Z-shared-whisper-keeper/receipt.json`.
+Installed plist SHA-256:
+`e053aeb9509472fc32bcdb66d6d3b0ecbef48d5851002401bb3eee41f1cbfb04`.
+No ledger, credentials, privacy grants, providers, audio or outboxes changed.
+No live failure/reboot was induced. Registration and healthy checks establish
+normal operation, while outage recovery remains covered by stubbed tests only.
+
+## Rollback
+
+Restore `keeper-before.plist` from the same private deployment directory to
+`~/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist`, lint it, and
+reload only that keeper label with the documented `bootout`/`bootstrap`
+commands. Check local and Homelab ASR health. Do not restart the ASR daemon or
+change other Penny jobs as a keeper rollback.
+
+## Earlier source repair checkpoint
 
 Checkpoint: 2026-10-16T07:28:06.913054+00:00. This is source and read-only runtime evidence. It does
 not attest a merged repair, installed repair, or an actual recovery event.

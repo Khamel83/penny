@@ -1,16 +1,17 @@
 ## Current shared ASR keeper checkpoint — October 16, 2026
 
-PR119 needs a repair before merge: exact-head reviewer findings and failed
-hosted CI were confirmed. The existing clean branch now has a locally verified
-repair for private state handling, JSON separator whitespace, truthful recovery
-status and the timed-agent template contract. The trust check is unchanged.
-Installed keeper still uses old bytes; no service was restarted. Local and
-Homelab ASR are healthy/idle with one pinned Parakeet worker. Penny `/ready` has
-no unready components; Drop current pending/failed/uncertain counts are zero.
-[Evidence, limitations and remaining gate](docs/shared-whisper-keeper-20261016.md).
+PR119 is merged as `6330b398` after exact-head trusted PASS and Python3.11/3.12
+native CI. Its independent Janitor merge receipt is verified. The exact merged
+keeper template is installed and revision-stamped; only the keeper label was
+reloaded, preserving the ASR daemon PID. Initial and first ordinary scheduled
+runs exited 0 on the 120-second interval; local and Homelab health return pinned Parakeet with one idle worker.
+The SSD before-image and deployment receipt support keeper-only rollback.
+[Evidence and limits](docs/shared-whisper-keeper-20261016.md).
 
-These live observations supersede older runtime snapshots below. Historical
-source tasks and receipts are preserved; no downstream replay was performed.
+Penny `/ready` has no unready components; current Drop pending/failed/uncertain
+counts are zero. These observations supersede older runtime snapshots below.
+Historical source tasks and receipts remain; no downstream replay or real
+outage/reboot canary was performed.
 
 ## Current repository-plan checkpoint — October 11, 2026
 

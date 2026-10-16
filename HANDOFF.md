@@ -1,20 +1,19 @@
 ## Current keeper checkpoint — October 16, 2026
 
-Done: fetched `main` at `6e975d7f`; reproduced PR119 CI and reviewer findings;
-prepared the bounded keeper repair on the existing clean PR branch. Local
-checks pass: full suite 805 passed/2 skipped/60 subtests, final keeper regressions
-15 passed, trust PASS, plist lint and diff check. Shared ASR health is verified
-locally and from Homelab, idle with one pinned worker. Existing keeper is
-scheduled every 120 seconds, last exit 0, but still loads old unsafe bytes.
-[Full evidence](docs/shared-whisper-keeper-20261016.md).
+Done: PR119 merged `6330b398` after exact-head trusted PASS, both hosted Python
+checks and independent Janitor merge receipt. Keeper-only merged bytes were
+installed at 07:32:46 UTC with exact source stamp, loaded-byte verification and
+SSD before-image/receipt. Initial and first ordinary scheduled runs exited 0
+at the 120-second interval. The ASR daemon PID stayed unchanged; local and Homelab health pass with pinned Parakeet.
+[Evidence, private receipt and rollback](docs/shared-whisper-keeper-20261016.md).
 
-In flight: review/push repair, exact-head CI/trusted PASS, native merge and
-independent merge receipt, then keeper-only installation with old plist backup.
-Next: inspect `git diff`, `gh pr view 119 --json headRefOid,state,statusCheckRollup,reviews`,
-and compare the accepted template to the installed keeper before reloading only
-that label. Recheck `/health` locally and from Homelab. Never restart busy ASR or
-manufacture a failed-health event. No new worktree was created; retained existing
-worktrees and runtime state need no cleanup for this task.
+Next verification: inspect `launchctl print gui/$(id -u)/com.penny.shared-whisper-keeper`
+and check `http://127.0.0.1:10311/health` locally and
+`http://omars-mac-mini.deer-panga.ts.net:10311/health` from Homelab. Real
+outage/reboot recovery is unexercised; do not disrupt ASR to manufacture it.
+This acceptance publication uses the same clean checkout on a fresh docs branch
+from fetched main. No new worktree was created; existing worktrees, state and
+other Penny labels were preserved.
 
 ## Current repository-plan checkpoint — October 11, 2026
 
