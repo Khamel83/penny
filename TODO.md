@@ -1,3 +1,13 @@
+## Parakeet repetition timing — October 16, 2026 UTC
+
+- [ ] Complete [#111](https://github.com/Khamel83/penny/issues/111) using the
+  verified retained candidate rather than another implementation. Timing-aware
+  Parakeet checks and two invalid-start guards pass 92 focused checks, 848 full
+  tests/two skips/60 subtests and 497 trust tests/two skips. Exact-head review,
+  hosted Python3.11/3.12 CI and normal merge remain source gates. Installation and the original post-deploy hold-archive
+  instruction remain separate; no old audio replay or owner triage is added.
+  [Source, private proof and next gates](HANDOFF.md).
+
 ## Retry retention — October 16, 2026 UTC
 
 - [x] Reassess [#112](https://github.com/Khamel83/penny/issues/112), preserve its

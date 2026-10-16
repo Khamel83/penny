@@ -1,3 +1,49 @@
+## Parakeet timing source recovery — October 16, 2026 UTC
+
+Done: reused issue111's verified compact bundle/patch and effective tree
+`a0bdf579ce7fc35f427f98f47245046f5cd123ea` in the same retained checkout, on
+`fix/reuse-parakeet-timing-111-20261016` from fetched default `1956e84a`.
+Four production/test blobs were reused from that implementation. Only the quality
+helper's nonnegative/finite/overflow guard and two specific regression cases are
+added. Both regressions fail against the original candidate and pass with the
+guard; 92 focused quality/adapter/server/protocol/retention checks pass.
+Unchanged baseline: 837 passed, two skipped and 60 subtests, Python3.14.
+Full candidate suite: 848 passed, two skipped and 60 subtests; trust checks
+497 tests/two skips pass, and 62 Whisper-policy comparisons match the baseline.
+Trusted exact-head review, actual hosted Python3.11/3.12 CI and normal
+merge/readback remain source gates. High plan review
+3552f1fc-3ad3-454b-9055-29946587bb24 returned SATISFIED; its durable receipt is
+under OCI `~/.local/state/g2k/plan-reviews/`.
+
+The first baseline attempt had only fixture-environment failures: SSD pilot
+fixtures lacked the real nonsecret volume identity, and operational overrides
+masked the tests' own private database/backup paths. All overrides pointed to
+new private fixture copies; failed Doctor probes were read-only and pilot guards
+refused before creation. The corrected CI-like fixture environment passes without
+changing or skipping source/tests. No production environment or credential was
+loaded. Private Mac metadata/procedure receipts:
+`~/.local/state/g2k-observer/burndown-20261016/penny-candidate-rescue/111/`;
+isolated SSD test results:
+`/Volumes/2TB_SSD/AI/Penny/verification/20261016-issue111/`.
+
+Next: finish source gates and publish one PR with `Refs #111`, preserving the
+acceptance-pending label and original archive instruction. Recheck native111 is
+open/no competing implementation PR, both canonical/lowercase progress leases,
+source/default and manual handoff6212284252 under the canonical RepoLock before
+publication. Do not change attempt/grant/label history. After source acceptance,
+prepare a separate reviewed installation plan: watcher and webhook import the
+helper at startup, and shared ASR caches its request-time import. Do not assume
+ASR-only refresh or reload unrelated labels. Locate the maintained existing
+Waveform-hold archive operation read-only; no audio move/deletion, re-transcription
+or retrospective quality pass is authorized here. No new two-hour replay or
+owner-priority gate is part of original issue111 acceptance.
+
+Primary keeper HEAD65758e82, Doctor115, retry112, keeper acceptance, other
+launchd labels and all private data remain intact. Existing branches, candidate
+refs/bundles and this reused checkout are retained; no new worktree or cleanup.
+No runtime installation, reload, model invocation, archive or downstream effect
+occurred in this source slice. No owner action is needed at this stage.
+
 ## Retry retention accepted — October 16, 2026 09:52 UTC
 
 Done: PR122 exactb5ab29f passed trusted review5545840725 and both native hosted

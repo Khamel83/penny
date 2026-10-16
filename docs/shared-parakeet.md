@@ -22,9 +22,14 @@ than 1.0 s behind the previous word start is clamped to that start instead of
 failing the whole transcript, and the shared protocol validator applies the
 same 1.0 s tolerance. A larger backward jump still fails as
 `backwards_parakeet_token_time`. For new Parakeet output, brief restarts are
-accepted; eight consecutive repeated
-tokens or the existing low-diversity suffix signal trigger review. Existing
-Whisper quality-held records/policy are unchanged. A malformed output or severe
+accepted. Eight consecutive repeated tokens still trigger review unless the
+Parakeet output has matching, acoustically aligned word starts at speaking rate:
+the run must have fewer than 20 tokens, strictly increasing starts and a median
+start-to-start gap of at least 0.12 seconds. Shared, negative, nonfinite,
+unrepresentably large, missing or mismatched timing cannot relax that hold.
+Timing alignment is segment-local, so an unrelated segment without word timing
+does not invalidate a fully timed run elsewhere. The existing low-diversity
+suffix check and Whisper quality-held records/policy are unchanged. A malformed output or severe
 repetition-quality failure triggers at most one
 Whisper retry of a bounded upload (maximum 660 seconds including context).
 Longer flagged uploads return a review error, requiring an excerpt rather than
