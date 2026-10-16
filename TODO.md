@@ -1,11 +1,15 @@
-## Current PR115 integration — October16 2026 UTC
+## Doctor reporting completed — October 16, 2026 UTC
 
-- [x] Preserve current default keeper acceptance while integrating115's still-needed
- skip-count source; correct the prior investigation versus October10 recovery
- chronology without changing any live ledger/provider state.
-- [x] Pass61focused Doctor/Drop/document-contract tests and497trust tests/two skips.
-- [ ] Finish exact-head review/native CI/normal merge and verify the scoped
- installed Doctor bytes/readiness; no recording or delivery replay.
+- [x] Finish [PR115](https://github.com/Khamel83/penny/pull/115) skip-count
+  source publication while preserving keeper acceptance and correcting the
+  earlier investigation/recovery chronology. Exact-head trusted PASS and both
+  hosted Python checks passed; normal merge c9b0368a is verified.
+- [x] Install exact merged Doctor bytes and reload only the webhook after a
+  fresh verified SSD/Homelab backup. Local and OCI-via-existing-SSH `/ready`
+  return HTTP200, zero unready, Drop pending/failed/uncertain=0 and skipped=1;
+  ASR PID and other production files/plists are preserved. First-attempt safe
+  restoration and the accepted bounded-warmup attempt are retained with
+  independent readback. [Receipt, limits and rollback](HANDOFF.md).
 
 # Penny TODO
 

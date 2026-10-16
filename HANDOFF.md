@@ -1,15 +1,33 @@
-## PR115 integration — October16 2026 UTC
+## Current Doctor acceptance — October 16, 2026 UTC
 
-Done: reused clean retained .worktrees/retained/penny-owner-skip on a new local
-branch from fetched default87c3c4d, preserving prior115 branch192aeb07 and active
-primary keeper work. Normal merge retains current keeper records and all prior
-skip source. Corrected review5544343618's two chronology contradictions in
-CONTEXT.md; no private content was opened and no runtime/ledger/provider effect
-was performed. Focused Doctor/Drop/document-contract checks pass61tests/1.14s; Penny trust
-passes497tests/19.459s/two skips. Next: normal push to existing115 branch, latest
-exact-head review/native CI/normal merge and scoped
-installed-byte/readiness verification. Do not replay skipped or uncertain work.
-Retain the reused worktree/prior refs; no worktree cleanup is authorized here.
+Done: [PR115](https://github.com/Khamel83/penny/pull/115) merged as
+`c9b0368a39113f79272f54901883ed91278d03e3` after exact-head trusted PASS and
+both hosted Python checks. Focused checks pass 61 tests; trust passes 497 tests
+with two skips. The merged Doctor bytes are installed; only the webhook was
+reloaded. Local `/ready` and OCI through the existing Mac SSH route return
+HTTP200, zero unready components and Drop pending/failed/uncertain=0, skipped=1.
+ASR PID2025 and its source stamp are unchanged; 57 other production Python
+files and peer launchd plists match their before-images. Primary HEAD65758e82
+and its keeper branch remain; its only intentional tracked change is doctor.py.
+
+The first activation probe ran before the HTTP listener started, so it safely
+restored the prior Doctor and webhook. Independent readiness proved restoration.
+A separate attempt with a bounded startup wait accepted the same reviewed bytes.
+Both attempts and the fresh verified SSD/Homelab backup are preserved under
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-doctor115{,-warmup}/`.
+Accepted deployment receipt SHA256:
+`739f72f5364a5e18f83f1aa0d091d438b837a9258046a68d031d4d93229d7dff`.
+No recording, ledger row, delivery or provider replay was performed.
+
+Next: observe ordinary captures, separately verify each downstream receipt, and
+continue the existing #111 quality-rule and #112 retention tasks. Infra owns
+#110 incident acceptance; this scoped report does not close it. Recheck loaded
+`http://127.0.0.1:5678/ready`, Doctor hash
+`3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`
+and `launchctl print gui/$(id -u)/com.penny.webhook`. For scoped rollback use
+the private Doctor/plist before-images and the existing reload helper, preserving
+ASR and the ledger. The reused retained worktree and prior refs stay intact;
+no cleanup is authorized here.
 
 ## Current keeper checkpoint — October 16, 2026
 
