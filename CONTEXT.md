@@ -1,19 +1,32 @@
-## Parakeet timing source recovery — October 16, 2026 UTC
+## Parakeet timing accepted — October 16, 2026 11:12 UTC
 
-Issue111 still matters: current accepted quality/server source discards available
-word timing when applying the eight-token repetition rule. Retained effective
-tree `a0bdf579` supplies the finite correction; its four production/test base
-blobs are unchanged on fetched default `1956e84a`. Those blobs are reused, with
-only finite/nonnegative/overflow-safe start validation and regressions added.
-Whisper policy, low-diversity checks, bounded fallback and existing holds remain.
-The accepted112 SSD-retention documentation is preserved. High plan review
-3552f1fc returned SATISFIED; 92 focused checks, 848 full-suite tests/two skips/
-60 subtests, 497 trust tests/two skips and 62 unchanged Whisper comparisons pass
-locally on Python3.14. Hosted3.11/3.12 CI, exact-head review and normal merge
-remain separate source gates. No runtime, model, audio, ledger, grant or delivery changed.
-The existing manual recovery handoff6212284252 remains authoritative;
-canonical/lowercase leases and competing PRs are checked before publication.
-[Tests, preservation and next gates](HANDOFF.md).
+[#111](https://github.com/Khamel83/penny/issues/111) is delivered by
+[PR126](https://github.com/Khamel83/penny/pull/126): exact22904fa received trusted
+PASS5546707424, both actual hosted Python3.11/3.12 jobs passed
+[run38889557502](https://github.com/Khamel83/penny/actions/runs/38889557502), and
+normal merge64d32534 has independent readback. Retained candidatea0bdf579 was
+reused, with only invalid-start guards/regressions added. Local92focused,
+848full/two skips/60subtests,497trust/two skips and62unchanged Whisper comparisons
+pass; no fresh implementation or fixture weakening replaced the retained work.
+
+Exact merged quality/server modules are installed, and only the three loaded
+callers were refreshed. ASR/watcher/webhook PIDs67159/67194/67201 declare64d32534.
+Independent11:12:52UTC readback verifies both module hashes, all56 protected
+production Python files, Doctor3210731d/retryc568bd45, keeper, peer services,
+original caller identity and primary HEAD65758e82. ASR health200/idle retains
+pinned Parakeet; local readyHTTP200 has13components/zero unready, overall degraded.
+The installed-code four-vector probe passes without a model call or data write.
+[Receipts, preservation and next step](HANDOFF.md).
+
+Acceptance is assessed against the original five criteria: timing/existing-suite
+tests plus the PR description's post-deploy archive instruction. PR126 supplies
+that instruction; executing the archive or observing another natural inference
+was not required. The held recording/sidecar, retry receipt and verified112
+backups remain unchanged; its current Parakeet hold is still active. Broader
+Atlas quality work and ordinary serving quality remain separate and unclaimed.
+After normal review/CI/merge of these records, close111 COMPLETED under fresh
+native/peer/lease/source fences, removing only its resolved hold labels. No
+owner action, audio replay, new archive task or production redeploy is added.
 
 ## Retry retention installed — October 16, 2026 09:52 UTC
 
