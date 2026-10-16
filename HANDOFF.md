@@ -1,3 +1,34 @@
+## Retry-retention source in flight — October 16, 2026 UTC
+
+Recovered #112 from its preserved OCI compact source rather than repeating
+implementation: exact effective tree6670b56e, verified bundle/patch hashes,
+suspended manifest, absent worktree, zero lease and no open source PR. Under
+RepoLock, native handoff6212285354 reserves this bounded recovery; existing
+needs-human/acceptance-pending and attempt/grant history stay intact. Reused
+.worktrees/retained/penny-owner-skip from fetched main dba68d0; no new worktree.
+
+Retained code/tests were integrated without old unrelated plan/Drop records.
+Full pytest passed836tests/two skips/60subtests in31.17s before the final
+symlink-entry preservation fix; current34focused retry/server tests pass. Review5545710932 found durability and symlink-ancestor gaps; both
+are fixed with regressions. Review5545766004 also found equivalent paths could
+bypass mount checks; nonphysical paths now fail before writes, with regressions.
+Review5545803745 also found expiry removed symlink entries; terminal directories
+with symlinks or unknown subdirectories now stay (regression red then green).
+Fresh exact-head review/native checks are required.
+Fixed unsafe expiry of pending/unknown receipts: only explicit terminal states
+expire, using receipt freshness. Invalid/incomplete/review receipts and symlink
+boundaries stay. SSD absence also rejects explicit paths beneath the volume.
+Next: source PR with Refs #112, trusted exact-head review/native CI/normal merge;
+then revalidate the completed private local SSD backup before component
+activation:443files/10,058,528,230bytes, all file hashes verified, directories
+fsynced and before-images write-protected. Backup and durability receipts are
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/retry-tree-backup{,-durability}.json`;
+tree SHA25602dea867cc8d93f2d3ed2f803b756657574d7c491dbb9a550414bf475a38efff. No one-off historical prune or replay.
+Use existing idle ASR activation only after a fresh no-active-client check and
+source/plist CAS; refuse foreign changes and preserve before-images. Verify
+merged installed hash/health/peers; ordinary retention evidence remains pending.
+Do not auto-close #112. Original archive and all prior refs/worktrees stay.
+
 ## Current Doctor acceptance — October 16, 2026 UTC
 
 Done: [PR115](https://github.com/Khamel83/penny/pull/115) merged as
