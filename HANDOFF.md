@@ -1,3 +1,26 @@
+## Retry-retention source in flight — October 16, 2026 UTC
+
+Recovered #112 from its preserved OCI compact source rather than repeating
+implementation: exact effective tree6670b56e, verified bundle/patch hashes,
+suspended manifest, absent worktree, zero lease and no open source PR. Under
+RepoLock, native handoff6212285354 reserves this bounded recovery; existing
+needs-human/acceptance-pending and attempt/grant history stay intact. Reused
+.worktrees/retained/penny-owner-skip from fetched main dba68d0; no new worktree.
+
+Retained code/tests were integrated without old unrelated plan/Drop records.
+Full pytest passes831tests/two skips/60subtests in41.36s; trust passes497tests/
+two skips in23.08s; 28focused retry/server tests pass.
+Fixed unsafe expiry of pending/unknown receipts: only explicit terminal states
+expire, using receipt freshness. Invalid/incomplete/review receipts and symlink
+boundaries stay. SSD absence also rejects explicit paths beneath the volume.
+Next: source PR with Refs #112, trusted exact-head review/native CI/normal merge;
+then separately pin/hash/copy the entire current retry tree to a private local
+SSD backup before component activation. No one-off historical prune or replay.
+Use existing idle ASR activation only after a fresh no-active-client check and
+source/plist CAS; refuse foreign changes and preserve before-images. Verify
+merged installed hash/health/peers; ordinary retention evidence remains pending.
+Do not auto-close #112. Original archive and all prior refs/worktrees stay.
+
 ## Current Doctor acceptance — October 16, 2026 UTC
 
 Done: [PR115](https://github.com/Khamel83/penny/pull/115) merged as

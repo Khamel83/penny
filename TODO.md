@@ -1,3 +1,14 @@
+## Retry retention — October 16, 2026 UTC
+
+- [x] Reassess [#112](https://github.com/Khamel83/penny/issues/112) against
+  actual runtime and reuse its verified retained source: relocation is done;
+  retention is still needed. Preserve native holds/attempts/candidate archives.
+- [ ] Finish the existing #112 retention task: trusted exact-head review/native
+  CI/normal merge, verified complete local backup before scoped activation,
+  installed-byte/idle-ASR health checks and an ordinary retention receipt. Keep
+  pending/unknown/review receipts, original raw bytes and rollback protected;
+  no replay or one-off historical prune. #112 remains acceptance-pending.
+
 ## Doctor reporting completed — October 16, 2026 UTC
 
 - [x] Finish [PR115](https://github.com/Khamel83/penny/pull/115) skip-count
@@ -30,9 +41,8 @@
   SQLite integrity, restored services and fresh Voice Memos source access. Internal free space is 26 GiB.
   [Evidence](docs/ssd-storage-20261009.md),
   [PR113](https://github.com/Khamel83/penny/pull/113).
-- [ ] Add bounded retry retention on SSD while preserving pending review:
-  https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
-  is not implemented by this storage operation.
+Retry retention is tracked in the current #112 checkpoint above. Relocation is
+complete; this earlier storage operation did not implement retention.
 - [x] Retire note 779's Drop delivery at the owner's request; keep audio,
   transcript, frozen payload and original failure receipt locally.
   `/ready` HTTP 200, Drop uncertain=0 and skipped=1.

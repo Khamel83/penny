@@ -1,3 +1,24 @@
+## Retry-retention recovery — October 16, 2026 UTC
+
+[#112](https://github.com/Khamel83/penny/issues/112) remains useful: SSD
+relocation is already done, but retry retention is absent from default source.
+A metadata-only audit found 222 retry directories / 10,058,528,230 bytes on the
+mounted SSD: 161 terminal, 60 pending-review and one invalid receipt. No raw
+capture or model payload was opened into the review. The suspended G2K compact
+bundle/patch was hash-verified and reproduced exact candidate tree6670b56e;
+its original bytes, failures, attempts, native holds and manifest are preserved.
+Executor handoff is recorded under RepoLock in #112 comment6212285354.
+
+The recovered source adds the SSD default and terminal-audio/14-day retention.
+It now protects every pending, unknown, malformed or incomplete state, fresh
+receipts in old directories and symlink boundaries; missing SSD fails closed.
+Current full pytest passes831tests/two skips/60subtests in41.36s; trust passes
+497tests/two skips in23.08s. Trusted source review/native CI/merge remain pending.
+Source, installation and an ordinary retry receipt remain separate gates.
+No historical prune, migration, ASR reload, ledger mutation or replay occurred.
+A verified local backup of the complete existing retry tree is required before
+activation. Primary runtime/keeper and Doctor acceptance below are preserved.
+
 ## Current Doctor acceptance — October 16, 2026 UTC
 
 [PR115](https://github.com/Khamel83/penny/pull/115) is merged as `c9b0368a`;
