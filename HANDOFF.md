@@ -258,3 +258,6 @@ The OCI observer is active and recorded the recovery, but has a narrower
 configuration than `/ready`; use the latter for loaded source and Drop status.
 [Infrastructure and monitoring evidence](INFRA.md).
 Previous dated checkpoints: [historical handoff](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/HANDOFF.md).
+## Fleet CI cancellation - source checkpoint (October 16, 2026)
+
+Prepared source on `feat/fleet-ci-cancellation-20261016` adds PR-only concurrency cancellation to `.github/workflows/test.yml`. Native CI, review, and normal merge remain pending. No runtime or deployment change is claimed.

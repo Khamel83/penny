@@ -215,3 +215,6 @@ Previous dated checkpoints remain in the
 - Doctor reporting skip counters published in [PR115](https://github.com/Khamel83/penny/pull/115) (merge `c9b0368a`), webhook reloaded (PID 30252), `/ready` HTTP 200 with skipped=1 verified ([PR121](https://github.com/Khamel83/penny/pull/121)).
 - Shared ASR keeper [PR119](https://github.com/Khamel83/penny/pull/119) merged as `6330b398` and installed with verified health checks ([PR120](https://github.com/Khamel83/penny/pull/120)).
 <!-- janitor:end:recent -->
+## Fleet CI cancellation - source checkpoint (October 16, 2026)
+
+`.github/workflows/test.yml` has a prepared source change on `feat/fleet-ci-cancellation-20261016` that coalesces superseded pull-request runs and leaves main, manual, release, and scheduled runs non-canceling. Native CI, review, and normal merge remain pending; no runtime change is claimed.
