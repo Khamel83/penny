@@ -152,3 +152,24 @@ retroactively rewritten.
 Keep iCloud as a rebuildable mirror and homelab backup sets as the
 independent recovery source; neither should be silently substituted for the
 canonical SQLite ledger.
+
+## Shared-whisper keeper
+
+`launchd/com.penny.shared-whisper-keeper.plist.template` probes
+`http://127.0.0.1:10311/health` every two minutes. After two consecutive
+failures it kickstarts `com.penny.shared-whisper` (or bootstraps it when it is
+not loaded) and writes one syslog line tagged `penny-shared-whisper-keeper`.
+It needs only `/bin/sh`, `curl` and `launchctl` on the internal disk, so it
+also covers a reboot where the SSD mounts late. It contains no credentials and
+sends no notification; Uptime Kuma reports the same endpoint (infra check
+`atlas.mac-asr`).
+
+Install or update it:
+
+```sh
+cp launchd/com.penny.shared-whisper-keeper.plist.template \
+  ~/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist
+launchctl bootout "gui/$(id -u)/com.penny.shared-whisper-keeper" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist
+log show --last 1h --predicate 'eventMessage CONTAINS "penny-shared-whisper-keeper"'
+```

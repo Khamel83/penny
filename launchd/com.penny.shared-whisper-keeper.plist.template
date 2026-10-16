@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Restart com.penny.shared-whisper when its /health stops answering.
+
+On 2026-10-16 the server never came back after a Mac reboot and MinusPod
+episodes stalled for about 80 minutes. launchd KeepAlive only restarts a
+process that exits; it cannot see a server that never started or stopped
+answering. This keeper probes /health every two minutes and, after two
+consecutive failures, kickstarts the agent (or bootstraps it if it is not
+loaded). The server is threaded, so /health answers during transcription and
+a busy worker is never restarted.
+
+The keeper uses only /bin/sh, curl and launchctl on the internal disk, so it
+works while the enrolled SSD is still mounting. It writes one marker file and
+a syslog line; it sends no network notification. Uptime Kuma reports the same
+endpoint through the infra check atlas.mac-asr.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.penny.shared-whisper-keeper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mark=/tmp/penny-shared-whisper-keeper.strike; job="gui/$(/usr/bin/id -u)/com.penny.shared-whisper"; if /usr/bin/curl -sf -m 5 http://127.0.0.1:10311/health | /usr/bin/grep -q '"service":"penny-shared-whisper"'; then /bin/rm -f "$mark"; exit 0; fi; if [ ! -f "$mark" ]; then : &gt; "$mark"; exit 0; fi; /bin/rm -f "$mark"; /bin/launchctl kickstart -k "$job" || /bin/launchctl bootstrap "gui/$(/usr/bin/id -u)" "$HOME/Library/LaunchAgents/com.penny.shared-whisper.plist"; /usr/bin/logger -t penny-shared-whisper-keeper "restarted com.penny.shared-whisper after two failed health checks"</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
