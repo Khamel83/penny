@@ -1,48 +1,65 @@
-## Parakeet timing source recovery — October 16, 2026 UTC
+## Parakeet timing accepted — October 16, 2026 11:12 UTC
 
-Done: reused issue111's verified compact bundle/patch and effective tree
-`a0bdf579ce7fc35f427f98f47245046f5cd123ea` in the same retained checkout, on
-`fix/reuse-parakeet-timing-111-20261016` from fetched default `1956e84a`.
-Four production/test blobs were reused from that implementation. Only the quality
-helper's nonnegative/finite/overflow guard and two specific regression cases are
-added. Both regressions fail against the original candidate and pass with the
-guard; 92 focused quality/adapter/server/protocol/retention checks pass.
-Unchanged baseline: 837 passed, two skipped and 60 subtests, Python3.14.
-Full candidate suite: 848 passed, two skipped and 60 subtests; trust checks
-497 tests/two skips pass, and 62 Whisper-policy comparisons match the baseline.
-Trusted exact-head review, actual hosted Python3.11/3.12 CI and normal
-merge/readback remain source gates. High plan review
-3552f1fc-3ad3-454b-9055-29946587bb24 returned SATISFIED; its durable receipt is
-under OCI `~/.local/state/g2k/plan-reviews/`.
+[#111](https://github.com/Khamel83/penny/issues/111) satisfies its original
+contract. [PR126](https://github.com/Khamel83/penny/pull/126), exact
+22904fa59d9c7ddd7f195cf9a5f82555fa582b61, received trusted Bot PASS5546707424;
+actual hosted Python3.11/3.12 jobs116935466531/116935466875 succeeded in
+[run38889557502](https://github.com/Khamel83/penny/actions/runs/38889557502).
+Normal merge64d32534eff8d7b85202e1ca3b99529490aa299c and identical reviewed/merge
+tree46e641bf25ed1725e355ae0b6772c5f06f601b0c are independently verified.
+Janitor merge receipt runmerge-07eae535860a42bfac2fb53a37e3e65c is retained in
+OCI `~/.local/state/janitor/merge-receipts.jsonl`.
 
-The first baseline attempt had only fixture-environment failures: SSD pilot
-fixtures lacked the real nonsecret volume identity, and operational overrides
-masked the tests' own private database/backup paths. All overrides pointed to
-new private fixture copies; failed Doctor probes were read-only and pilot guards
-refused before creation. The corrected CI-like fixture environment passes without
-changing or skipping source/tests. No production environment or credential was
-loaded. Private Mac metadata/procedure receipts:
-`~/.local/state/g2k-observer/burndown-20261016/penny-candidate-rescue/111/`;
-isolated SSD test results:
+The four reused code/test blobs came from retained effective treea0bdf579.
+Only finite/nonnegative/overflow-safe timing validation and two regression cases
+were added. Both new cases fail against the retained candidate and pass after
+the guard; 92 focused checks pass. Full local suite:848passed/two skipped/
+60subtests; trust:497tests/two skips. All62 sampled Whisper comparisons match
+the baseline. The initial private fixture-environment failure and corrected
+837-test baseline remain with the source proof; no production data or credentials
+were used in those tests. Private source/test evidence:
+`~/.local/state/g2k-observer/burndown-20261016/penny-candidate-rescue/111/` and
 `/Volumes/2TB_SSD/AI/Penny/verification/20261016-issue111/`.
 
-Next: finish source gates and publish one PR with `Refs #111`, preserving the
-acceptance-pending label and original archive instruction. Recheck native111 is
-open/no competing implementation PR, both canonical/lowercase progress leases,
-source/default and manual handoff6212284252 under the canonical RepoLock before
-publication. Do not change attempt/grant/label history. After source acceptance,
-prepare a separate reviewed installation plan: watcher and webhook import the
-helper at startup, and shared ASR caches its request-time import. Do not assume
-ASR-only refresh or reload unrelated labels. Locate the maintained existing
-Waveform-hold archive operation read-only; no audio move/deletion, re-transcription
-or retrospective quality pass is authorized here. No new two-hour replay or
-owner-priority gate is part of original issue111 acceptance.
+The separately reviewed two-module installation succeeded at11:11:53UTC;
+independent readback at11:12:52 verified transcript_quality.py SHA256
+167994fad3e40770666e4b843c66b14ff25f19a0212127af2dd641810ce74f98 and
+shared_whisper/server.py SHA256
+185bdcbe9863028a76ef24f5b9d353b27c492c64f9742e8845da710d79fb945e.
+The real maintained reloader refreshed only ASR/watcher/webhook, now
+PIDs67159/67194/67201 with component source64d32534. All56 other production
+Python files, Doctor3210731d, retryc568bd45, keeper, tasks/export processes,
+original interpreter/arguments and unrelated plist bytes/modes were preserved.
+Primary HEAD65758e82 and its keeper branch remain; Doctor, retry helper and the
+two installed modules are its four intentional tracked runtime deltas.
 
-Primary keeper HEAD65758e82, Doctor115, retry112, keeper acceptance, other
-launchd labels and all private data remain intact. Existing branches, candidate
-refs/bundles and this reused checkout are retained; no new worktree or cleanup.
-No runtime installation, reload, model invocation, archive or downstream effect
-occurred in this source slice. No owner action is needed at this stage.
+ASR health200/idle retains the pinned Parakeet identity; `/ready` is HTTP200
+with13components/zero unready, overall degraded. Four installed-code synthetic
+timing vectors pass with zero model calls or production writes. Ordinary serving
+quality and downstream effects remain unobserved. Private SSD deployment root:
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-repetition111/`.
+`deployment.json` SHA25639904e54c518f096659ec2134b2b46f34b2c5fa2f1ed1cffdcae91bf5c1bc8a5;
+`independent-readback.json` SHA256de14da66a8ef8406862609df4a46d918424369a5ceccfe66e771a54fb2fb30b4.
+The five source/plist before-images and activation intent remain. High deployment
+reviewae3ae0bd-3916-41ac-bbec-40df6e0e77ad is SATISFIED; no rollback was needed.
+
+Acceptance decision, October16: the original first four criteria are the timing
+and existing-suite tests above. The fifth requires the PR description to tell
+the operator to archive the held episode after deployment; PR126 does so. It
+does not require executing that archive or waiting for readiness to clear.
+The exact canonical recording/sidecar still match the retained receipt and
+immutable112 backup, and its current Parakeet hold remains active. No audio,
+sidecar, receipt, ledger or Atlas queue state was changed. Broader Atlas quality
+work remains separate; no replay, retrospective quality pass or owner triage is
+added to #111's completion contract.
+
+Next: obtain trusted exact-head review, both native checks and normal merge for
+this acceptance record, then under fresh canonical/lowercase RepoLocks recheck
+issue111/peer/lease/source/receipts, close111 COMPLETED and remove only its
+resolved needs-human/acceptance-pending labels. Preserve all other history and
+work. Recheck both local health URLs and the named private readback; no redeploy
+is needed for this documentation. Existing branches, candidate refs/bundles and
+the same reused retained checkout stay; no new worktree or cleanup.
 
 ## Retry retention accepted — October 16, 2026 09:52 UTC
 
@@ -82,9 +99,9 @@ Next: monitor ordinary retry metadata during normal use for terminal audio
 release/receipt durability or pending-review preservation. No owner decision is
 needed. Do not manufacture inference/replay or run a historical prune. Recheck
 `curl -fsS http://127.0.0.1:10311/health`, loaded ASR source stamp and helper hash;
-check `/ready` separately. #111's useful retained candidatea0bdf579 remains
-unpublished; its earlier baseline environment/judge failures are technical,
-not proof that the owner must reprioritize it. Infra owns #110 acceptance.
+check `/ready` separately. #111's retained candidate is accepted in the current
+checkpoint above; its earlier fixture/judge failures and private proof remain.
+Infra owns #110 acceptance.
 
 ## Current Doctor acceptance — October 16, 2026 UTC
 
@@ -108,7 +125,7 @@ Accepted deployment receipt SHA256:
 No recording, ledger row, delivery or provider replay was performed.
 
 Next: observe ordinary captures, separately verify each downstream receipt, and
-continue the existing #111 quality-rule task; #112 is accepted above. Infra owns
+retain #111/#112 acceptance above. Infra owns
 #110 incident acceptance; this scoped report does not close it. Recheck loaded
 `http://127.0.0.1:5678/ready`, Doctor hash
 `3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`

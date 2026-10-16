@@ -1,12 +1,15 @@
 ## Parakeet repetition timing — October 16, 2026 UTC
 
-- [ ] Complete [#111](https://github.com/Khamel83/penny/issues/111) using the
-  verified retained candidate rather than another implementation. Timing-aware
-  Parakeet checks and two invalid-start guards pass 92 focused checks, 848 full
-  tests/two skips/60 subtests and 497 trust tests/two skips. Exact-head review,
-  hosted Python3.11/3.12 CI and normal merge remain source gates. Installation and the original post-deploy hold-archive
-  instruction remain separate; no old audio replay or owner triage is added.
-  [Source, private proof and next gates](HANDOFF.md).
+- [x] Complete [#111](https://github.com/Khamel83/penny/issues/111) from its
+  retained candidate. [PR126](https://github.com/Khamel83/penny/pull/126) merged
+  64d32534 after exact trusted PASS and both native hosted checks;92focused,
+  848full/two skips/60subtests and497trust/two skips pass. The exact two modules
+  are installed with ASR/watcher/webhook refresh and independent source/peer/
+  health/readiness verification. Its original fifth criterion is the PR body's
+  post-deploy archive instruction, already supplied; actual archive execution
+  and a future ordinary inference were not completion requirements. The active
+  Atlas quality hold and all recording/receipt/backup bytes remain intact.
+  [Acceptance, private receipts and guarded native closure](HANDOFF.md).
 
 ## Retry retention — October 16, 2026 UTC
 
