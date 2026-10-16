@@ -8,7 +8,8 @@ Only idle `com.penny.shared-whisper` was reloaded, now PID58688/source85900798.
 Callers, keeper and other plists stay unchanged; webhook remains c9b0368a.
 Primary HEAD65758e82 is preserved with intentional Doctor/retry-helper deltas.
 ASR health200/idle declares pinned Parakeet with no resident worker; a future
-ordinary retry is a separate acceptance receipt.
+ordinary retry remains unobserved. Original #112 test and installation acceptance
+is complete; normal-use observation does not keep that issue held.
 
 Actual retry root remains `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` on
 the enrolled mounted SSD. No migration was necessary. The helper now defaults

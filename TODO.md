@@ -8,10 +8,14 @@
 - [x] Verify complete local SSD backup before scoped helper installation/idle
   ASR reload; check exact bytes, loaded source, unchanged callers/peers and
   installed synthetic terminal/pending behavior. [Receipt and rollback](HANDOFF.md).
-- [ ] Verify the next ordinary retry's retention receipt and pending-record
-  preservation for #112. Source and installation are accepted; no owner decision
-  is required. Keep the acceptance-pending guard until actual ordinary evidence;
-  no replay or historical batch prune.
+- [x] Accept [#112](https://github.com/Khamel83/penny/issues/112) against its
+  original four test criteria: SSD-root placement, terminal audio release with
+  receipt preservation, pending-review protection, and passing existing tests.
+  [PR122](https://github.com/Khamel83/penny/pull/122) and the installed probe satisfy
+  these checks; installation is independently
+  verified above. A future ordinary retry remains unobserved, but was not an
+  original completion requirement. Remove the extra acceptance hold; observe
+  normal use without replay or historical batch prune.
 
 ## Doctor reporting completed — October 16, 2026 UTC
 
