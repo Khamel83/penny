@@ -6,9 +6,12 @@
   back without new downstream rows. [Evidence](docs/health-audit-20261018.md).
 - ~~Recover missing/corrupt history and replay legacy Maya dead letters~~ —
   owner retired this work October18; preserve old data and receipts.
-- [ ] Deploy exact-record acknowledgement of reviewed history and verify
-  installed readiness, refreshed OCI projection and persisted Kuma UP heartbeat.
-  New/changed failures must still alert. [Scope](docs/health-audit-20261018.md).
+- [x] Deploy exact-record acknowledgement of reviewed history; installed
+  readiness and OCI are ready, Homelab API healthy, Kuma leaves23/24 UP.
+  New/changed failures still alert. [Evidence](docs/health-audit-20261018.md).
+- [x] Verify parent Kuma22's ordinary UP heartbeat and both child checks:
+  all three saved UP at06:25:46/47UTC; parent reports all children up.
+  [Acceptance](docs/health-audit-20261018.md).
 
 ## Parakeet repetition timing — October 16, 2026 UTC
 

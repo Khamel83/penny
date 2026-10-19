@@ -1,13 +1,12 @@
-## Historical health acknowledgement — October 18, 2026 local
+## Historical health acknowledgement — installed October 19, 2026 UTC
 
-Proposed private state: `~/.penny/health-history.json` on the existing SSD-backed
-state path. `scripts/acknowledge_health_history.py` previews metadata counts;
-`--apply` freezes reviewed terminal-record fingerprints once without changing
-delivery/capture state. Doctor retains totals and exposes acknowledged counts.
-No port, provider, credential or macOS permission changes. Source deployment and
-Kuma acceptance pending; [owner decision](docs/health-audit-20261018.md).
-
-# Penny infrastructure
+Private `~/.penny/health-history.json` is on the existing SSD state path,
+mode0600, with exact-record fingerprints for the owner-retired exceptions.
+PR132 merged8606b497 Doctor/helper/operator bytes are installed; only webhook
+was reloaded/stamped. Current readiness/OCI are ready and Homelab API healthy.
+Kuma22/23/24all have persisted ordinary UP heartbeats at06:25:46/47UTC.
+No port, provider, credential, Kuma threshold or macOS permission changed.
+[Owner decision, deployment receipt and rollback](docs/health-audit-20261018.md).
 
 ## ASR retry component — installed October 16, 2026 09:52 UTC
 

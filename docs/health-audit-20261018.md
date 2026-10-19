@@ -17,11 +17,12 @@ The operator command previews by default; `--apply` creates the set exclusively
 and refuses to overwrite it. No date cutoff or moving age window is used.
 
 Source validation: the three new regression tests first failed; after the fix,
-all 39 focused Doctor/history checks pass; full suite851passed/two skipped/
+all 40 focused Doctor/history checks pass; final full suite852passed/two skipped/
 60subtests and trust497tests/two skipped pass. Trust first identified an SQLite
 connection-close omission, corrected before the passing run. Installation receipt
 will be recorded after execution. Source merge alone does not prove deployment
-or a persisted Kuma heartbeat.
+or a persisted Kuma heartbeat. The installation and subsequent readback are
+recorded below.
 
 ## Diagnostic verdict before acknowledgement
 
@@ -90,4 +91,52 @@ The runtime checkout's four existing modified modules were preserved.
 Documentation uses `.worktrees/health-repair` on
 `docs/penny-health-repair-20261018`, created from fetched default because the
 runtime checkout is protected. Retain this worktree through source review;
-remove only after publication/merge with no unpublished or dirty work.
+retain clean for safe reuse after publication/merge; no sibling checkout or
+additional worktree was created for acceptance.
+
+## Accepted source and scoped installation — October 19 UTC
+
+[PR132](https://github.com/Khamel83/penny/pull/132) merged as
+`8606b49785bcd5c7c13b2476f3f465205f674609` at06:17:22UTC.
+Trusted reviewer Bot PASS5567593991 covers exact head
+`d6750477df710fc8c2cf2cab8b5e110d9475454b`; hosted Python3.11/3.12 jobs
+117917669540/117917669137 in run39208900730 both passed. OCI Janitor's independent
+merge receipt matches that head and merge. Fetched default agrees.
+
+Fresh backup20261019T061523Z passed local scratch verification and Homelab
+catalog readback,532rows/maxID784. Installed exact merged Doctor, helper and
+operator script; stamped/reloaded only webhook. Existing watcher636, tasks638
+and shared ASR650 remained running. The other three dirty runtime modules and
+four peer plists retained their hashes. ASR remained healthy/idle.
+
+The acknowledgement freezes exactly9dead letters,2historical capture failures,
+1unavailable source and1quarantined effect. All four reviewed history row sets
+and canonical336's placeholder match the pre-attempt SQLite before-image.
+No historical delivery, audio or receipt was erased or marked successful.
+
+At06:18:21UTC installed `/ready` returns HTTP200/ready with source8606b497 and
+all components ready. Raw historical counts remain alongside matching
+acknowledged counts. At06:18:24UTC the existing OCI observer/projection reports
+ready at that same source. After the normal Baywatch service was triggered,
+the authenticated Homelab API reports Penny healthy, with its declared check
+observed/effective statusok at06:18:32UTC. No Kuma threshold was changed.
+
+Private SSD deployment before-images, exact hashes, backup and live readiness:
+`/Volumes/2TB_SSD/AI/Penny/state/deployments/20261019T061632Z-health-history/`.
+The acknowledgement is `~/.penny/health-history.json` (mode0600).
+Rollback: retain/rename that file to restore old-history warnings; restore
+`doctor-before.py` and `webhook-before.plist` from this deployment directory,
+reload only webhook and check `/ready`. Preserve the acknowledgement and new
+helper/script as evidence rather than deleting private history.
+
+Kuma's ordinary06:25:46UTC heartbeat reports parent22 UP, `All children up
+and running`. Declared-check23 is UP at06:25:46 and readiness24 UP at06:25:47.
+All three persisted statuses are1; the earlier leaf recovery was already
+observed at06:20:46/47. This verifies the actual monitoring outcome without
+changing thresholds, fabricating heartbeats, resetting uptime statistics or
+restarting Kuma. Historical heartbeat data remains intact.
+
+No historical recovery or delivery replay remains in flight. Resume normal
+monitoring; investigate future new failures. A future new capture/downstream
+receipt remains its own evidence boundary, not a prerequisite to acknowledge
+the owner-retired history.
