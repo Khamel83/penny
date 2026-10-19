@@ -1,19 +1,28 @@
-## Owner-approved historical health acknowledgement — October 18, 2026 local
+## Penny health green — October 18, 2026 local / October 19 UTC
 
-Owner directed green Kuma/current operation and retirement of missing-history
-recovery. Implemented exact-record metadata fingerprints for the existing
-Apple quarantine, Maya dead letters and Voice Memo terminal/unavailable history.
-Raw counts and ledger states remain visible; new/changed failures still alert.
-39 focused checks pass after three demonstrated regression failures.
-Source review/merge, scoped webhook deployment, acknowledgement installation,
-OCI readback and a persisted Kuma UP heartbeat are pending. No completion claim.
-[Diagnosis, owner decision and private receipt](docs/health-audit-20261018.md).
+Owner retired historical recovery and approved acknowledgement of the reviewed
+past failures. [PR132](https://github.com/Khamel83/penny/pull/132) merged8606b497
+after exact-head trusted PASS, both hosted checks and independent Janitor receipt.
+Final validation:852passed/two skipped/60subtests; trust497tests/two skipped.
+Exact merged Doctor/helper/operator bytes are installed; only webhook reloaded.
+Fresh SSD/Homelab backup20261019T061523Z verified. Current `/ready` and OCI's
+projection both report ready at8606b497; Homelab API reports Penny healthy.
 
-Next: finish full checks, publish/review/merge, install only Doctor plus its
-helper and the private acknowledgement, reload only webhook, refresh OCI's
-existing observer and verify the actual Kuma heartbeat. Runtime dirty modules
-remain protected; `.worktrees/health-repair` is retained for this single change
-until merge/publication with a clean-worktree cleanup check.
+The acknowledgement preserves ledger history and exposes raw/acknowledged
+counts: Maya9, old capture failures2, unavailable1, test quarantine1. New or
+changed failures still alert. Existing history and canonical placeholder336
+match the before-image. Watcher636/tasks638/ASR650 and protected modules/peer
+plists were preserved. [Evidence, private receipt and rollback](docs/health-audit-20261018.md).
+
+Kuma parent22 and declared-check23 have ordinary saved UP heartbeats at
+06:25:46UTC; readiness24 is UP at06:25:47. Parent reports all children up.
+All three are green; historical uptime rows remain. No threshold was relaxed.
+Next: normal monitoring. Recheck `/ready`, OCI's existing8793projection and
+Kuma's latest22/23/24heartbeats when investigating a future new failure. No
+historical recovery, missing-content chase or replay remains in flight.
+The same `.worktrees/health-repair` was reused for source and acceptance;
+retain clean for safe reuse after accepted publication. No sibling checkout
+or separate acceptance worktree was created.
 
 ## Parakeet timing accepted — October 16, 2026 11:12 UTC
 
