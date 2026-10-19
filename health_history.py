@@ -42,6 +42,8 @@ def snapshot(component: str | None = None) -> dict[str, list[str]]:
             if component is not None and component != name:
                 continue
             for group, query in groups.items():
+                if group == 'dead_letter':
+                    query += ' AND ' + transcript_log._maya_health_predicate()
                 result[group] = sorted(
                     hashlib.sha256(json.dumps(list(row), separators=(',', ':')).encode()).hexdigest()
                     for row in conn.execute(query)

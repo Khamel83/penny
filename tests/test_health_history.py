@@ -15,11 +15,14 @@ def ledger(tmp_path, monkeypatch):
         state TEXT, last_error_code TEXT, attempt_count INTEGER, updated_at TEXT);
       CREATE TABLE transcripts(id INTEGER, maya_delivery_status TEXT,
         maya_dead_letter_at TEXT, maya_dead_letter_reason TEXT,
-        maya_delivery_attempt_count INTEGER, updated_at TEXT);
+        maya_delivery_attempt_count INTEGER, updated_at TEXT,
+        maya_delivery_eligible INTEGER DEFAULT 1, quality_status TEXT DEFAULT 'passed',
+        source TEXT DEFAULT 'iCloud', ingest_state TEXT DEFAULT 'transcribed',
+        recorded_at TEXT DEFAULT '2026-09-11', superseded_by_transcript_row_id INTEGER);
       CREATE TABLE voice_memo_ingest(recording_pk INTEGER, status TEXT,
         terminal_at TEXT, error_message TEXT, attempt_count INTEGER, updated_at TEXT);
       INSERT INTO apple_effects VALUES('effect1',493,'quarantined','timeout_uncertain',17,'2026-08-12');
-      INSERT INTO transcripts VALUES(735,'dead_letter','2026-09-11','attempt_cap',20,'2026-09-11');
+      INSERT INTO transcripts(id,maya_delivery_status,maya_dead_letter_at,maya_dead_letter_reason,maya_delivery_attempt_count,updated_at) VALUES(735,'dead_letter','2026-09-11','attempt_cap',20,'2026-09-11');
       INSERT INTO voice_memo_ingest VALUES(112,'failed_terminal','2026-09-22','file_not_downloaded',0,'2026-09-22');
       INSERT INTO voice_memo_ingest VALUES(293,'unavailable','2026-08-10','file_not_downloaded',8,'2026-08-10');
     ''')
@@ -63,3 +66,14 @@ def test_corrupt_acknowledgement_fails_closed(tmp_path, monkeypatch):
     path.write_text('{}')
     with pytest.raises(ValueError):
         acknowledged_counts('maya')
+
+
+def test_ineligible_old_maya_history_cannot_mask_a_new_eligible_failure(tmp_path, monkeypatch):
+    from health_history import acknowledge, acknowledged_counts
+    c = ledger(tmp_path, monkeypatch)
+    acknowledge()
+    c.execute("UPDATE transcripts SET maya_delivery_eligible=0 WHERE id=735")
+    c.execute("INSERT INTO transcripts(id,maya_delivery_status,maya_dead_letter_at,maya_delivery_attempt_count,updated_at) VALUES(736,'dead_letter','2026-10-19',20,'2026-10-19')")
+    c.commit()
+    assert acknowledged_counts('maya')['acknowledged_dead_letter_count'] == 0
+    c.close()
