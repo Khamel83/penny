@@ -859,3 +859,30 @@ def test_shared_probe_accepts_configured_parakeet_and_counts_both_engines(monkey
     probe=doctor._default_probe_shared_whisper(cfg)
     assert probe['model_verified'] is True
     assert probe['memory_pressure_ok'] is False
+
+
+def test_reviewed_history_is_ready_but_new_failures_still_alert(tmp_path):
+    from doctor import run_doctor
+    probes = _ready_probes(tmp_path)
+    probes['voice_memos'].update(
+        terminal_failure_count=2, historical_terminal_failure_count=2,
+        current_terminal_failure_count=0, failed_count=2, unavailable_count=1,
+        acknowledged_historical_failure_count=2, acknowledged_unavailable_count=1)
+    probes['apple_effects'].update(quarantined_count=1, acknowledged_quarantined_count=1)
+    probes['maya'].update(configured=True, dead_letter_count=9, acknowledged_dead_letter_count=9)
+    result = run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert result.overall == 'ready'
+    assert result.components['maya'].details['dead_letter_count'] == 9
+    assert result.components['maya'].details['acknowledged_dead_letter_count'] == 9
+    for component, field, new_count in (
+        ('voice_memos', 'current_terminal_failure_count', 1),
+        ('voice_memos', 'unavailable_count', 2),
+        ('apple_effects', 'quarantined_count', 2),
+        ('apple_effects', 'uncertain_count', 1),
+        ('maya', 'dead_letter_count', 10),
+        ('maya', 'failed_count', 1),
+    ):
+        before = probes[component].get(field, 0)
+        probes[component][field] = new_count
+        assert run_doctor(config=_config(tmp_path), probe_overrides=probes).overall != 'ready'
+        probes[component][field] = before

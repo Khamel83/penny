@@ -1,3 +1,20 @@
+## Owner-approved historical health acknowledgement — October 18, 2026 local
+
+Owner directed green Kuma/current operation and retirement of missing-history
+recovery. Implemented exact-record metadata fingerprints for the existing
+Apple quarantine, Maya dead letters and Voice Memo terminal/unavailable history.
+Raw counts and ledger states remain visible; new/changed failures still alert.
+39 focused checks pass after three demonstrated regression failures.
+Source review/merge, scoped webhook deployment, acknowledgement installation,
+OCI readback and a persisted Kuma UP heartbeat are pending. No completion claim.
+[Diagnosis, owner decision and private receipt](docs/health-audit-20261018.md).
+
+Next: finish full checks, publish/review/merge, install only Doctor plus its
+helper and the private acknowledgement, reload only webhook, refresh OCI's
+existing observer and verify the actual Kuma heartbeat. Runtime dirty modules
+remain protected; `.worktrees/health-repair` is retained for this single change
+until merge/publication with a clean-worktree cleanup check.
+
 ## Parakeet timing accepted — October 16, 2026 11:12 UTC
 
 [#111](https://github.com/Khamel83/penny/issues/111) is delivered by
