@@ -163,7 +163,7 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-The remote TODO queue is project-owned and tracked canonically in [TODO.md](TODO.md) and [docs/REPO_PLAN.md](docs/REPO_PLAN.md) (coordinator [#116](https://github.com/Khamel83/penny/issues/116)). All current task checkboxes are checked; refer to the canonical document.
+Active work queue is canonical in repository `TODO.md` (all open tasks outside Janitor block are resolved or completed; see handwritten queue and docs/REPO_PLAN.md).
 <!-- janitor:end:todo -->
 
 ## Owning repository plan
