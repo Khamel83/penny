@@ -1,20 +1,19 @@
-## Health investigation — October 18, 2026 local
+## Owner-approved historical health acknowledgement — October 18, 2026 local
 
-Live `/ready` is HTTP200/degraded with zero unready components. Current capture,
-ASR health (local/Homelab), SQLite, archive, backup and active Drop/Slack queues
-pass. Remaining warnings are synthetic Apple quarantine493, nine September
-legacy Maya dead letters, and historical absent/corrupt audio. A bounded
-local-only recovery of source135 failed: original/staged audio both truncate at
-1,586bytes and fail AAC decoding. Its exact prior source-ledger row was restored;
-no canonical words or downstream rows were added. OCI's refreshed observer
-agrees with installed readiness. [Evidence and private receipts](docs/health-audit-20261018.md).
+Owner directed green Kuma/current operation and retirement of missing-history
+recovery. Implemented exact-record metadata fingerprints for the existing
+Apple quarantine, Maya dead letters and Voice Memo terminal/unavailable history.
+Raw counts and ledger states remain visible; new/changed failures still alert.
+39 focused checks pass after three demonstrated regression failures.
+Source review/merge, scoped webhook deployment, acknowledgement installation,
+OCI readback and a persisted Kuma UP heartbeat are pending. No completion claim.
+[Diagnosis, owner decision and private receipt](docs/health-audit-20261018.md).
 
-Next: verify the next ordinary capture's own receipts; recover old audio only
-from a valid copy. Legacy Maya delivery requires destination receipt checks
-before any replay. Historical exceptions remain unresolved; no warning was
-waived. Runtime's dirty files were preserved; documentation worktree
-`.worktrees/health-repair` is retained through review and merge, then eligible
-for clean-worktree removal.
+Next: finish full checks, publish/review/merge, install only Doctor plus its
+helper and the private acknowledgement, reload only webhook, refresh OCI's
+existing observer and verify the actual Kuma heartbeat. Runtime dirty modules
+remain protected; `.worktrees/health-repair` is retained for this single change
+until merge/publication with a clean-worktree cleanup check.
 
 ## Parakeet timing accepted — October 16, 2026 11:12 UTC
 

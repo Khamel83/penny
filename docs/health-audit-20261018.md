@@ -1,6 +1,29 @@
 # Penny health audit — October 18, 2026 local / October 19 UTC
 
-## Current verdict
+## Owner decision and current scope
+
+After reviewing the findings, the owner explicitly directed: get Uptime Kuma
+ green, treat missing history as past, and focus on working current operation.
+Historical recovery is retired from the active queue. Preserve all old bytes,
+receipts and terminal states; do not replay historical external deliveries.
+
+The fix acknowledges a finite set of exact terminal-record metadata hashes in
+SSD-backed `~/.penny/health-history.json`. Doctor keeps raw exception counts and
+adds acknowledged counts, so reviewed history no longer lowers readiness.
+A new or changed failure does not match the saved set and still alerts.
+Invalid acknowledgement data fails closed. Current terminal capture failures,
+failed/uncertain effects, stale evidence, backlog and storage checks are unchanged.
+The operator command previews by default; `--apply` creates the set exclusively
+and refuses to overwrite it. No date cutoff or moving age window is used.
+
+Source validation: the three new regression tests first failed; after the fix,
+all 39 focused Doctor/history checks pass; full suite851passed/two skipped/
+60subtests and trust497tests/two skipped pass. Trust first identified an SQLite
+connection-close omission, corrected before the passing run. Installation receipt
+will be recorded after execution. Source merge alone does not prove deployment
+or a persisted Kuma heartbeat.
+
+## Diagnostic verdict before acknowledgement
 
 Installed `/ready` returns HTTP 200/degraded at source `64d32534`.
 There are no unready components, current terminal capture failures, source
@@ -48,12 +71,13 @@ retained observation at 06:07:39 UTC and health projection agree: degraded,
 source `64d32534`. The monitor is correctly reflecting Penny, not a separate
 current outage. No monitoring threshold was relaxed.
 
-A valid independent audio copy is required to recover sources 112/135/293;
+Historical recovery is retired by the owner decision above. If explicitly
+reopened, a valid independent audio copy is required for sources 112/135/293;
 repeating transcription against absent/corrupt bytes will not repair them.
 Legacy Maya recovery requires read-only identity/hash/receipt verification at
 the destination before any separately authorized replay. Preserve synthetic
-Apple quarantine493. Do not call these deliveries complete or silently remove
-the historical warnings.
+Apple quarantine493. Acknowledgement records the owner decision; it does not mark deliveries
+complete or repair missing content.
 
 Next verification: check `curl -s http://127.0.0.1:5678/ready`, local and Homelab
 `:10311/health`, and keeper `launchctl print`; inspect receipts for the next

@@ -4,9 +4,11 @@
   component, preserve historical holds and attempt bounded local recovery.
   Source135 audio is corrupt in both available copies; failed attempt rolled
   back without new downstream rows. [Evidence](docs/health-audit-20261018.md).
-- [ ] Historical exceptions remain: valid audio copies are needed for missing/
-  corrupt sources; legacy Maya dead letters need destination receipt checks
-  before any replay. Preserve synthetic quarantine493 and existing evidence.
+- ~~Recover missing/corrupt history and replay legacy Maya dead letters~~ —
+  owner retired this work October18; preserve old data and receipts.
+- [ ] Deploy exact-record acknowledgement of reviewed history and verify
+  installed readiness, refreshed OCI projection and persisted Kuma UP heartbeat.
+  New/changed failures must still alert. [Scope](docs/health-audit-20261018.md).
 
 ## Parakeet repetition timing — October 16, 2026 UTC
 
