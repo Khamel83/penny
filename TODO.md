@@ -1,3 +1,13 @@
+## Health investigation — October 18, 2026 local
+
+- [x] Diagnose installed and external Penny health; verify no current unready
+  component, preserve historical holds and attempt bounded local recovery.
+  Source135 audio is corrupt in both available copies; failed attempt rolled
+  back without new downstream rows. [Evidence](docs/health-audit-20261018.md).
+- [ ] Historical exceptions remain: valid audio copies are needed for missing/
+  corrupt sources; legacy Maya dead letters need destination receipt checks
+  before any replay. Preserve synthetic quarantine493 and existing evidence.
+
 ## Parakeet repetition timing — October 16, 2026 UTC
 
 - [x] Complete [#111](https://github.com/Khamel83/penny/issues/111) from its

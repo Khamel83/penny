@@ -1,3 +1,21 @@
+## Health investigation — October 18, 2026 local
+
+Live `/ready` is HTTP200/degraded with zero unready components. Current capture,
+ASR health (local/Homelab), SQLite, archive, backup and active Drop/Slack queues
+pass. Remaining warnings are synthetic Apple quarantine493, nine September
+legacy Maya dead letters, and historical absent/corrupt audio. A bounded
+local-only recovery of source135 failed: original/staged audio both truncate at
+1,586bytes and fail AAC decoding. Its exact prior source-ledger row was restored;
+no canonical words or downstream rows were added. OCI's refreshed observer
+agrees with installed readiness. [Evidence and private receipts](docs/health-audit-20261018.md).
+
+Next: verify the next ordinary capture's own receipts; recover old audio only
+from a valid copy. Legacy Maya delivery requires destination receipt checks
+before any replay. Historical exceptions remain unresolved; no warning was
+waived. Runtime's dirty files were preserved; documentation worktree
+`.worktrees/health-repair` is retained through review and merge, then eligible
+for clean-worktree removal.
+
 ## Parakeet timing accepted — October 16, 2026 11:12 UTC
 
 [#111](https://github.com/Khamel83/penny/issues/111) is delivered by
