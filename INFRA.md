@@ -1,3 +1,30 @@
+## Shared ASR TCC containment — October 19, 2026 local
+
+The Mac mini shared ASR service is intentionally contained. Its launchd
+process failed during Python startup on the SSD-backed runtime with
+`Fatal Python error: Failed to import encodings module` and
+`InterruptedError: [Errno 4] Interrupted system call`. Unified logs record
+955 `kTCCServiceSystemPolicyRemovableVolumes` watchdog events across 101 PIDs
+from 20:17:00–20:29:38 PDT. This is a launchd/removable-volume authorization
+condition; a same-environment manual alternate-port run stayed healthy for 15
+seconds.
+
+Only `com.penny.shared-whisper-keeper` and `com.penny.shared-whisper` are
+booted out. Both original installed plist files remain unchanged and their
+SHA-256 hashes, the private capture, and the full receipt are recorded in
+[the dated incident evidence](docs/asr-tcc-containment-20261019.md). Local and
+tailnet ASR health are intentionally DOWN, port 10311 is absent, and Infra's
+Kuma `atlas.mac-asr` monitor should remain red. `export`, `tasks`, `watcher`
+and `webhook` remain loaded; no other launchd label, source, model, provider,
+data, backup or privacy grant changed.
+
+Owner-only blocker: resolve the supported macOS removable-volume
+authorization/runtime identity condition. After that gate, bootstrap the
+unchanged ASR plist first, verify stable health/no respawn, then bootstrap the
+unchanged keeper plist and verify its scheduled run and Kuma heartbeat. No
+TCC reset, SSD relocation, source workaround or unmanaged daemon is claimed or
+deployed.
+
 ## Historical health acknowledgement — installed October 19, 2026 UTC
 
 Private `~/.penny/health-history.json` is on the existing SSD state path,
