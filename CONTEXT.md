@@ -1,3 +1,25 @@
+## Shared ASR TCC containment — October 19, 2026 local
+
+The earlier green ASR checkpoint is superseded by a live, intentionally
+contained outage. Launchd repeatedly started the shared service and it exited
+after about 11 seconds. The private capture recorded Python's encodings import
+interrupted on the SSD-backed runtime; matching unified-log evidence records
+955 removable-volume TCC watchdog expiries across 101 PIDs from
+20:17:00–20:29:38 PDT. The same environment stayed healthy in a 15-second
+manual alternate-port run, separating the application from the launchd/TCC
+boundary.
+
+Only `com.penny.shared-whisper-keeper` and `com.penny.shared-whisper` were
+booted out at about 20:31:33 PDT to stop the retry loop. Both are unloaded;
+10311 and local/tailnet health are down intentionally. `export`, `tasks`,
+`watcher` and `webhook` remain loaded. Original plist bytes and hashes,
+existing dirty source, data, models, providers and privacy state are preserved.
+[Full evidence, receipt and exact re-enable gate](docs/asr-tcc-containment-20261019.md).
+
+The remaining blocker is owner-only macOS removable-volume authorization or a
+supported runtime identity change. No TCC reset, security grant, SSD move,
+source workaround, manual daemon or model/provider fallback is deployed.
+
 ## Penny health green — October 18, 2026 local / October 19 UTC
 
 Owner retired historical recovery and approved acknowledgement of the reviewed

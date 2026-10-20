@@ -1,3 +1,41 @@
+## Shared ASR TCC containment — October 19, 2026 local
+
+Current runtime is intentionally contained. The shared ASR LaunchAgent failed
+before application startup with `Fatal Python error: Failed to import encodings
+module` and `InterruptedError: [Errno 4] Interrupted system call` while
+touching `/Volumes/2TB_SSD/penny-runtime`. Unified logs record 955
+`kTCCServiceSystemPolicyRemovableVolumes` watchdog-expiry events across 101
+PIDs in the fixed 20:17:00–20:29:38 PDT window. A manual same-environment
+alternate-port run stayed healthy for 15 seconds.
+
+At about 20:31:33 PDT, only `com.penny.shared-whisper-keeper` and
+`com.penny.shared-whisper` were booted out. Both are unloaded; local and
+tailnet health are down and port 10311 is absent by design. The four peer
+labels (`export`, `tasks`, `watcher`, `webhook`) remain loaded and untouched.
+Original ASR/keeper plist bytes and hashes are preserved. No source, data,
+model, provider, privacy grant or TCC state changed. Private receipt and
+capture hashes are recorded in
+[the dated incident evidence](docs/asr-tcc-containment-20261019.md).
+
+Owner-only blocker: resolve the supported macOS removable-volume
+authorization/runtime identity condition. Then bootstrap the unchanged ASR
+plist first, require stable local health and no rapid respawn, bootstrap the
+unchanged keeper plist second, and verify the keeper run plus local, tailnet and
+Kuma health independently. Do not use an unmanaged daemon, reset TCC, move SSD
+state or claim recovery from a process-presence check.
+
+## Recheck after owner gate
+
+```sh
+uid=$(id -u)
+launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.penny.shared-whisper.plist"
+curl -fsS http://127.0.0.1:10311/health
+launchctl print "gui/$uid/com.penny.shared-whisper"
+launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist"
+launchctl print "gui/$uid/com.penny.shared-whisper-keeper"
+curl -fsS http://omars-mac-mini.deer-panga.ts.net:10311/health
+```
+
 ## Penny health green — October 18, 2026 local / October 19 UTC
 
 Owner retired historical recovery and approved acknowledgement of the reviewed

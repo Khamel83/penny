@@ -1,3 +1,19 @@
+## Shared ASR TCC containment — October 19, 2026 local
+
+- [x] Diagnose the failed `com.penny.shared-whisper` start. A private launchd
+  projection captured `Fatal Python error: Failed to import encodings module`
+  and `InterruptedError: [Errno 4] Interrupted system call`; unified logs show
+  955 `kTCCServiceSystemPolicyRemovableVolumes` watchdog events across 101 PIDs
+  in the fixed 20:17:00–20:29:38 PDT window.
+- [x] Contain the respawn loop by booting out only the keeper and shared ASR
+  labels. Original plist hashes, data, source, model, providers, TCC state and
+  the four peer labels were preserved; local and tailnet health remain DOWN by
+  design. [Incident receipt and re-enable gate](docs/asr-tcc-containment-20261019.md).
+- [ ] Owner-only gate: resolve the supported macOS removable-volume
+  authorization/runtime condition, then bootstrap the unchanged original ASR
+  plist, verify stable health/no respawn, bootstrap the keeper, and verify its
+  scheduled run plus Kuma heartbeat. Do not claim recovery before those facts.
+
 ## Health investigation — October 18, 2026 local
 
 - [x] Diagnose installed and external Penny health; verify no current unready
