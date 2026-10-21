@@ -68,5 +68,14 @@ object_root = "~/.penny/archive/objects"
 # Override only with PENNY_ARCHIVE_MIRROR_ROOT.
 mirror_root = "/Volumes/2TB_SSD/AI/Penny/archive-mirror"
 delivery_batch_limit = 5
+
+[transcript_view]
+# Shared Markdown-only view of accepted transcripts in iCloud Drive.
+# Only .md files are written here: no audio, raw JSON envelopes, databases,
+# models, backups or hidden conflict generations. Source recordings stay on
+# the local SSD. Override with PENNY_TRANSCRIPT_VIEW_ROOT.
+root = "~/Library/Mobile Documents/com~apple~CloudDocs/Sync/Penny Transcripts"
+enabled = true
+batch_limit = 25
 [drop]
 enabled = false

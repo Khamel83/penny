@@ -364,6 +364,7 @@ def init_db() -> None:
         )
         _ensure_apple_effects_schema(conn)
         _ensure_drop_schema(conn)
+        _ensure_transcript_view_schema(conn)
         conn.commit()
 
         migrated = _migrate_processed_files(conn)
@@ -2442,6 +2443,19 @@ def re_evaluate_quality_review(transcript_id: int) -> QualityReviewResult:
             quality_status="passed",
             enqueue_slack=True,
         )
+
+        if _view_has_published_archive(conn, row_id) and _is_view_exportable_transcript(
+            {
+                "transcript": transcript,
+                "quality_status": "passed",
+                "ingest_state": "transcribed",
+            }
+        ):
+            _queue_transcript_view_conn(
+                conn,
+                row_id,
+                hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
+            )
 
         # Preserve the body-free receipt for audit, but do not send a stale
         # quality warning after the operator's successful re-evaluation.
@@ -5422,6 +5436,20 @@ def mark_archive_delivery_published(
             """,
             (audio_path, markdown_path, manifest_path, receipt_sha256, delivery_id),
         )
+        transcript_row = conn.execute(
+            "SELECT transcript, quality_status, ingest_state, transcript_sha256 "
+            "FROM transcripts WHERE id = ?",
+            (int(row["transcript_row_id"]),),
+        ).fetchone()
+        if transcript_row is not None and _is_view_exportable_transcript(
+            transcript_row
+        ):
+            digest = str(transcript_row["transcript_sha256"] or "") or hashlib.sha256(
+                str(transcript_row["transcript"]).encode("utf-8")
+            ).hexdigest()
+            _queue_transcript_view_conn(
+                conn, int(row["transcript_row_id"]), digest
+            )
         conn.commit()
     finally:
         if conn:
@@ -5486,6 +5514,324 @@ def get_archive_delivery_health() -> dict[str, int]:
         log.error("Failed to fetch archive health: %s", _safe_exception_class(exc))
         health["health_error"] = 1
         return health
+    finally:
+        if conn:
+            conn.close()
+
+
+TRANSCRIPT_VIEW_STATUS_PENDING = "pending"
+TRANSCRIPT_VIEW_STATUS_PUBLISHED = "published"
+TRANSCRIPT_VIEW_MAX_ATTEMPTS = 5
+_TRANSCRIPT_VIEW_EXCLUDED_INGEST_STATES = frozenset(
+    {"skipped_too_large", "transcription_failed", "failed"}
+)
+
+
+def _ensure_transcript_view_schema(conn: sqlite3.Connection) -> None:
+    """Create the shared Markdown view ledger with additive migrations."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transcript_view_publications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transcript_row_id INTEGER NOT NULL UNIQUE,
+            transcript_sha256 TEXT,
+            destination_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            published_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(transcript_row_id) REFERENCES transcripts(id)
+        )
+        """
+    )
+    columns = _table_columns(conn, "transcript_view_publications")
+    for column, definition in (
+        ("transcript_sha256", "ALTER TABLE transcript_view_publications "
+                              "ADD COLUMN transcript_sha256 TEXT"),
+        ("destination_path", "ALTER TABLE transcript_view_publications "
+                             "ADD COLUMN destination_path TEXT"),
+        ("attempt_count", "ALTER TABLE transcript_view_publications "
+                          "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"),
+        ("last_error_code", "ALTER TABLE transcript_view_publications "
+                            "ADD COLUMN last_error_code TEXT"),
+        ("published_at", "ALTER TABLE transcript_view_publications "
+                         "ADD COLUMN published_at TEXT"),
+    ):
+        if column not in columns:
+            conn.execute(definition)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transcript_view_publications_due "
+        "ON transcript_view_publications(status, id)"
+    )
+
+
+def _is_view_exportable_transcript(row: Any) -> bool:
+    """Accept only canonical text that passed quality and is a real transcript."""
+    if row is None:
+        return False
+    text = str(row["transcript"] or "")
+    if not text.strip():
+        return False
+    if str(row["quality_status"] or "") != "passed":
+        return False
+    if text.startswith("(migrated"):
+        return False
+    ingest_state = str(row["ingest_state"] or "")
+    if ingest_state in _TRANSCRIPT_VIEW_EXCLUDED_INGEST_STATES:
+        return False
+    return True
+
+
+def _view_has_published_archive(
+    conn: sqlite3.Connection, transcript_id: int
+) -> bool:
+    """Return whether the shared view may include this canonical row.
+
+    The shared view mirrors the accepted, archived capture set, so a row
+    without a published local-mirror trio stays out of it.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM archive_deliveries "
+        "WHERE transcript_row_id = ? AND status = 'published'",
+        (int(transcript_id),),
+    ).fetchone()
+    return row is not None
+
+
+def _queue_transcript_view_conn(
+    conn: sqlite3.Connection,
+    transcript_id: int,
+    transcript_sha256: str,
+) -> None:
+    """Queue or refresh one shared-view publication inside a transaction."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO transcript_view_publications (
+            transcript_row_id, transcript_sha256, status
+        ) VALUES (?, ?, ?)
+        """,
+        (transcript_id, transcript_sha256, TRANSCRIPT_VIEW_STATUS_PENDING),
+    )
+    conn.execute(
+        """
+        UPDATE transcript_view_publications
+        SET status = ?, transcript_sha256 = ?, last_error_code = NULL,
+            updated_at = datetime('now')
+        WHERE transcript_row_id = ?
+          AND (status != ? OR IFNULL(transcript_sha256, '') != ?)
+        """,
+        (
+            TRANSCRIPT_VIEW_STATUS_PENDING,
+            transcript_sha256,
+            transcript_id,
+            TRANSCRIPT_VIEW_STATUS_PUBLISHED,
+            transcript_sha256,
+        ),
+    )
+
+
+def queue_transcript_view_backlog(limit: int = 50) -> int:
+    """Queue accepted transcripts that predate the shared view.
+
+    This reconciles the existing one-time snapshot with the ordinary ledger
+    path. It never retranscribes, replays or invents text.
+    """
+    bounded = max(0, min(int(limit), 500))
+    if bounded == 0:
+        return 0
+    conn = None
+    queued = 0
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """
+            SELECT transcripts.id, transcripts.transcript,
+                   transcripts.transcript_sha256, transcripts.quality_status,
+                   transcripts.ingest_state
+            FROM transcripts
+            JOIN archive_deliveries AS deliveries
+              ON deliveries.transcript_row_id = transcripts.id
+             AND deliveries.status = 'published'
+            WHERE (
+                    transcripts.id NOT IN (
+                        SELECT transcript_row_id FROM transcript_view_publications
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM transcript_view_publications AS failed
+                        WHERE failed.transcript_row_id = transcripts.id
+                          AND failed.status = 'failed'
+                    )
+              )
+              AND transcripts.quality_status = 'passed'
+              AND transcripts.transcript IS NOT NULL
+              AND TRIM(transcripts.transcript) != ''
+              AND transcripts.transcript NOT LIKE '(migrated%'
+              AND COALESCE(transcripts.ingest_state, '') NOT IN (
+                    'skipped_too_large', 'transcription_failed', 'failed'
+              )
+            ORDER BY transcripts.id
+            LIMIT ?
+            """,
+            (bounded,),
+        ).fetchall()
+        for row in rows:
+            if not _is_view_exportable_transcript(row):
+                continue
+            digest = str(row["transcript_sha256"] or "") or hashlib.sha256(
+                str(row["transcript"]).encode("utf-8")
+            ).hexdigest()
+            _queue_transcript_view_conn(conn, int(row["id"]), digest)
+            queued += 1
+            if queued >= bounded:
+                break
+        conn.commit()
+        return queued
+    except Exception:
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_pending_transcript_view_publications(limit: int = 25) -> list[dict[str, Any]]:
+    """Return accepted transcripts that still need a shared Markdown file."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT publications.id AS publication_id,
+                   publications.transcript_row_id,
+                   publications.transcript_sha256 AS publication_sha256,
+                   publications.destination_path,
+                   publications.last_error_code,
+                   publications.attempt_count,
+                   transcripts.transcript, transcripts.source,
+                   transcripts.recorded_at, transcripts.created_at,
+                   transcripts.quality_status, transcripts.ingest_state,
+                   transcripts.transcript_sha256,
+                   transcripts.audio_sha256, transcripts.transcription_backend,
+                   transcripts.transcription_model
+            FROM transcript_view_publications AS publications
+            JOIN transcripts ON transcripts.id = publications.transcript_row_id
+            JOIN archive_deliveries AS deliveries
+              ON deliveries.transcript_row_id = publications.transcript_row_id
+             AND deliveries.status = 'published'
+            WHERE publications.status = ?
+            ORDER BY publications.id
+            LIMIT ?
+            """,
+            (
+                TRANSCRIPT_VIEW_STATUS_PENDING,
+                max(0, min(int(limit), 100)),
+            ),
+        ).fetchall()
+        selected: list[dict[str, Any]] = []
+        for row in rows:
+            if not _is_view_exportable_transcript(row):
+                continue
+            selected.append(dict(row))
+        return selected
+    except sqlite3.Error:
+        log.error("Failed to fetch transcript view publications due to a database error")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_transcript_view_published(
+    transcript_row_id: int,
+    *,
+    destination_path: str,
+    transcript_sha256: str,
+) -> None:
+    """Record one published shared-view file."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE transcript_view_publications
+            SET status = ?, destination_path = ?, transcript_sha256 = ?,
+                attempt_count = 0, last_error_code = NULL,
+                published_at = datetime('now'), updated_at = datetime('now')
+            WHERE transcript_row_id = ?
+            """,
+            (
+                TRANSCRIPT_VIEW_STATUS_PUBLISHED,
+                str(destination_path),
+                str(transcript_sha256),
+                int(transcript_row_id),
+            ),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        log.error("Failed to record transcript view publication")
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def mark_transcript_view_failed(transcript_row_id: int, error_code: str) -> None:
+    """Record a bounded failure class for one shared-view publication."""
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """
+            UPDATE transcript_view_publications
+            SET attempt_count = attempt_count + 1,
+                status = CASE WHEN attempt_count + 1 >= ? THEN 'failed' ELSE ? END,
+                last_error_code = ?, updated_at = datetime('now')
+            WHERE transcript_row_id = ?
+            """,
+            (
+                TRANSCRIPT_VIEW_MAX_ATTEMPTS,
+                TRANSCRIPT_VIEW_STATUS_PENDING,
+                str(error_code)[:64],
+                int(transcript_row_id),
+            ),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        log.error("Failed to record transcript view failure")
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_transcript_view_publications() -> list[dict[str, Any]]:
+    """Return the published shared-view entries used to build the index."""
+    conn = None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT publications.transcript_row_id,
+                   publications.transcript_sha256,
+                   publications.destination_path,
+                   transcripts.source, transcripts.recorded_at,
+                   transcripts.created_at, transcripts.quality_status,
+                   transcripts.transcript_sha256 AS canonical_sha256
+            FROM transcript_view_publications AS publications
+            JOIN transcripts ON transcripts.id = publications.transcript_row_id
+            WHERE publications.status = ?
+              AND publications.destination_path IS NOT NULL
+            ORDER BY publications.transcript_row_id
+            """,
+            (TRANSCRIPT_VIEW_STATUS_PUBLISHED,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        log.error("Failed to fetch transcript view publications")
+        return []
     finally:
         if conn:
             conn.close()

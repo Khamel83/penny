@@ -7,6 +7,7 @@ Canonical docs for Penny live here.
 - `../HANDOFF.md` — assistant-facing operational handoff and validation checklist
 - `../README.md` — product overview, architecture, setup, deploy basics
 - `reliability.md` — operational model, failure modes, health signals
+- `transcript-view.md` — shared text-only transcript view in iCloud Drive
 - `macmini-deployment.md` — Mac mini layout, launchd deployment, runtime locations
 - `troubleshooting.md` — concrete recovery steps for Voice Memos/iCloud issues
 - `ios-shortcut-setup.md` — optional alternate ingest path, not the primary flow

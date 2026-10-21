@@ -1,3 +1,48 @@
+## Shared iCloud transcript view — October 21, 2026 source checkpoint
+
+Done in this worktree: the shared iCloud Drive `Sync/Penny Transcripts`
+folder is now maintained incrementally from the canonical ledger instead of
+by hand. `transcript_view.py` publishes one Markdown file per accepted
+transcript plus one `INDEX.md` under a stable per-transcript filename, with
+compact provenance and no recording titles. `transcript_log.py` adds the
+additive `transcript_view_publications` table; a row becomes eligible when
+its local-mirror trio is published, so the view mirrors the accepted,
+archived capture set, and held and migrated-placeholder rows are never
+queued. A bounded backlog queue reconciles accepted, already-archived rows
+that predate the view. `watcher.py` drains the outbox in its existing ingest
+pass. The view holds no audio, raw JSON envelopes, databases, models,
+backups, or hidden conflict generations; source recordings stay on the local
+SSD, and the config loader rejects a view root that nests the object store
+or the local archive mirror.
+
+Local evidence: 19 new tests in `tests/test_transcript_view.py` pass, and
+the full local suite runs 517 tests with two pre-existing environment
+failures unrelated to this change (`tests/test_apple_pilot.py` import form,
+and a `jsonschema` version difference in `tests/test_transcript_contract.py`).
+Trust-check phases 1-5 pass; phase 6 in this sandbox cannot import `pytest`
+from the hermetic environment.
+
+In flight: nothing is merged or deployed. No runtime, iCloud, or downstream
+delivery effect is claimed.
+
+Next: trusted review, native CI, and a normal merge; then deploy the merged
+revision on the Mac mini with the ordinary watcher refresh; then reconcile
+the existing 345-file snapshot against the shared folder and observe one
+actual new accepted transcript appear as Markdown with an updated index. Keep
+[#136](https://github.com/Khamel83/penny/issues/136) open for operational
+acceptance and use `Refs #136`.
+
+Recheck on the Mac mini:
+
+```sh
+VIEW="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Sync/Penny Transcripts"
+ls -1 "$VIEW" | head
+find "$VIEW" -type f ! -name '*.md' -print
+grep -c "canonical_transcript_id" "$VIEW"/*.md | tail
+grep "<transcript id>" "$VIEW/INDEX.md"
+curl -fsS http://127.0.0.1:5678/ready
+```
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 Current runtime is intentionally contained. The shared ASR LaunchAgent failed

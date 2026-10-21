@@ -1,3 +1,24 @@
+## Shared iCloud transcript view — October 21, 2026
+
+- [x] Implement the shared, text-only Markdown view over the canonical
+  ledger: stable per-transcript identity, compact provenance, changed accepted
+  text updates one file, duplicates collapse, the existing one-time snapshot
+  reconciles, and the index is rewritten from the ledger. Eligibility follows
+  the published local-mirror trio, so the view mirrors the accepted, archived
+  capture set. Source only; see
+  [the contract](docs/transcript-view.md).
+- [ ] Obtain trusted review, native CI, and a normal merge of that source,
+  then deploy the merged revision on the Mac mini with the ordinary watcher
+  refresh. Source, deployment, and the actual downstream file are separate
+  evidence.
+- [ ] Verify the deployment against the real shared folder: the existing
+  snapshot reconciles into one file per transcript with no duplicates, no
+  non-Markdown file, and no hidden conflict generation.
+- [ ] Observe one actual new accepted transcript appear as Markdown with an
+  updated `INDEX.md`. Keep [#136](https://github.com/Khamel83/penny/issues/136)
+  open for operational acceptance and use `Refs #136`; source merge alone does
+  not close it.
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 - [x] Diagnose the failed `com.penny.shared-whisper` start. A private launchd
