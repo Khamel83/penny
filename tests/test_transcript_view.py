@@ -376,6 +376,46 @@ class TranscriptViewWatcherTests(unittest.TestCase):
             receipt_sha256="b" * 64,
         )
 
+    def test_watcher_uses_the_configured_view_root(self) -> None:
+        row_id = transcript_log.insert_transcript(
+            content_hash="watcher-view-config",
+            source="iCloud",
+            transcript="configured root",
+            quality_status="passed",
+            recorded_at="2026-10-06T07:08:09Z",
+        )
+        self.assertIsNotNone(row_id)
+        self._publish_archive(int(row_id))
+
+        import config
+
+        previous = config._config
+        config._config = None
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "PENNY_TRANSCRIPT_VIEW_ROOT": str(self.view_root),
+                    "PENNY_TRANSCRIPT_VIEW_ENABLED": "true",
+                },
+            ):
+                loaded = config.get_config()
+                self.assertEqual(loaded.transcript_view.root, self.view_root)
+                self.assertTrue(loaded.transcript_view.enabled)
+                patch.object(watcher, "cfg", loaded).start()
+                watcher._process_transcript_view_outbox()
+        finally:
+            config._config = previous
+
+        files = [
+            path
+            for path in self.view_root.iterdir()
+            if path.suffix == ".md" and path.name != VIEW_INDEX_FILENAME
+        ]
+        self.assertEqual(len(files), 1)
+        _, body = split_front_matter(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(body, "configured root")
+
     def test_new_accepted_transcript_appears_as_markdown_with_index(self) -> None:
         row_id = transcript_log.insert_transcript(
             content_hash="watcher-view",

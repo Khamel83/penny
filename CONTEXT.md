@@ -27,12 +27,18 @@ SSD, and `config.py` rejects a view root that nests the object store or the
 local archive mirror.
 
 Source state only: the change is unmerged and undeployed in this worktree.
-Local suite: 517 tests with two pre-existing environment failures unrelated
+Local suite: 523 tests with two pre-existing environment failures unrelated
 to this change (`tests/test_apple_pilot.py` import form and a `jsonschema`
-version difference in `tests/test_transcript_contract.py`); the 19 new view
-tests pass. Trust-check phases 1-5 pass. No runtime, iCloud, or downstream
-delivery effect is claimed here; see
+version difference in `tests/test_transcript_contract.py`); the 25 new view
+and configuration tests pass. Trust-check phases 1-5 pass. No runtime,
+iCloud, or downstream delivery effect is claimed here; see
 [the shared transcript view contract](docs/transcript-view.md).
+
+The shared-view configuration cannot be discarded silently: `Config` requires
+the `transcript_view` field, the parsed TOML and `PENNY_TRANSCRIPT_VIEW_*`
+values are passed into it, the default root is absolute, and a relative root
+or a root that nests the archive object store or local mirror is rejected at
+load time. The watcher also refuses a non-absolute root.
 
 ## Shared ASR TCC containment — October 19, 2026 local
 

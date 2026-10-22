@@ -1449,6 +1449,9 @@ def _process_transcript_view_outbox() -> None:
     if not cfg.transcript_view.enabled:
         return
     view_root = Path(cfg.transcript_view.root)
+    if not view_root.is_absolute():
+        log.error("Transcript view root is not absolute (class=invalid_view_root)")
+        return
     limit = cfg.transcript_view.batch_limit
     try:
         queue_transcript_view_backlog(limit=limit)

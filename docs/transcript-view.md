@@ -119,6 +119,13 @@ batch_limit = 25
 Environment overrides: `PENNY_TRANSCRIPT_VIEW_ROOT`,
 `PENNY_TRANSCRIPT_VIEW_ENABLED`, `PENNY_TRANSCRIPT_VIEW_BATCH_LIMIT`.
 
+The root must be absolute. A relative root, or a root that contains the
+archive object store or the local archive mirror, is rejected when the
+configuration loads, and the watcher refuses a non-absolute root. The parsed
+values are the ones the watcher uses: `Config` requires the `transcript_view`
+field, so a missing configuration fails loudly instead of falling back to a
+default path.
+
 The publisher refuses to create the view directory when its parent container
 is missing, so an unmounted iCloud Drive never becomes a silent local
 directory that looks synced but is not.

@@ -175,6 +175,98 @@ class ConfigTests(unittest.TestCase):
         os.environ.pop("PENNY_WHISPER_MODEL_PATH", None)
         config._config = None
 
+    def test_transcript_view_config_is_loaded_from_toml_and_environment(self):
+        cfg = config.get_config()
+        self.assertTrue(cfg.transcript_view.enabled)
+        self.assertEqual(
+            cfg.transcript_view.root,
+            Path(
+                "~/Library/Mobile Documents/com~apple~CloudDocs/"
+                "Sync/Penny Transcripts"
+            ).expanduser(),
+        )
+        self.assertEqual(cfg.transcript_view.batch_limit, 25)
+
+        os.environ["PENNY_TRANSCRIPT_VIEW_ENABLED"] = "false"
+        os.environ["PENNY_TRANSCRIPT_VIEW_ROOT"] = "/tmp/penny-test-view"
+        os.environ["PENNY_TRANSCRIPT_VIEW_BATCH_LIMIT"] = "7"
+        config._config = None
+        try:
+            cfg = config.get_config()
+            self.assertFalse(cfg.transcript_view.enabled)
+            self.assertEqual(cfg.transcript_view.root, Path("/tmp/penny-test-view"))
+            self.assertEqual(cfg.transcript_view.batch_limit, 7)
+        finally:
+            os.environ.pop("PENNY_TRANSCRIPT_VIEW_ENABLED", None)
+            os.environ.pop("PENNY_TRANSCRIPT_VIEW_ROOT", None)
+            os.environ.pop("PENNY_TRANSCRIPT_VIEW_BATCH_LIMIT", None)
+            config._config = None
+
+    def test_transcript_view_configuration_is_required_by_the_config_object(self):
+        with self.assertRaises(TypeError):
+            config.Config(
+                llm=config.LLMConfig(model="m"),
+                google_tasks=config.GoogleTasksConfig(
+                    list_name="l", poll_interval_seconds=1
+                ),
+                apple_reminders=config.AppleRemindersConfig(
+                    lists=["l"], default_list="l"
+                ),
+                voice_memos=config.VoiceMemosConfig(
+                    max_file_size_mb=1,
+                    whisper_model="m",
+                    whisper_model_repository="m",
+                    whisper_model_revision="r",
+                    whisper_model_path=Path("/tmp/model"),
+                    poll_interval_seconds=1,
+                    startup_process_limit=1,
+                ),
+                shared_whisper=config.SharedWhisperConfig(
+                    url="http://127.0.0.1:10311/v1", auth_token="t"
+                ),
+                webhook=config.WebhookConfig(
+                    port=1, host="127.0.0.1", ingest_token="t", max_request_bytes=1
+                ),
+                logging=config.LoggingConfig(level="INFO"),
+                notifications=config.NotificationsConfig(telegram_enabled=False),
+                maya=config.MayaConfig(),
+                archive=config.ArchiveConfig(
+                    object_root=Path("/tmp/objects"), mirror_root=Path("/tmp/mirror")
+                ),
+                openrouter_api_key="k",
+                telegram_bot_token="t",
+                telegram_chat_id="c",
+                google_credentials_file=Path("/tmp/credentials.json"),
+                google_token_file=Path("/tmp/token.json"),
+            )
+
+    def test_transcript_view_default_root_is_absolute(self):
+        root = config.TranscriptViewConfig().root
+        self.assertTrue(root.is_absolute())
+        self.assertEqual(root, config.default_transcript_view_root())
+
+    def test_transcript_view_root_may_not_be_relative(self):
+        os.environ["PENNY_TRANSCRIPT_VIEW_ROOT"] = "relative/view"
+        config._config = None
+        try:
+            with self.assertRaises(ValueError):
+                config.get_config()
+        finally:
+            os.environ.pop("PENNY_TRANSCRIPT_VIEW_ROOT", None)
+            config._config = None
+
+    def test_transcript_view_root_may_not_contain_the_archive_object_root(self):
+        os.environ["PENNY_TRANSCRIPT_VIEW_ROOT"] = "/tmp/penny-test-view"
+        os.environ["PENNY_ARCHIVE_OBJECT_ROOT"] = "/tmp/penny-test-view/objects"
+        config._config = None
+        try:
+            with self.assertRaises(ValueError):
+                config.get_config()
+        finally:
+            os.environ.pop("PENNY_TRANSCRIPT_VIEW_ROOT", None)
+            os.environ.pop("PENNY_ARCHIVE_OBJECT_ROOT", None)
+            config._config = None
+
     def test_launch_templates_require_offline_pinned_model_path(self):
         revision = config.WHISPER_MODEL_REVISION
         expected_path = (

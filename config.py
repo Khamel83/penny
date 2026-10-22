@@ -108,14 +108,19 @@ class ArchiveConfig:
     delivery_batch_limit: int = 5
 
 
+def default_transcript_view_root() -> Path:
+    """Return the shared view's default root as an absolute path."""
+    return Path(
+        "~/Library/Mobile Documents/com~apple~CloudDocs/Sync/Penny Transcripts"
+    ).expanduser()
+
+
 @dataclass
 class TranscriptViewConfig:
     """The shared Markdown-only transcript view in iCloud Drive."""
 
     enabled: bool = True
-    root: Path = Path(
-        "~/Library/Mobile Documents/com~apple~CloudDocs/Sync/Penny Transcripts"
-    )
+    root: Path = field(default_factory=default_transcript_view_root)
     batch_limit: int = 25
 
 
@@ -137,6 +142,9 @@ class Config:
     notifications: NotificationsConfig
     maya: MayaConfig
     archive: ArchiveConfig
+    # The shared view configuration is required: a missing value must fail
+    # loudly instead of silently falling back to a default root.
+    transcript_view: TranscriptViewConfig
     # Secrets — from environment variables
     openrouter_api_key: str
     telegram_bot_token: str
@@ -144,7 +152,6 @@ class Config:
     google_credentials_file: Path
     google_token_file: Path
     drop: DropConfig = field(default_factory=DropConfig)
-    transcript_view: TranscriptViewConfig = field(default_factory=TranscriptViewConfig)
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -161,6 +168,8 @@ def _validate_transcript_view_boundaries(
 ) -> None:
     """Keep audio objects, mirrors and the shared view in separate trees."""
     view_root = Path(view.root)
+    if not view_root.is_absolute():
+        raise ValueError("PENNY_TRANSCRIPT_VIEW_ROOT must be an absolute path")
     if _is_within(archive.object_root, view_root):
         raise ValueError(
             "PENNY_TRANSCRIPT_VIEW_ROOT must not contain the archive object root"
@@ -434,6 +443,7 @@ def get_config() -> Config:
             ingest_token=os.environ.get('PENNY_DROP_TOKEN', ''),
         ),
         archive=archive,
+        transcript_view=transcript_view,
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
         telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),

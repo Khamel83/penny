@@ -15,12 +15,23 @@ backups, or hidden conflict generations; source recordings stay on the local
 SSD, and the config loader rejects a view root that nests the object store
 or the local archive mirror.
 
-Local evidence: 19 new tests in `tests/test_transcript_view.py` pass, and
-the full local suite runs 517 tests with two pre-existing environment
-failures unrelated to this change (`tests/test_apple_pilot.py` import form,
-and a `jsonschema` version difference in `tests/test_transcript_contract.py`).
+Local evidence: 25 new tests in `tests/test_transcript_view.py` and
+`tests/test_config.py` pass, and the full local suite runs 523 tests with two
+pre-existing environment failures unrelated to this change
+(`tests/test_apple_pilot.py` import form, and a `jsonschema` version
+difference in `tests/test_transcript_contract.py`).
 Trust-check phases 1-5 pass; phase 6 in this sandbox cannot import `pytest`
 from the hermetic environment.
+
+The parsed `[transcript_view]` configuration reaches the watcher and cannot be
+discarded silently: `Config` now requires the `transcript_view` field, so a
+missing value raises instead of falling back to a default root; the default
+root is absolute; the TOML values and `PENNY_TRANSCRIPT_VIEW_ROOT`,
+`PENNY_TRANSCRIPT_VIEW_ENABLED`, `PENNY_TRANSCRIPT_VIEW_BATCH_LIMIT` take
+effect; and a relative root or a root that nests the archive object store or
+local mirror is rejected when the configuration loads. The watcher also
+refuses a non-absolute root. The config tests and one watcher test cover that
+path.
 
 In flight: nothing is merged or deployed. No runtime, iCloud, or downstream
 delivery effect is claimed.
