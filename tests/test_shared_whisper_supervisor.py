@@ -270,3 +270,54 @@ def test_idle_worker_is_terminated_after_ttl():
     assert supervisor.expire_idle() is True
     assert factory.workers[0].terminated.is_set()
     assert supervisor.status()["worker_pid"] is None
+
+
+def test_hung_worker_fails_after_deadline_and_next_request_gets_new_worker():
+    """penny#138: an alive worker that never answers must not block forever."""
+    factory = FakeFactory()
+    supervisor = SharedWhisperSupervisor(
+        worker_factory=factory,
+        memory_guard=StaticMemoryGuard(),
+        grace_seconds=0.2,
+        idle_ttl_seconds=300.0,
+        job_deadline_seconds=1.0,
+        model_id=MODEL_ID,
+        model_revision=REVISION,
+    )
+    outcomes = []
+    thread = _run_request(supervisor, ClientKind.ATLAS, outcomes,
+                          audio_path="/tmp/a.wav", options={})
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    kind, exc = outcomes[0]
+    assert kind == "error" and "worker_deadline_exceeded" in str(exc)
+    assert factory.workers[0].terminated.is_set()
+    assert supervisor.status()["state"] == "idle"
+
+    outcomes.clear()
+    thread = _run_request(supervisor, ClientKind.ATLAS, outcomes,
+                          audio_path="/tmp/b.wav", options={})
+    deadline = time.monotonic() + 2
+    while len(factory.workers) < 2 or not factory.workers[1].submitted:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    factory.workers[1].complete(_result(factory.workers[1].submitted[0]["request_id"]))
+    thread.join(timeout=5)
+    assert outcomes[0][0] == "ok"
+
+
+def test_job_deadline_scales_with_audio_length():
+    clock = [0.0]
+    factory = FakeFactory()
+    supervisor = SharedWhisperSupervisor(
+        worker_factory=factory,
+        memory_guard=StaticMemoryGuard(),
+        job_deadline_seconds=900.0,
+        model_id=MODEL_ID,
+        model_revision=REVISION,
+        clock=lambda: clock[0],
+    )
+    job = supervisor._start_job(ClientKind.PENNY, audio_path="/tmp/long.wav",
+                                options={"_audio_seconds": 7200.0})
+    assert job.deadline_seconds == 14400.0
+    assert "_audio_seconds" not in factory.workers[0].submitted[0]["options"]
