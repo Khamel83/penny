@@ -1,4 +1,52 @@
-# Penny infrastructure
+## Historical health acknowledgement — installed October 19, 2026 UTC
+
+Private `~/.penny/health-history.json` is on the existing SSD state path,
+mode0600, with exact-record fingerprints for the owner-retired exceptions.
+PR132 merged8606b497 Doctor/helper/operator bytes are installed; only webhook
+was reloaded/stamped. Current readiness/OCI are ready and Homelab API healthy.
+Kuma22/23/24all have persisted ordinary UP heartbeats at06:25:46/47UTC.
+No port, provider, credential, Kuma threshold or macOS permission changed.
+[Owner decision, deployment receipt and rollback](docs/health-audit-20261018.md).
+
+## ASR retry component — installed October 16, 2026 09:52 UTC
+
+Merged PR122/85900798 retry_receipt.py is installed with SHA256
+`c568bd45bde9ae5d3d801740471ed7503fd72566a8bbf32aa0fafa289ea8dd2b`.
+Only idle `com.penny.shared-whisper` was reloaded, now PID58688/source85900798.
+Callers, keeper and other plists stay unchanged; webhook remains c9b0368a.
+Primary HEAD65758e82 is preserved with intentional Doctor/retry-helper deltas.
+ASR health200/idle declares pinned Parakeet with no resident worker; a future
+ordinary retry remains unobserved. Original #112 test and installation acceptance
+is complete; normal-use observation does not keep that issue held.
+
+Actual retry root remains `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` on
+the enrolled mounted SSD. No migration was necessary. The helper now defaults
+there and rejects missing mounts/nonphysical overrides before receipt writes.
+Terminal receipt rename is fsynced before copied audio release;14day expiry
+preserves pending/unknown/malformed/symlink-containing records. Before activation,
+449files/10,059,792,302bytes were hash-verified into a durable write-protected
+local snapshot; original backup and source/plist before-images remain under
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/`.
+[Acceptance, limits and rollback](HANDOFF.md).
+
+## Doctor component — installed October 16, 2026 UTC
+
+Only Doctor and `com.penny.webhook` were updated from merged PR115/c9b0368a.
+Doctor SHA256 is
+`3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`;
+webhook PID30252 loads the c9b0368a source stamp. Primary Git HEAD65758e82 and
+its keeper branch are preserved; doctor.py is the intentional runtime delta.
+ASR PID2025/source c341598c and all peer plists remain unchanged. The existing
+port5678 `/ready` succeeds locally and from OCI through its existing Mac SSH
+route, with zero unready components and explicit skipped_count=1. No new route,
+credential, grant or observer configuration was introduced. The OCI scheduled
+Doctor observer has a narrower environment; it remains separate evidence.
+
+A first immediate probe raced startup and restored the prior bytes; independent
+readback verified service before a separate bounded-startup attempt accepted.
+Fresh backup verification, both attempts and scoped rollback before-images are
+on SSD in `/Volumes/2TB_SSD/AI/Penny/deployments/20261016-doctor115{,-warmup}/`.
+[Current receipt and validation](HANDOFF.md).
 
 ## Shared ASR keeper — installed October 16, 2026
 

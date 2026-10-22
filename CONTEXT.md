@@ -1,3 +1,188 @@
+## Session handoff — October 21, 2026: iCloud cleanup complete locally
+
+Owner-requested Sync/Penny Archive deletion is complete; local absence rechecked
+at handoff. Existing SSD recordings remain outside iCloud. Historical offline
+coverage was not verified before the owner explicitly ordered cloud deletion;
+do not claim every deleted historical recording has an offline copy. Do not
+recreate or recover the retired cloud tree without a new owner request.
+
+Sync/Penny Transcripts contains 345 transcripts plus INDEX.md (346 Markdown
+files, 2061967 bytes). Snapshot copy/hash readback passed. Automatic updates
+remain unimplemented; owning issue https://github.com/Khamel83/penny/issues/136
+was created and independently read back. No worker execution or deployment is
+claimed. Next bounded job is incremental text-only export through existing Penny
+delivery machinery, followed by an actual new-transcript delivery check.
+
+Maya shared folder is about13KB; Trojanhorse shared folder about12KB. The old
+93.3GB logical archive was Penny conflict/history material. Work-Mac deletion
+sync and iCloud quota reclamation are not verified. Existing prepared Maya/Trojan
+jobs remain inactive; this cleanup did not resume their deployment. Keep all
+protected runtime/source edits and existing setup gates intact. Private deletion
+and Markdown-copy receipts remain under
+/Volumes/2TB_SSD/AI/Penny/verification/20261021-icloud-legacy-inventory/.
+
+## Text-only iCloud view and owner-requested cloud retirement — October 21
+
+Verified Sync/Maya contains only 12573 logical bytes (two small Markdown files,
+a synthetic EML, two empty status logs and Finder metadata); Sync/Trojanhorse
+contains 12062 bytes. These shared folders are not the large private Maya corpus.
+Created Sync/Penny Transcripts with 345 existing SSD-mirror Markdown transcripts
+and INDEX.md: 1988899 transcript bytes plus 73068 index bytes. Every copied
+transcript has SHA-256 readback verification. No audio/JSON copied. This is a
+one-time text snapshot, not automatic delivery and not work-approved Trojan data.
+Private receipt: /Volumes/2TB_SSD/AI/Penny/verification/20261021-icloud-legacy-inventory/markdown-export.private.json.
+
+Owner explicitly requested immediate removal of Sync/Penny Archive after the
+unverified historical offline coverage was explained, then reconfirmed keeping
+the existing SSD material. Cloud deletion completed at 2026-10-21T20:28:28Z; local target absence was
+verified. Current SSD archive and text snapshot are preserved. This supersedes the earlier preservation-before-
+removal next step for this specific legacy folder. Do not start duplicate
+hydration/export/recovery. Cross-device disappearance is not verified.
+
+https://github.com/Khamel83/penny/issues/136 records the bounded automatic
+Markdown-only export requirement. Its subsequent comment records the owner's
+immediate deletion direction. Open eligible catalog issue, no active PR observed;
+worker execution has not been proven. No source/runtime deployment or job
+activation was performed. Prepared Maya/Trojan jobs remain inactive.
+Next: keep issue136 open until actual incremental Markdown delivery is deployed
+and demonstrated. Local deletion does not prove work-Mac sync or cloud quota
+reclamation. Existing owner work
+and pending setup gates remain intact.
+
+## Penny health green — October 18, 2026 local / October 19 UTC
+
+## Legacy iCloud Penny Archive identified — October21
+
+Owner wants raw audio outside iCloud. The old Sync/Penny Archive was Penny's
+historical audio/Markdown/JSON mirror. October9 storage migration moved future
+writes to SSD; loaded watcher/webhook environments now independently confirm
+object root /Volumes/2TB_SSD/AI/Penny/state/archive/objects and mirror root
+/Volumes/2TB_SSD/AI/Penny/archive-mirror. Current readiness reports archive ready
+(345 published, zero pending/failed) and backup verified. No config or service
+change is needed to keep new raw audio outside iCloud.
+
+Legacy cloud inventory:183119 files/93290058034 logical bytes. Ordinary year
+folders hold503 audio files (~3.08GB); hidden .penny-conflicts holds60536 audio
+files (~89.99GB audio,90.21GB including metadata). All61039 audio files are
+cloud-only placeholders. Latest ordinary audio mtime October9; conflict audio
+September22. Do not call this logical size current local disk usage. SSD objects
+currently contain347 audio files (~1.75GB); this does not prove all historical
+cloud originals are preserved there. No automatic deletion/deduplication is safe
+from these counts alone. Internal disk has ~13GiB free; no bulk hydration started.
+
+Creator: Penny's archive publication/conflict-preservation machinery, not Maya's
+new work-note jobs. Future layout: raw audio/archive on SSD/backups; useful text
+notes may live under shared iCloud Sync. Legacy cloud retirement remains pending
+an offline copy and byte verification; no audio downloaded, moved or deleted in
+this bounded diagnosis. Metadata-only inventory and its SHA/summary are at
+/Volumes/2TB_SSD/AI/Penny/verification/20261021-icloud-legacy-inventory/ (private). Preserve existing history and runtime edits.
+Next: use that pinned inventory for a bounded offline export before any cloud
+removal; do not restart Penny, replay captures or reopen global historical gaps.
+
+Owner retired historical recovery and approved acknowledgement of the reviewed
+past failures. [PR132](https://github.com/Khamel83/penny/pull/132) merged8606b497
+after exact-head trusted PASS, both hosted checks and independent Janitor receipt.
+Final validation:852passed/two skipped/60subtests; trust497tests/two skipped.
+Exact merged Doctor/helper/operator bytes are installed; only webhook reloaded.
+Fresh SSD/Homelab backup20261019T061523Z verified. Current `/ready` and OCI's
+projection both report ready at8606b497; Homelab API reports Penny healthy.
+
+The acknowledgement preserves ledger history and exposes raw/acknowledged
+counts: Maya9, old capture failures2, unavailable1, test quarantine1. New or
+changed failures still alert. Existing history and canonical placeholder336
+match the before-image. Watcher636/tasks638/ASR650 and protected modules/peer
+plists were preserved. [Evidence, private receipt and rollback](docs/health-audit-20261018.md).
+
+Kuma parent22 and declared-check23 have ordinary saved UP heartbeats at
+06:25:46UTC; readiness24 is UP at06:25:47. Parent reports all children up.
+All three are green; historical uptime rows remain. No threshold was relaxed.
+Next: normal monitoring. Recheck `/ready`, OCI's existing8793projection and
+Kuma's latest22/23/24heartbeats when investigating a future new failure. No
+historical recovery, missing-content chase or replay remains in flight.
+The same `.worktrees/health-repair` was reused for source and acceptance;
+retain clean for safe reuse after accepted publication. No sibling checkout
+or separate acceptance worktree was created.
+
+## Parakeet timing accepted — October 16, 2026 11:12 UTC
+
+[#111](https://github.com/Khamel83/penny/issues/111) is delivered by
+[PR126](https://github.com/Khamel83/penny/pull/126): exact22904fa received trusted
+PASS5546707424, both actual hosted Python3.11/3.12 jobs passed
+[run38889557502](https://github.com/Khamel83/penny/actions/runs/38889557502), and
+normal merge64d32534 has independent readback. Retained candidatea0bdf579 was
+reused, with only invalid-start guards/regressions added. Local92focused,
+848full/two skips/60subtests,497trust/two skips and62unchanged Whisper comparisons
+pass; no fresh implementation or fixture weakening replaced the retained work.
+
+Exact merged quality/server modules are installed, and only the three loaded
+callers were refreshed. ASR/watcher/webhook PIDs67159/67194/67201 declare64d32534.
+Independent11:12:52UTC readback verifies both module hashes, all56 protected
+production Python files, Doctor3210731d/retryc568bd45, keeper, peer services,
+original caller identity and primary HEAD65758e82. ASR health200/idle retains
+pinned Parakeet; local readyHTTP200 has13components/zero unready, overall degraded.
+The installed-code four-vector probe passes without a model call or data write.
+[Receipts, preservation and next step](HANDOFF.md).
+
+Acceptance is assessed against the original five criteria: timing/existing-suite
+tests plus the PR description's post-deploy archive instruction. PR126 supplies
+that instruction; executing the archive or observing another natural inference
+was not required. The held recording/sidecar, retry receipt and verified112
+backups remain unchanged; its current Parakeet hold is still active. Broader
+Atlas quality work and ordinary serving quality remain separate and unclaimed.
+After normal review/CI/merge of these records, close111 COMPLETED under fresh
+native/peer/lease/source fences, removing only its resolved hold labels. No
+owner action, audio replay, new archive task or production redeploy is added.
+
+## Retry retention installed — October 16, 2026 09:52 UTC
+
+[#112](https://github.com/Khamel83/penny/issues/112) source is delivered by
+[PR122](https://github.com/Khamel83/penny/pull/122), merged85900798 after exact
+b5ab29f trusted PASS5545840725. Both hosted Python checks passed native run
+38881833594; Python3.11 verified837tests/two skips/60subtests plus497trust tests.
+The preserved OCI candidate6670b56e was reused. Review-found durability,
+mount-alias and symlink-preservation defects were corrected before acceptance;
+original compact source, failures and attempt/grant history remain intact.
+
+Only merged shared_whisper/retry_receipt.py was installed; idle-only ASR reload
+accepted source85900798/PID58688. Caller PIDs, keeper/other launchd plists,
+other production Python files and primary HEAD65758e82 were preserved. Current
+intentional primary deltas are Doctor and retry_receipt.py. Independent ASR
+health is HTTP200/idle with pinned Parakeet identity and no resident worker;
+local `/ready` remains HTTP200, zero unready, Drop pending/failed/uncertain=0,
+skipped=1 and webhook sourcec9b0368a. No inference or delivery was manufactured.
+
+The installed helper's isolated synthetic probe releases terminal audio while
+retaining its receipt and preserves old pending audio. Acceptance decision,
+October16 10:13UTC: #112's original four criteria are tests, all satisfied by
+PR122, passing native CI and the installed probe. The independently verified
+installation completes that task. The extra wait for an ordinary retry is
+removed; its future receipt remains unobserved and is routine monitoring, not
+an owner decision or a reason to keep #112 held. All preexisting retry bytes
+were verified into a durable,
+write-protected local SSD snapshot before activation:449files/10,059,792,302bytes,
+tree3e696430c186638e60d098a3ea701728717cdec0dc5f3121c2b69178f95c77e1.
+The earlier443-file snapshot stays. No migration or historical batch prune ran.
+[Private receipts, rollback and next check](HANDOFF.md).
+
+## Current Doctor acceptance — October 16, 2026 UTC
+
+[PR115](https://github.com/Khamel83/penny/pull/115) is merged as `c9b0368a`;
+its Doctor skip counter is installed with the exact merged hash. Only the
+webhook was reloaded, with source stamp c9b0368a and fresh PID30252. Local and
+OCI-via-existing-SSH `/ready` pass HTTP200 with no unready components;
+Drop pending/failed/uncertain=0 and skipped=1. The ASR daemon PID2025, keeper,
+other launchd plists, 57 other production Python files and primary HEAD65758e82
+are preserved. This is a component deployment, not a whole-checkout release.
+
+A startup-probe race caused the first attempt to restore the previous bytes;
+independent readiness verified restoration before a distinct bounded-warmup
+attempt succeeded. Fresh SSD/Homelab backup verification and both private
+receipts are retained; [current handoff](HANDOFF.md) records hashes and rollback.
+61 focused tests, 497 trust tests/two skips, exact-head trusted PASS and both
+hosted Python checks pass. No replay or ledger mutation occurred. Historical
+October10 retirement evidence remains dated; #111, #112 and Infra-owned #110
+acceptance retain their separate scope.
+
 ## Current shared ASR keeper checkpoint — October 16, 2026
 
 PR119 is merged as `6330b398` after exact-head trusted PASS and Python3.11/3.12
@@ -21,6 +206,17 @@ This source proposal requires trusted exact-head review, native CI and normal me
 
 # Penny current context
 
+## Current readiness — October 10 UTC
+
+Owner approved intentionally skipping delivery of old quality-held note 779
+while retaining it locally. Outbox row 335 is skipped, not accepted; payload,
+audio, transcript and original failure receipt remain. `/ready` is HTTP 200
+with zero unready components. Drop ready: pending=0, failed=0, uncertain=0,
+skipped=1. Scoped Doctor skip-count visibility is installed; 51 focused tests
+pass. [Evidence](docs/drop-owner-skip-779-20261010.md). Source publication of
+this small reporting change is in [PR115](https://github.com/Khamel83/penny/pull/115);
+live effect is verified.
+
 ## Current storage decision and state — October 9
 
 Owner requires Penny-owned data on the 2 TB SSD. Actual state and checkout are
@@ -29,12 +225,12 @@ home paths are compatibility symlinks. Future mirror writes, caches and scratch
 are SSD-backed. All five Penny jobs check the mounted volume UUID and keep
 system logs on SSD. Four continuous services run; scheduled backup is idle. Original Python launcher
 identity is retained for watcher/webhook/tasks; fresh Voice Memos access passes.
-SQLite integrity, archive, backup and transcription checks pass. `/ready`
-remains 503 for the same pre-existing uncertain Drop effect. No downstream
-receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
+The October9 storage checks passed SQLite integrity, archive, backup and
+transcription. Later readiness update, October10UTC: `/ready` returned HTTP200
+after the owner-directed skip of note779. No downstream receipt was manufactured. [Verification](docs/ssd-storage-20261009.md). Source record: [PR113](https://github.com/Khamel83/penny/pull/113) merged
 as `5d63847073dd00ac874611a8b0273611277b520b`; scoped runtime installation
 and old component stamps remain distinct.
-Retry retention remains open in [#112](https://github.com/Khamel83/penny/issues/112).
+Retry retention is accepted in the current [#112](https://github.com/Khamel83/penny/issues/112) checkpoint above.
 
 Current capture acceptance verified October 4, 2026; the repair checkpoint below is dated October 2. Penny is the only repository in this task.
 The owner authorized completion of Penny repairs and self-review/normal merge
@@ -49,11 +245,16 @@ archive receipt; both private metadata/content APIs return 404. That did
 not alone prove absent R2 data. Subsequent installed OCI R2 readback found both
 named objects absent, no matching ID at any date, and 1,062 event keys all
 archived. Note 779 is 64 minutes and quality-held (`needs_review`); the owner
-asked not to spend forever. Keep the original safe; skip-versus-retry preference
-is pending and no resend was made. Current Drop status reports all five pieces and
+asked not to spend forever. Keep the original safe; owner selected keeping locally and skipping delivery;
+no resend was made. Current Drop status reports all five pieces and
 four consumers healthy. Filed [Drop158](https://github.com/Khamel83/drop/issues/158) for exact R2
-sidecar/raw readback and receipt-bound, duplicate-safe recovery. No resend,
-provider effect, ledger mutation or source-runtime change was made.
+sidecar/raw readback and receipt-bound, duplicate-safe recovery. During that
+earlier diagnostic investigation, no resend, provider effect, ledger mutation
+or source-runtime change was made. The later October10 owner-approved recovery
+did change outbox335 from uncertain to skipped, installed the scoped Doctor
+counter update and reloaded only the webhook; original content/failure evidence
+remained and no archive acceptance was fabricated.
+[Later recovery evidence](docs/drop-owner-skip-779-20261010.md).
 
 ## Decisions
 
@@ -114,23 +315,12 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-## Natural-capture acceptance — October 4
-
-Penny received three ordinary Parakeet voice notes, rows 772–774, on October 2–3.
-All passed quality and routed. Local audio hashes, archive publication, Drop
-archive hashes, Slack sent receipts and live Maya store-only source-event
-receipts match. [Exact evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
-
-P01 is complete. P02 was a misleading gate for this workflow: Drop ownership
-intentionally suppresses direct Maya eligibility for new iCloud captures. These
-three notes already reached Maya through Drop. The legacy direct-v2 route is
-not newly accepted by this evidence, and no pending work or dead letter was
-replayed. New direct-v2 verification is conditional on future explicit use of
-that separate route. Normal Penny voice-note acceptance has no remaining input
-gate. Long-term stability remains observation over ordinary use.
-
-Source commit `f045c72898d2bdba2621b5fc62fa0c83e369cae3` (PR #100) merged the
-natural-acceptance documentation. Recent commits `f9c7fc6` and `3b61a9a`
-labeled ledger timestamps precisely and verified natural Parakeet voice notes
-with active Maya delivery.
+- Source commit `65f25969086727e956fd89547a45a51bd901d1cb` (docs: record deployed Penny acknowledgement and green Kuma heartbeats, #133).
+- Deployed acknowledgement of reviewed historical failures merged in PR #132 (`8606b497`); installed readiness, OCI projection, and Homelab API report healthy.
+- Parent Kuma 22 and checks 23/24 verified green with ordinary UP heartbeats at 06:25:46/47 UTC.
+- PR-only concurrency cancellation merged via PR #129 (`f5835ddf`).
+- Parakeet repetition timing (#111) and retry retention (#112) accepted and verified deployed in PR #126 (`64d32534`) and PR #122 (`85900798`).
 <!-- janitor:end:recent -->
+## Fleet CI cancellation - source checkpoint (October 16, 2026)
+
+`.github/workflows/test.yml` has a prepared source change on `feat/fleet-ci-cancellation-20261016` that coalesces superseded pull-request runs and leaves main, manual, release, and scheduled runs non-canceling. Native CI, review, and normal merge remain pending; no runtime change is claimed.
