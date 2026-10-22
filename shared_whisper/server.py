@@ -349,6 +349,9 @@ def build_supervisor_from_environment() -> SharedWhisperSupervisor:
         memory_guard=guard,
         grace_seconds=30.0,
         idle_ttl_seconds=idle_ttl,
+        job_deadline_seconds=_bounded_int(
+            os.environ.get("PENNY_SHARED_WHISPER_JOB_DEADLINE_SECONDS", ""),
+            default=900, lower=60, upper=7200),
         model_id=model_id,
         model_revision=model_revision,
     )
