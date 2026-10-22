@@ -86,6 +86,33 @@ and renamed atomically; the manifest is last. Consumers accept the trio only
 when all files exist and every hash matches. The mirror is rebuildable and is
 not a database or disaster-recovery source.
 
+## Shared transcript view
+
+The shared iCloud Drive `Sync/Penny Transcripts` folder is a text-only
+projection of the ledger, separate from the `Penny Archive` mirror. It holds
+one Markdown file per accepted transcript plus one `INDEX.md`. It never holds
+audio, raw JSON envelopes, databases, models, backups, or hidden conflict
+generations, and source recordings stay on the local SSD.
+
+```text
+p<canonical transcript id>__<captured utc>__<source>.md
+```
+
+Each file's body is the accepted transcript text and its front matter carries
+compact provenance: canonical id, source, capture and ingest time, transcript
+digest, audio digest, backend, model, and quality status. Recording titles are
+not exported. A changed accepted text updates that one file; a pre-existing
+one-time snapshot file is renamed into the same identity instead of being
+copied, and any further copy of the same transcript is removed.
+
+`transcript_view_publications` is the durable ledger for this view. A row
+becomes eligible when its local-mirror trio is published, so the view mirrors
+the accepted, archived capture set; only accepted rows are queued, and held
+and migrated-placeholder rows are not. The watcher drains the outbox inside
+its ordinary ingest pass, so there is no new scheduler, no replay, and no
+invented text.
+[Shared transcript view contract](transcript-view.md).
+
 ## SQLite, effects, and outboxes
 
 SQLite is the canonical operational record. Schema changes are additive and

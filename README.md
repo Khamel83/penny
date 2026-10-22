@@ -38,6 +38,13 @@ manifest is published last, after hashes and complete-copy checks succeed.
 Versioned homelab backup sets contain a consistent SQLite snapshot, archive
 bytes, and a catalog; verification runs in a scratch directory only.
 
+The shared iCloud Drive `Sync/Penny Transcripts` folder is a separate,
+text-only projection of the ledger: one Markdown file per accepted, archived
+transcript plus one index, maintained incrementally by the watcher. It holds no
+audio, raw JSON envelopes, databases, models, backups, or hidden conflict
+generations, and source recordings stay on the local SSD. See
+[the shared transcript view contract](docs/transcript-view.md).
+
 ## Phase A status and boundaries
 
 The production transcription service uses pinned Parakeet v3 BF16 through MLX.
@@ -63,6 +70,8 @@ passing local test.
   receipt, retry, archive, Slack, and Maya primitives
 - `archive.py` — complete-copy staging, immutable objects, and manifest-last
   archive publication
+- `transcript_view.py` — shared Markdown-only transcript view, stable file
+  identity, snapshot reconciliation, and index
 - `backup.py` / `scripts/backup_penny.py` — versioned backup sets and scratch
   verification
 - `doctor.py` / `scripts/penny_doctor.py` — read-only readiness probes and CLI

@@ -108,6 +108,22 @@ class ArchiveConfig:
     delivery_batch_limit: int = 5
 
 
+def default_transcript_view_root() -> Path:
+    """Return the shared view's default root as an absolute path."""
+    return Path(
+        "~/Library/Mobile Documents/com~apple~CloudDocs/Sync/Penny Transcripts"
+    ).expanduser()
+
+
+@dataclass
+class TranscriptViewConfig:
+    """The shared Markdown-only transcript view in iCloud Drive."""
+
+    enabled: bool = True
+    root: Path = field(default_factory=default_transcript_view_root)
+    batch_limit: int = 25
+
+
 @dataclass
 class DropConfig:
     enabled: bool = False
@@ -126,6 +142,9 @@ class Config:
     notifications: NotificationsConfig
     maya: MayaConfig
     archive: ArchiveConfig
+    # The shared view configuration is required: a missing value must fail
+    # loudly instead of silently falling back to a default root.
+    transcript_view: TranscriptViewConfig
     # Secrets — from environment variables
     openrouter_api_key: str
     telegram_bot_token: str
@@ -133,6 +152,40 @@ class Config:
     google_credentials_file: Path
     google_token_file: Path
     drop: DropConfig = field(default_factory=DropConfig)
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """Return whether one path lives inside another."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _validate_transcript_view_boundaries(
+    view: TranscriptViewConfig, archive: ArchiveConfig
+) -> None:
+    """Keep audio objects, mirrors and the shared view in separate trees."""
+    view_root = Path(view.root)
+    if not view_root.is_absolute():
+        raise ValueError("PENNY_TRANSCRIPT_VIEW_ROOT must be an absolute path")
+    if _is_within(archive.object_root, view_root):
+        raise ValueError(
+            "PENNY_TRANSCRIPT_VIEW_ROOT must not contain the archive object root"
+        )
+    if _is_within(archive.mirror_root, view_root):
+        raise ValueError(
+            "PENNY_TRANSCRIPT_VIEW_ROOT must not contain the local archive mirror"
+        )
+    if _is_within(view_root, archive.object_root):
+        raise ValueError(
+            "PENNY_TRANSCRIPT_VIEW_ROOT must be outside the archive object root"
+        )
+    if _is_within(view_root, archive.mirror_root):
+        raise ValueError(
+            "PENNY_TRANSCRIPT_VIEW_ROOT must be outside the local archive mirror"
+        )
 
 
 def get_config() -> Config:
@@ -248,6 +301,45 @@ def get_config() -> Config:
         ),
     )
 
+    view_section = raw.get("transcript_view", {})
+    view_root = Path(
+        os.environ.get(
+            "PENNY_TRANSCRIPT_VIEW_ROOT",
+            str(
+                view_section.get(
+                    "root",
+                    "~/Library/Mobile Documents/com~apple~CloudDocs/"
+                    "Sync/Penny Transcripts",
+                )
+            ),
+        )
+    ).expanduser()
+
+    def _env_flag(name: str, default: bool) -> bool:
+        raw_value = os.environ.get(name)
+        if raw_value is None:
+            return default
+        return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+    view_enabled = _env_flag(
+        "PENNY_TRANSCRIPT_VIEW_ENABLED", bool(view_section.get("enabled", True))
+    )
+    try:
+        view_batch_limit = int(
+            os.environ.get(
+                "PENNY_TRANSCRIPT_VIEW_BATCH_LIMIT",
+                str(view_section.get("batch_limit", 25)),
+            )
+        )
+    except (TypeError, ValueError):
+        view_batch_limit = 25
+    transcript_view = TranscriptViewConfig(
+        enabled=view_enabled,
+        root=view_root,
+        batch_limit=max(1, min(view_batch_limit, 100)),
+    )
+    _validate_transcript_view_boundaries(transcript_view, archive)
+
     voice_memos_section = raw.get("voice_memos", {})
     configured_model = str(
         voice_memos_section.get("whisper_model", WHISPER_MODEL_REPOSITORY)
@@ -351,6 +443,7 @@ def get_config() -> Config:
             ingest_token=os.environ.get('PENNY_DROP_TOKEN', ''),
         ),
         archive=archive,
+        transcript_view=transcript_view,
         openrouter_api_key=env("OPENROUTER_API_KEY"),
         telegram_bot_token=env("TELEGRAM_BOT_TOKEN", warn_if_missing=notifications_enabled),
         telegram_chat_id=env("TELEGRAM_CHAT_ID", warn_if_missing=notifications_enabled),

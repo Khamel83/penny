@@ -1,3 +1,45 @@
+## Shared iCloud transcript view — October 21, 2026 source checkpoint
+
+The owner asked for shared iCloud storage that stays tailored and text-only.
+A one-time snapshot exists: 345 Markdown transcripts plus `INDEX.md`
+(~2.06 MB) in iCloud Drive `Sync/Penny Transcripts`, copied from the SSD
+mirror with a SHA-256 readback for every file. The separately retired
+~93.3 GB legacy `Sync/Penny Archive` cloud tree stays deleted; this work
+does not resurrect, hydrate, export, or recover it.
+
+This source change makes that snapshot incrementally maintained instead of
+manual. `transcript_view.py` renders one Markdown file per accepted
+transcript plus one index, with stable filenames derived from the canonical
+transcript row, compact provenance (canonical id, source, capture and ingest
+time, transcript digest, audio digest, backend, model, quality status), and
+no recording titles. `transcript_log.py` gains the additive
+`transcript_view_publications` table: a row becomes eligible when its
+local-mirror trio is published, so the view mirrors the accepted, archived
+capture set — the same population the snapshot was copied from. Held and
+migrated-placeholder rows are never queued, and
+`queue_transcript_view_backlog` reconciles accepted, already-archived rows
+that predate the view. `watcher.py` drains that outbox inside its existing
+ingest pass; there is no new scheduler, no replay, and no invented text.
+
+The shared view holds no audio, raw JSON envelopes, databases, models,
+backups, or hidden conflict generations. Source recordings stay on the local
+SSD, and `config.py` rejects a view root that nests the object store or the
+local archive mirror.
+
+Source state only: the change is unmerged and undeployed in this worktree.
+Local suite: 523 tests with two pre-existing environment failures unrelated
+to this change (`tests/test_apple_pilot.py` import form and a `jsonschema`
+version difference in `tests/test_transcript_contract.py`); the 25 new view
+and configuration tests pass. Trust-check phases 1-5 pass. No runtime,
+iCloud, or downstream delivery effect is claimed here; see
+[the shared transcript view contract](docs/transcript-view.md).
+
+The shared-view configuration cannot be discarded silently: `Config` requires
+the `transcript_view` field, the parsed TOML and `PENNY_TRANSCRIPT_VIEW_*`
+values are passed into it, the default root is absolute, and a relative root
+or a root that nests the archive object store or local mirror is rejected at
+load time. The watcher also refuses a non-absolute root.
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 The earlier green ASR checkpoint is superseded by a live, intentionally

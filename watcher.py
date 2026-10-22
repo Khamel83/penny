@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import mimetypes
 import os
@@ -39,6 +40,12 @@ from transcript_quality import (
     transcribe_with_quality,
     transcription_backend,
 )
+from transcript_view import (
+    iso_utc,
+    publish_transcript_view,
+    scan_view_root,
+    write_index,
+)
 from transcript_log import (
     InsertOutcome,
     get_archive_delivery_health,
@@ -46,6 +53,8 @@ from transcript_log import (
     get_pending_archive_deliveries,
     get_published_archive_deliveries,
     get_maya_delivery_health,
+    get_pending_transcript_view_publications,
+    get_transcript_view_publications,
     get_source_watermark,
     get_slack_delivery_health,
     get_transcript_by_hash,
@@ -69,8 +78,11 @@ from transcript_log import (
     mark_archive_delivery_published,
     mark_archive_delivery_rebuild_needed,
     mark_archive_delivery_validated,
+    mark_transcript_view_published,
+    mark_transcript_view_failed,
     needs_archive_delivery,
     queue_archive_delivery,
+    queue_transcript_view_backlog,
     record_archive_backfill_failure,
     record_archive_unavailable,
     reconcile_linked_voice_memo_terminal_states,
@@ -1427,6 +1439,96 @@ def _process_archive_outbox() -> None:
             )
 
 
+def _process_transcript_view_outbox() -> None:
+    """Maintain the shared Markdown-only transcript view from the ledger.
+
+    The view holds one Markdown file per accepted transcript plus one index.
+    It never receives audio, raw JSON envelopes, databases, models, backups or
+    hidden conflict generations, and it never replays or invents text.
+    """
+    if not cfg.transcript_view.enabled:
+        return
+    view_root = Path(cfg.transcript_view.root)
+    if not view_root.is_absolute():
+        log.error("Transcript view root is not absolute (class=invalid_view_root)")
+        return
+    limit = cfg.transcript_view.batch_limit
+    try:
+        queue_transcript_view_backlog(limit=limit)
+    except Exception as exc:
+        log.error(
+            "Transcript view backlog failed (class=%s)", type(exc).__name__
+        )
+    rows = get_pending_transcript_view_publications(limit=limit)
+    if rows:
+        scan = scan_view_root(view_root)
+        for row in rows:
+            transcript_id = int(row["transcript_row_id"])
+            try:
+                destination = publish_transcript_view(
+                    {
+                        "transcript_row_id": transcript_id,
+                        "transcript": str(row["transcript"]),
+                        "source": str(row["source"] or ""),
+                        "captured_at": row["recorded_at"] or row["created_at"],
+                        "ingested_at": row["created_at"],
+                        "quality_status": str(row["quality_status"] or ""),
+                        "audio_sha256": str(row["audio_sha256"] or ""),
+                        "transcription_backend": str(
+                            row["transcription_backend"] or ""
+                        ),
+                        "transcription_model": str(
+                            row["transcription_model"] or ""
+                        ),
+                    },
+                    view_root,
+                    scan,
+                )
+            except Exception as exc:
+                error_class = type(exc).__name__
+                previous_error = str(row["last_error_code"] or "")
+                attempts = int(row["attempt_count"] or 0)
+                mark_transcript_view_failed(transcript_id, error_class)
+                if previous_error != error_class or attempts <= 1:
+                    log.error(
+                        "Transcript view publication failed for id=%s (class=%s)",
+                        transcript_id,
+                        error_class,
+                    )
+                continue
+            mark_transcript_view_published(
+                transcript_id,
+                destination_path=str(destination),
+                transcript_sha256=str(
+                    row["transcript_sha256"]
+                    or hashlib.sha256(
+                        str(row["transcript"]).encode("utf-8")
+                    ).hexdigest()
+                ),
+            )
+    entries = []
+    for publication in get_transcript_view_publications():
+        entries.append(
+            {
+                "transcript_row_id": int(publication["transcript_row_id"]),
+                "captured_at": iso_utc(
+                    publication["recorded_at"] or publication["created_at"]
+                ),
+                "source": str(publication["source"] or ""),
+                "transcript_sha256": str(
+                    publication["transcript_sha256"]
+                    or publication["canonical_sha256"]
+                    or ""
+                ),
+                "filename": Path(str(publication["destination_path"])).name,
+            }
+        )
+    try:
+        write_index(view_root, entries)
+    except Exception as exc:
+        log.error("Transcript view index failed (class=%s)", type(exc).__name__)
+
+
 def _reconcile_archive_backfill(limit: int) -> None:
     """Reconcile old canonical rows without retranscription or rerouting."""
     voice_roots = _voice_memo_roots()
@@ -1749,6 +1851,7 @@ def _process_ingest_pass() -> None:
         lambda: _reconcile_archive_backfill(cfg.archive.delivery_batch_limit),
         lambda: _reconcile_published_archives(cfg.archive.delivery_batch_limit),
         _process_archive_outbox,
+        _process_transcript_view_outbox,
         _process_slack_outbox,
         _process_drop_outbox,
         _process_maya_outbox,
