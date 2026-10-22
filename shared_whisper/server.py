@@ -88,6 +88,12 @@ def create_app(
 
         path = _save_upload(upload.filename, upload.stream, temp_dir)
         result = None
+        try:
+            from .retry import audio_duration
+
+            audio_seconds = float(audio_duration(path))
+        except Exception:
+            audio_seconds = None  # the supervisor falls back to its base deadline
         started = time.monotonic()
         try:
 
@@ -132,7 +138,8 @@ def create_app(
                     retried = supervisor.handle_request(
                         client,
                         audio_path=str(path),
-                        options={**_form_options(), "_backend": "whisper"},
+                        options={**_form_options(), "_backend": "whisper",
+                                 "_audio_seconds": audio_seconds},
                     )
                 except WhisperProtocolError as exc:
                     retry_receipt.update(
@@ -160,7 +167,9 @@ def create_app(
                     result = whisper_retry()
                 else:
                     result = supervisor.handle_request(
-                        client, audio_path=str(path), options=_form_options()
+                        client,
+                        audio_path=str(path),
+                        options={**_form_options(), "_audio_seconds": audio_seconds},
                     )
             except WhisperProtocolError as exc:
                 if (

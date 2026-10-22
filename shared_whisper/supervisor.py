@@ -64,6 +64,7 @@ class _Job:
     request_id: str
     worker: WorkerHandle
     started_at: float = 0.0
+    deadline_seconds: float = 900.0
     completed: bool = False
     preempted: bool = False
     result: WhisperResult | None = None
@@ -227,12 +228,18 @@ class SharedWhisperSupervisor:
         if self._job is not None:
             raise WhisperBusy("Whisper worker already has an active request")
         backend = options.pop("_backend", "primary")
+        audio_seconds = options.pop("_audio_seconds", None)
+        # Scale with the recording: a long voice memo on the slower Whisper
+        # fallback can legitimately take longer than the base deadline.
+        deadline = self._job_deadline_seconds
+        if isinstance(audio_seconds, (int, float)) and audio_seconds > 0:
+            deadline = max(deadline, 2.0 * float(audio_seconds))
         if backend not in {"primary", "whisper"}:
             raise WhisperProtocolError("unsupported_backend")
         worker = self._ensure_worker_locked(backend)
         request_id = str(uuid.uuid4())
         job = _Job(client=client, request_id=request_id, worker=worker,
-                   started_at=self._clock())
+                   started_at=self._clock(), deadline_seconds=deadline)
         self._job = job
         self._state = (
             SupervisorState.PENNY_RUNNING
@@ -304,7 +311,7 @@ class SharedWhisperSupervisor:
 
             result = worker.poll(timeout=0.05)
             if result is None:
-                if self._clock() - job.started_at > self._job_deadline_seconds:
+                if self._clock() - job.started_at > job.deadline_seconds:
                     with self._condition:
                         if not job.preempted and not job.completed:
                             job.error = WhisperUnavailable("worker_deadline_exceeded")

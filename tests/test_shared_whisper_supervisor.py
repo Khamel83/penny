@@ -304,3 +304,20 @@ def test_hung_worker_fails_after_deadline_and_next_request_gets_new_worker():
     factory.workers[1].complete(_result(factory.workers[1].submitted[0]["request_id"]))
     thread.join(timeout=5)
     assert outcomes[0][0] == "ok"
+
+
+def test_job_deadline_scales_with_audio_length():
+    clock = [0.0]
+    factory = FakeFactory()
+    supervisor = SharedWhisperSupervisor(
+        worker_factory=factory,
+        memory_guard=StaticMemoryGuard(),
+        job_deadline_seconds=900.0,
+        model_id=MODEL_ID,
+        model_revision=REVISION,
+        clock=lambda: clock[0],
+    )
+    job = supervisor._start_job(ClientKind.PENNY, audio_path="/tmp/long.wav",
+                                options={"_audio_seconds": 7200.0})
+    assert job.deadline_seconds == 14400.0
+    assert "_audio_seconds" not in factory.workers[0].submitted[0]["options"]
