@@ -7,6 +7,7 @@ Penny webhook or the supervisor itself.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -22,6 +23,8 @@ from .protocol import (
     WhisperResult,
     WhisperUnavailable,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SupervisorState(StrEnum):
@@ -64,6 +67,7 @@ class _Job:
     request_id: str
     worker: WorkerHandle
     started_at: float = 0.0
+    started_at_epoch: float = 0.0
     deadline_seconds: float = 900.0
     completed: bool = False
     preempted: bool = False
@@ -120,6 +124,10 @@ class SharedWhisperSupervisor:
                 "worker_count": 1 if worker else 0,
                 "resident_backend": self._worker_backend if worker else None,
                 "active_client": self._job.client.value if self._job else None,
+                "active_job_started_at": self._job.started_at_epoch if self._job else None,
+                "active_job_age_seconds": (
+                    max(0.0, self._clock() - self._job.started_at) if self._job else None
+                ),
                 "preemption_count": self._preemption_count,
             }
 
@@ -239,7 +247,8 @@ class SharedWhisperSupervisor:
         worker = self._ensure_worker_locked(backend)
         request_id = str(uuid.uuid4())
         job = _Job(client=client, request_id=request_id, worker=worker,
-                   started_at=self._clock(), deadline_seconds=deadline)
+                   started_at=self._clock(), started_at_epoch=time.time(),
+                   deadline_seconds=deadline)
         self._job = job
         self._state = (
             SupervisorState.PENNY_RUNNING
@@ -314,6 +323,11 @@ class SharedWhisperSupervisor:
                 if self._clock() - job.started_at > job.deadline_seconds:
                     with self._condition:
                         if not job.preempted and not job.completed:
+                            logger.warning(
+                                "worker_deadline_exceeded client=%s age_seconds=%.1f deadline_seconds=%.1f",
+                                job.client.value, self._clock() - job.started_at,
+                                job.deadline_seconds,
+                            )
                             job.error = WhisperUnavailable("worker_deadline_exceeded")
                             job.completed = True
                             if self._worker is job.worker:

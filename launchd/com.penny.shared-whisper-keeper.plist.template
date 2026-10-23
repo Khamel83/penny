@@ -48,7 +48,17 @@ private_dir "$state" || fail "unsafe keeper state directory"
 mark="$state/strike"
 job="gui/$uid/com.penny.shared-whisper"
 if health=$(/usr/bin/curl -sf -m 5 http://127.0.0.1:10311/health) &amp;&amp;
-    printf '%s' "$health" | /usr/bin/tr '\r\n' '  ' | /usr/bin/grep -Eq '"service"[[:space:]]*:[[:space:]]*"penny-shared-whisper"'; then
+    printf '%s' "$health" | /usr/bin/tr '\r\n' '  ' | /usr/bin/grep -Eq '"service"[[:space:]]*:[[:space:]]*"penny-shared-whisper"' &amp;&amp;
+    printf '%s' "$health" | /usr/bin/awk '
+        BEGIN { RS = "[{},]"; stale = 0 }
+        {
+            gsub(/[[:space:]]/, "")
+            split($0, field, ":")
+            if (field[1] == "\"active_job_age_seconds\"" &amp;&amp;
+                field[2] != "null" &amp;&amp; field[2] + 0 &gt; 1800) stale = 1
+        }
+        END { exit stale }
+    '; then
     if [ -e "$mark" ] || [ -L "$mark" ]; then
         private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"
     fi

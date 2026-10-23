@@ -43,6 +43,18 @@ on 10300/10301 is unchanged. Actual backend identity is preserved in responses
 and Penny metadata/checkpoints; model-policy-specific checkpoints do not reuse
 old Whisper text as new Parakeet output. Mixed chunk results identify both.
 
+Jobs have a deadline of `max(900 seconds, 2 × audio duration)` when duration is
+available, otherwise 900 seconds. An unresponsive worker is terminated through
+the supervisor stop path and the request fails with
+`WhisperUnavailable("worker_deadline_exceeded")`; the next request creates a
+fresh worker. A warning records the client, elapsed time and deadline, not audio
+or transcript content. Health/status expose `active_job_started_at` as Unix
+epoch seconds and `active_job_age_seconds` measured with the monotonic clock;
+both are null when idle. The keeper treats age above 1800 seconds as unhealthy,
+even with HTTP 200, and requests service recovery after two consecutive strikes.
+This backstop also applies to legitimately long jobs; the fixed keeper bound
+can interrupt one after 30 minutes plus the strike interval.
+
 Retry receipts keep the copied upload and both model results owner-only. They
 are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
 volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path

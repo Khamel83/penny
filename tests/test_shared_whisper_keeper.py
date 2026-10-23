@@ -190,3 +190,29 @@ def test_wrong_service_is_a_failed_probe(tmp_path, health):
     assert result.returncode == 0
     assert len(calls) == 1
     assert calls[0].startswith("kickstart -k gui/")
+
+@pytest.mark.parametrize("age", [1800.1, 1801, 36000])
+def test_stale_active_job_uses_existing_two_strike_recovery(tmp_path, age):
+    health = (
+        '{"service":"penny-shared-whisper","active_client":"atlas",'
+        f'"active_job_age_seconds":{age}' + '}'
+    )
+    result, calls, _ = _run(tmp_path, health=health)
+    assert result.returncode == 0
+    assert calls == []
+    assert (_state(tmp_path) / "strike").is_dir()
+    result, calls, logs = _run(tmp_path, health=health)
+    assert result.returncode == 0
+    assert len(calls) == 1
+    assert calls[0].startswith("kickstart -k gui/")
+    assert "recovery requested" in logs
+
+
+@pytest.mark.parametrize("age", ["null", "0", "20.5", "1800"])
+def test_normal_job_age_clears_strike(tmp_path, age):
+    _run(tmp_path, health=None)
+    health = '{"service":"penny-shared-whisper","active_job_age_seconds":' + age + '}'
+    result, calls, _ = _run(tmp_path, health=health)
+    assert result.returncode == 0
+    assert calls == []
+    assert not (_state(tmp_path) / "strike").exists()

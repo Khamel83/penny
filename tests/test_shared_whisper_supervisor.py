@@ -1,3 +1,4 @@
+import logging
 import queue
 import threading
 import time
@@ -321,3 +322,47 @@ def test_job_deadline_scales_with_audio_length():
                                 options={"_audio_seconds": 7200.0})
     assert job.deadline_seconds == 14400.0
     assert "_audio_seconds" not in factory.workers[0].submitted[0]["options"]
+
+def test_hung_worker_deadline_terminates_and_next_request_succeeds(caplog):
+    caplog.set_level(logging.WARNING, logger="shared_whisper.supervisor")
+    now = [100.0]
+    factory = FakeFactory()
+    supervisor = _supervisor(factory, clock=lambda: now[0])
+    outcomes = []
+    thread = _run_request(
+        supervisor, ClientKind.ATLAS, outcomes, audio_path="hang.wav", options={}
+    )
+    try:
+        while not factory.workers or not factory.workers[0].submitted:
+            time.sleep(0.005)
+        status = supervisor.status()
+        assert status["active_job_started_at"] is not None
+        assert status["active_job_age_seconds"] == 0
+        now[0] += 901
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        assert isinstance(outcomes[0][1], WhisperUnavailable)
+        assert str(outcomes[0][1]) == "worker_deadline_exceeded"
+        assert factory.workers[0].terminated.is_set()
+        assert "worker_deadline_exceeded" in caplog.text
+        assert supervisor.status()["active_job_started_at"] is None
+        assert supervisor.status()["active_job_age_seconds"] is None
+    finally:
+        now[0] += 1000
+        thread.join(timeout=1)
+
+    recovered = []
+    thread = _run_request(
+        supervisor, ClientKind.ATLAS, recovered, audio_path="next.wav", options={}
+    )
+    try:
+        limit = time.monotonic() + 1
+        while len(factory.workers) < 2 and time.monotonic() < limit:
+            time.sleep(0.005)
+        assert len(factory.workers) == 2
+        factory.workers[1].complete(_result("recovered"))
+        thread.join(timeout=1)
+        assert recovered == [("ok", _result("recovered"))]
+    finally:
+        now[0] += 1000
+        thread.join(timeout=1)

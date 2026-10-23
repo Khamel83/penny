@@ -1,3 +1,42 @@
+## Issue #138 — worktree-only handoff, October 22, 2026
+
+Local edits complete: existing deadline policy retained; supervisor logs
+`worker_deadline_exceeded`, exposes epoch start/monotonic age, and keeper treats
+age above 1800 seconds as a failed health check using its two-strike logic.
+Regression coverage executes the supervisor with a never-completing fake
+worker, verifies termination, then succeeds on a replacement. Keeper shell
+tests execute the template with host commands stubbed and real private state.
+
+Review correction: `caplog.set_level(logging.WARNING,
+logger="shared_whisper.supervisor")` enables deadline warning capture even when
+other test modules call `logging.disable(logging.CRITICAL)` during collection.
+No production logging change or weakened assertion was needed.
+
+Verification: 37 supervisor/keeper/server tests passed in 4.19 seconds with
+global logging disabled before pytest started; the original disabled state was
+restored afterward. Host Python lacked pytest, so verification used a disposable
+worktree-only virtualenv with pytest, Flask and requests. Recheck in a Python
+environment with those dependencies installed:
+
+```sh
+python -c 'import logging, pytest; logging.disable(logging.CRITICAL); result = pytest.main(["-q", "tests/test_shared_whisper_supervisor.py", "tests/test_shared_whisper_keeper.py", "tests/test_shared_whisper_server.py", "--basetemp=.pytest-tmp"]); assert logging.root.manager.disable == logging.CRITICAL; raise SystemExit(result)'
+```
+
+A threaded loopback HTTP service with generated silent WAV audio and fake
+workers returned 503 for the hung request, terminated its worker, and emitted
+`worker_deadline_exceeded client=atlas age_seconds=901.0 deadline_seconds=900.0`.
+The next request on a replacement returned 200 with `recovered`; `/health`
+returned idle with both timing fields null. No MLX model or real audio was used.
+
+Blocker: this unattended worker is restricted to this worktree; no deployment,
+credentials, Mac runtime, MinusPod or Kuma access is permitted. Orchestrator
+must inspect/publish the edits, deploy the reviewed supervisor and keeper via
+the established deployment procedure, then verify a synthetic hang recovers,
+MinusPod resumes transcription, and Kuma `atlas.mac-asr` records the outage.
+No push or merge performed. No ledger/archive/provider/delivery state changed.
+The supplied dirty checkout was preserved; remote source freshness was not
+checked within the worktree-only boundary.
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 Current runtime is intentionally contained. The shared ASR LaunchAgent failed
