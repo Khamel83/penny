@@ -1,3 +1,19 @@
+## Issue #138 — local source checkpoint, October 22, 2026
+
+The supplied source already includes a 900-second deadline scaled to twice
+audio duration. This work adds deadline warnings, active-job Unix start time
+and monotonic age, plus keeper strikes for ages above 1800 seconds despite
+HTTP 200. Review correction explicitly configures the regression's warning
+capture: other suite modules disable logging globally during collection.
+All 37 supervisor/keeper/server tests pass with logging disabled before pytest
+starts, and the disabled state is restored afterward. A loopback HTTP smoke
+with synthetic audio and fake workers observed the deadline warning, HTTP 503,
+worker termination, then HTTP 200 on the replacement and idle timing fields.
+These are local test-double results, not production recovery evidence.
+No ledger, archive, provider, downstream or production runtime state was
+accessed or changed. Deployment, MinusPod recovery and Kuma failure visibility
+remain unverified; the prior runtime checkpoints below are historical.
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 The earlier green ASR checkpoint is superseded by a live, intentionally

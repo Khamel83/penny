@@ -1,3 +1,16 @@
+## Shared ASR hang recovery — issue #138
+
+- [x] Complete local deadline observability and keeper stale-job recovery for
+  https://github.com/Khamel83/penny/issues/138. Existing 900-second/2×duration
+  deadline retained; warning and epoch start/monotonic age added. Review fix
+  explicitly enables scoped warning capture despite suite-wide logging
+  suppression; 37 focused tests pass with that suppression seeded. Loopback
+  HTTP smoke verifies the warning, hung-worker termination/503 and replacement
+  success/200. Evidence and recheck command: [handoff](HANDOFF.md).
+- [ ] Deploy reviewed supervisor and keeper, force a safe synthetic hang, and
+  independently verify MinusPod resumes and Kuma `atlas.mac-asr` records the
+  failure. Not performed by the worktree-only worker.
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 - [x] Diagnose the failed `com.penny.shared-whisper` start. A private launchd
