@@ -88,6 +88,12 @@ def create_app(
 
         path = _save_upload(upload.filename, upload.stream, temp_dir)
         result = None
+        try:
+            from .retry import audio_duration
+
+            audio_seconds = float(audio_duration(path))
+        except Exception:
+            audio_seconds = None  # the supervisor falls back to its base deadline
         started = time.monotonic()
         try:
 
@@ -132,7 +138,8 @@ def create_app(
                     retried = supervisor.handle_request(
                         client,
                         audio_path=str(path),
-                        options={**_form_options(), "_backend": "whisper"},
+                        options={**_form_options(), "_backend": "whisper",
+                                 "_audio_seconds": audio_seconds},
                     )
                 except WhisperProtocolError as exc:
                     retry_receipt.update(
@@ -160,7 +167,9 @@ def create_app(
                     result = whisper_retry()
                 else:
                     result = supervisor.handle_request(
-                        client, audio_path=str(path), options=_form_options()
+                        client,
+                        audio_path=str(path),
+                        options={**_form_options(), "_audio_seconds": audio_seconds},
                     )
             except WhisperProtocolError as exc:
                 if (
@@ -189,7 +198,11 @@ def create_app(
             if allow_whisper_fallback and result.model_id == PARAKEET_ID:
                 from transcript_quality import evaluate_transcript
 
-                quality = evaluate_transcript(result.text, tolerant_restarts=True)
+                quality = evaluate_transcript(
+                    result.text,
+                    tolerant_restarts=True,
+                    segments=result.segments,
+                )
                 if not quality.passed:
                     result = whisper_retry(
                         quality.reason, failed_model_id=result.model_id
@@ -345,6 +358,9 @@ def build_supervisor_from_environment() -> SharedWhisperSupervisor:
         memory_guard=guard,
         grace_seconds=30.0,
         idle_ttl_seconds=idle_ttl,
+        job_deadline_seconds=_bounded_int(
+            os.environ.get("PENNY_SHARED_WHISPER_JOB_DEADLINE_SECONDS", ""),
+            default=900, lower=60, upper=7200),
         model_id=model_id,
         model_revision=model_revision,
     )

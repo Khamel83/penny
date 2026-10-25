@@ -7,6 +7,7 @@ Penny webhook or the supervisor itself.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -22,6 +23,8 @@ from .protocol import (
     WhisperResult,
     WhisperUnavailable,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SupervisorState(StrEnum):
@@ -63,6 +66,9 @@ class _Job:
     client: ClientKind
     request_id: str
     worker: WorkerHandle
+    started_at: float = 0.0
+    started_at_epoch: float = 0.0
+    deadline_seconds: float = 900.0
     completed: bool = False
     preempted: bool = False
     result: WhisperResult | None = None
@@ -80,6 +86,7 @@ class SharedWhisperSupervisor:
         memory_guard: MemoryGuard,
         grace_seconds: float = 30.0,
         idle_ttl_seconds: float = 300.0,
+        job_deadline_seconds: float = 900.0,
         model_id: str,
         model_revision: str,
         clock: Callable[[], float] = time.monotonic,
@@ -90,6 +97,10 @@ class SharedWhisperSupervisor:
         self._memory_guard = memory_guard
         self._grace_seconds = max(0.0, grace_seconds)
         self._idle_ttl_seconds = max(0.0, idle_ttl_seconds)
+        # A worker can stay alive without making progress (penny#138: 12 h with
+        # /health green). Past this deadline the job fails and the worker is
+        # replaced on the next request instead of blocking every client.
+        self._job_deadline_seconds = max(1.0, job_deadline_seconds)
         self._model_id = model_id
         self._model_revision = model_revision
         self._clock = clock
@@ -113,6 +124,10 @@ class SharedWhisperSupervisor:
                 "worker_count": 1 if worker else 0,
                 "resident_backend": self._worker_backend if worker else None,
                 "active_client": self._job.client.value if self._job else None,
+                "active_job_started_at": self._job.started_at_epoch if self._job else None,
+                "active_job_age_seconds": (
+                    max(0.0, self._clock() - self._job.started_at) if self._job else None
+                ),
                 "preemption_count": self._preemption_count,
             }
 
@@ -221,11 +236,19 @@ class SharedWhisperSupervisor:
         if self._job is not None:
             raise WhisperBusy("Whisper worker already has an active request")
         backend = options.pop("_backend", "primary")
+        audio_seconds = options.pop("_audio_seconds", None)
+        # Scale with the recording: a long voice memo on the slower Whisper
+        # fallback can legitimately take longer than the base deadline.
+        deadline = self._job_deadline_seconds
+        if isinstance(audio_seconds, (int, float)) and audio_seconds > 0:
+            deadline = max(deadline, 2.0 * float(audio_seconds))
         if backend not in {"primary", "whisper"}:
             raise WhisperProtocolError("unsupported_backend")
         worker = self._ensure_worker_locked(backend)
         request_id = str(uuid.uuid4())
-        job = _Job(client=client, request_id=request_id, worker=worker)
+        job = _Job(client=client, request_id=request_id, worker=worker,
+                   started_at=self._clock(), started_at_epoch=time.time(),
+                   deadline_seconds=deadline)
         self._job = job
         self._state = (
             SupervisorState.PENNY_RUNNING
@@ -297,6 +320,27 @@ class SharedWhisperSupervisor:
 
             result = worker.poll(timeout=0.05)
             if result is None:
+                if self._clock() - job.started_at > job.deadline_seconds:
+                    with self._condition:
+                        if not job.preempted and not job.completed:
+                            logger.warning(
+                                "worker_deadline_exceeded client=%s age_seconds=%.1f deadline_seconds=%.1f",
+                                job.client.value, self._clock() - job.started_at,
+                                job.deadline_seconds,
+                            )
+                            job.error = WhisperUnavailable("worker_deadline_exceeded")
+                            job.completed = True
+                            if self._worker is job.worker:
+                                try:
+                                    self._stop_worker_locked()
+                                except WhisperUnavailable:
+                                    pass  # memory guard refuses a second owner
+                                self._worker = None
+                            if self._job is job:
+                                self._job = None
+                                self._state = SupervisorState.IDLE
+                            self._condition.notify_all()
+                    continue
                 if not worker.is_alive():
                     with self._condition:
                         if not job.preempted and not job.completed:

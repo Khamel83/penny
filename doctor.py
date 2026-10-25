@@ -25,6 +25,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import transcript_log
+from health_history import acknowledged_counts
 
 try:  # Config import is intentionally lazy in run_doctor for testability.
     from config import get_config
@@ -83,6 +84,10 @@ _SAFE_REASON_VALUES = frozenset(
 _SAFE_DETAIL_KEYS = frozenset(
     {
         "age_seconds",
+        "acknowledged_quarantined_count",
+        "acknowledged_dead_letter_count",
+        "acknowledged_historical_failure_count",
+        "acknowledged_unavailable_count",
         "archive_backfill_failed_count",
         "archive_invalid_count",
         "archive_pending_count",
@@ -120,6 +125,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "current_terminal_failure_count",
         "unavailable_count",
         "uncertain_count",
+        "skipped_count",
         "verified",
         "watcher_ok",
         "voicememod_running",
@@ -492,6 +498,7 @@ def _default_probe_voice_memos(_config: Any = None, *, now: datetime | None = No
         if not valid:
             data["timestamp_valid"] = False
             data["reason"] = "timestamp_invalid"
+    data.update(acknowledged_counts("voice_memos"))
     return data
 
 
@@ -655,7 +662,9 @@ def _default_probe_shared_whisper(config: Any, *, now: datetime | None = None, *
 
 def _default_probe_apple_effects(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
-    return transcript_log.get_apple_effect_health()
+    health = transcript_log.get_apple_effect_health()
+    health.update(acknowledged_counts("apple_effects"))
+    return health
 
 
 def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -685,6 +694,7 @@ def _default_probe_maya(config: Any, *, now: datetime | None = None, **_kwargs: 
         "pending_count": health.get("pending_count", 0),
         "failed_count": health.get("failed_count", 0),
         "dead_letter_count": health.get("dead_letter_count", 0),
+        **acknowledged_counts("maya"),
         "max_attempt_count": health.get("max_attempt_count", 0),
         "age_seconds": pending_age,
     }
@@ -1175,7 +1185,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "degraded", "retryable_failure"
         if int(values.get("retry_due_count", 0) or 0) > 0 or int(values.get("awaiting_file_count", 0) or 0) > 0:
             return "degraded", "backlog"
-        if historical or int(values.get('unavailable_count', 0) or 0) > 0:
+        if (historical > int(values.get("acknowledged_historical_failure_count", 0) or 0)
+            or int(values.get("unavailable_count", 0) or 0) > int(values.get("acknowledged_unavailable_count", 0) or 0)):
             return 'degraded', 'historical_unavailable'
         return "ready", "ok"
     if name == "archive":
@@ -1215,7 +1226,7 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "unready", "quarantine"
         if int(values.get("stale_in_flight_count", 0) or 0) > 0:
             return "degraded", "backlog"
-        if int(values.get("quarantined_count", 0) or 0) > 0:
+        if int(values.get("quarantined_count", 0) or 0) > int(values.get("acknowledged_quarantined_count", 0) or 0):
             return "degraded", "quarantine"
         return "ready", "ok"
     if name == "maya":
@@ -1225,7 +1236,7 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "degraded", "disabled"
         if not values.get("query_ok", 1) or values.get("health_error", 0):
             return "unready", "database_unavailable"
-        if int(values.get("dead_letter_count", 0) or 0) > 0:
+        if int(values.get("dead_letter_count", 0) or 0) > int(values.get("acknowledged_dead_letter_count", 0) or 0):
             return "degraded", "dead_letter"
         if int(values.get("failed_count", 0) or 0) > 0:
             return "degraded", "provider_failure"

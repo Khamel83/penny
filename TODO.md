@@ -1,4 +1,123 @@
+## Stalled Voice Memos sync — October 24, 2026 local
+
+- [x] Recover memos stuck off the Mac since the October 22 10:11 reboot.
+  `voicememod` (PID 843) was alive but imported nothing; `CloudRecordings.db`
+  was unchanged since 10:12. Killing it at 18:40 synced 5 recordings (Oct 22
+  11:57 through Oct 24 17:52); watcher began processing PK 462+ at 18:41.
+- [x] Merge and deploy the watcher idle-sync recycle (restart `voicememod`
+  when the sync DB is idle 3 h, at most once per 3 h). Merged in
+  https://github.com/Khamel83/penny/pull/141; `deploy_penny.py --apply`
+  activated `0ee8f38` on all five labels at 18:47 PDT; `/ready` overall ready.
+  First live recycle not yet observed (needs 3 idle hours).
+- [x] Classifier model blocked: `google/gemini-2.5-flash-lite` has no allowed
+  OpenRouter provider on this account. Owner approved any cheap model. Now
+  `openai/gpt-4.1-nano` with OpenRouter `models` fallback to
+  `meta-llama/llama-3.1-8b-instruct`; live call via the blocked model fell back
+  to gpt-4.1-nano. G2K not used: Penny's contract keeps transcripts off G2K.
+  Owner then chose `~deepseek/deepseek-v4-flash-latest` (alias; resolved to
+  `deepseek-v4-flash-0731` on October 24) with reasoning disabled, keeping the
+  same fallback list.
+
+## Shared ASR hang recovery — issue #138
+
+- [x] Complete local deadline observability and keeper stale-job recovery for
+  https://github.com/Khamel83/penny/issues/138. Existing 900-second/2×duration
+  deadline retained; warning and epoch start/monotonic age added. Review fix
+  explicitly enables scoped warning capture despite suite-wide logging
+  suppression; 37 focused tests pass with that suppression seeded. Loopback
+  HTTP smoke verifies the warning, hung-worker termination/503 and replacement
+  success/200. Evidence and recheck command: [handoff](HANDOFF.md).
+- [ ] Deploy reviewed supervisor and keeper, force a safe synthetic hang, and
+  independently verify MinusPod resumes and Kuma `atlas.mac-asr` records the
+  failure. Not performed by the worktree-only worker.
+
+## Shared ASR TCC containment — October 19, 2026 local
+
+- [x] Diagnose the failed `com.penny.shared-whisper` start. A private launchd
+  projection captured `Fatal Python error: Failed to import encodings module`
+  and `InterruptedError: [Errno 4] Interrupted system call`; unified logs show
+  955 `kTCCServiceSystemPolicyRemovableVolumes` watchdog events across 101 PIDs
+  in the fixed 20:17:00–20:29:38 PDT window.
+- [x] Contain the respawn loop by booting out only the keeper and shared ASR
+  labels. Original plist hashes, data, source, model, providers, TCC state and
+  the four peer labels were preserved; local and tailnet health remain DOWN by
+  design. [Incident receipt and re-enable gate](docs/asr-tcc-containment-20261019.md).
+- [ ] Owner-only gate: resolve the supported macOS removable-volume
+  authorization/runtime condition, then bootstrap the unchanged original ASR
+  plist, verify stable health/no respawn, bootstrap the keeper, and verify its
+  scheduled run plus Kuma heartbeat. Do not claim recovery before those facts.
+
+## Health investigation — October 18, 2026 local
+
+- [x] Diagnose installed and external Penny health; verify no current unready
+  component, preserve historical holds and attempt bounded local recovery.
+  Source135 audio is corrupt in both available copies; failed attempt rolled
+  back without new downstream rows. [Evidence](docs/health-audit-20261018.md).
+- ~~Recover missing/corrupt history and replay legacy Maya dead letters~~ —
+  owner retired this work October18; preserve old data and receipts.
+- [x] Deploy exact-record acknowledgement of reviewed history; installed
+  readiness and OCI are ready, Homelab API healthy, Kuma leaves23/24 UP.
+  New/changed failures still alert. [Evidence](docs/health-audit-20261018.md).
+- [x] Verify parent Kuma22's ordinary UP heartbeat and both child checks:
+  all three saved UP at06:25:46/47UTC; parent reports all children up.
+  [Acceptance](docs/health-audit-20261018.md).
+
+## Parakeet repetition timing — October 16, 2026 UTC
+
+- [x] Complete [#111](https://github.com/Khamel83/penny/issues/111) from its
+  retained candidate. [PR126](https://github.com/Khamel83/penny/pull/126) merged
+  64d32534 after exact trusted PASS and both native hosted checks;92focused,
+  848full/two skips/60subtests and497trust/two skips pass. The exact two modules
+  are installed with ASR/watcher/webhook refresh and independent source/peer/
+  health/readiness verification. Its original fifth criterion is the PR body's
+  post-deploy archive instruction, already supplied; actual archive execution
+  and a future ordinary inference were not completion requirements. The active
+  Atlas quality hold and all recording/receipt/backup bytes remain intact.
+  [Acceptance, private receipts and guarded native closure](HANDOFF.md).
+
+## Retry retention — October 16, 2026 UTC
+
+- [x] Reassess [#112](https://github.com/Khamel83/penny/issues/112), preserve its
+  retained source and correct unsafe pending/unknown expiry, durability and
+  symlink/mount boundaries. [PR122](https://github.com/Khamel83/penny/pull/122)
+  merged85900798 after exact trusted PASS and both native checks;837pytest and
+  497trust tests passed (two skips each).
+- [x] Verify complete local SSD backup before scoped helper installation/idle
+  ASR reload; check exact bytes, loaded source, unchanged callers/peers and
+  installed synthetic terminal/pending behavior. [Receipt and rollback](HANDOFF.md).
+- [x] Accept [#112](https://github.com/Khamel83/penny/issues/112) against its
+  original four test criteria: SSD-root placement, terminal audio release with
+  receipt preservation, pending-review protection, and passing existing tests.
+  [PR122](https://github.com/Khamel83/penny/pull/122) and the installed probe satisfy
+  these checks; installation is independently
+  verified above. A future ordinary retry remains unobserved, but was not an
+  original completion requirement. Remove the extra acceptance hold; observe
+  normal use without replay or historical batch prune.
+
+## Doctor reporting completed — October 16, 2026 UTC
+
+- [x] Finish [PR115](https://github.com/Khamel83/penny/pull/115) skip-count
+  source publication while preserving keeper acceptance and correcting the
+  earlier investigation/recovery chronology. Exact-head trusted PASS and both
+  hosted Python checks passed; normal merge c9b0368a is verified.
+- [x] Install exact merged Doctor bytes and reload only the webhook after a
+  fresh verified SSD/Homelab backup. Local and OCI-via-existing-SSH `/ready`
+  return HTTP200, zero unready, Drop pending/failed/uncertain=0 and skipped=1;
+  ASR PID and other production files/plists are preserved. First-attempt safe
+  restoration and the accepted bounded-warmup attempt are retained with
+  independent readback. [Receipt, limits and rollback](HANDOFF.md).
+
 # Penny TODO
+
+## Shared ASR keeper — October 16, 2026
+
+- [x] Finish [PR119](https://github.com/Khamel83/penny/pull/119): private
+  directory strikes, tolerant health parsing, truthful recovery reporting and
+  timed-agent CI contract. Exact-head trusted PASS, native CI and independent
+  Janitor merge receipt verified; merged `6330b398` keeper-only bytes installed
+  with SSD rollback receipt and unchanged ASR daemon PID. Initial and first
+  ordinary scheduled runs exited 0; local and Homelab health pass. Real outage/reboot recovery is unexercised.
+  [Evidence](docs/shared-whisper-keeper-20261016.md).
 
 ## Immediate SSD relocation — October 9
 
@@ -7,22 +126,27 @@
   SQLite integrity, restored services and fresh Voice Memos source access. Internal free space is 26 GiB.
   [Evidence](docs/ssd-storage-20261009.md),
   [PR113](https://github.com/Khamel83/penny/pull/113).
-- [ ] Add bounded retry retention on SSD while preserving pending review:
-  https://github.com/Khamel83/penny/issues/112. Relocation is complete; retention
-  is not implemented by this storage operation.
-- [ ] Reconcile the pre-existing uncertain Drop receipt through its receipt-bound
-  procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
+Retry retention is tracked in the current #112 checkpoint above. Relocation is
+complete; this earlier storage operation did not implement retention.
+- [x] Retire note 779's Drop delivery at the owner's request; keep audio,
+  transcript, frozen payload and original failure receipt locally.
+  `/ready` HTTP 200, Drop uncertain=0 and skipped=1.
+  [Evidence](docs/drop-owner-skip-779-20261010.md),
+  [Drop158](https://github.com/Khamel83/drop/issues/158).
 
 
 - [x] Verify retained issue #110 source candidate locally: guarded Drop skip,
   metadata-only `skipped_count`, and unresolved attempt evidence/replay protection.
-  69 Drop/Doctor/export tests passed; synthetic SQLite smoke verified the
-  uncertain-to-skipped readiness boundary without real delivery.
+  71 Drop/Doctor/export tests passed after authorized default integration;
+  synthetic SQLite smoke verified the uncertain-to-skipped readiness boundary
+  without real delivery.
   [Evidence and remaining gates](docs/research/g2k-issue-110.md).
-- [ ] Publish the retained issue #110 candidate through the orchestrator for
-  native CI and trusted exact-head review; account for 25 upstream commits
-  before publication. Merge, deployment, natural receipts and downstream recovery
-  remain separate, unproven gates. Keep
+- [x] Resolve PR #145's merge with authorized default
+  `5b7665981baafcb8c39b36f2222e20a6b196b22b`; preserve both runtime history and
+  guarded-skip source. Leave the resolved merge staged, without committing.
+- [ ] Publish the integrated issue #110 candidate through the orchestrator for
+  native CI and trusted exact-head review. Commit/publication, reviewed merge,
+  deployment, natural receipts and downstream recovery remain separate gates. Keep
   https://github.com/Khamel83/penny/issues/110 open with
   `g2k:acceptance-pending`. Refs #110.
 
@@ -104,20 +228,12 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-## Natural-capture acceptance completed October 4
-
-- [x] **P01 — New post-Parakeet Penny recording.** Ordinary captures 772–774
-  from October 2–3 all used pinned Parakeet, passed quality and routed. Local
-  audio hashes, archive publication receipts, matching Drop archive hashes,
-  independent Slack sent receipts and Maya store-only source-event receipts
-  are verified. [Evidence and limits](docs/natural-parakeet-acceptance-20261004.md).
-- ~~**P02 — Wait for a new direct Maya v2 input.**~~ This is not the active
-  voice-note route: new iCloud captures are Drop-owned and intentionally direct
-  Maya-ineligible. All three already have Maya receipts through Drop. Retain
-  direct-v2 acceptance only if that separate path is explicitly exercised;
-  preserve its nine historical dead letters.
-
-No input-gated implementation or acceptance task remains for the normal Penny
-voice-note path. Observe long-term stability during ordinary use; no new bulk
-benchmark or manufactured capture is required.
+Active work queue is canonical in repository `TODO.md` (all open tasks outside Janitor block are resolved or completed; see handwritten queue and docs/REPO_PLAN.md).
 <!-- janitor:end:todo -->
+
+## Owning repository plan
+
+Use [the ordered reconciliation](docs/REPO_PLAN.md) and [coordinator #116](https://github.com/Khamel83/penny/issues/116). It maps every observed open source record. Existing incomplete acceptance and holds remain in force.
+## Fleet CI cancellation - source checkpoint (October 16, 2026)
+
+- [x] `.github/workflows/test.yml` has a prepared PR-only concurrency cancellation change on `feat/fleet-ci-cancellation-20261016`; native CI, review, and normal merge remain pending. No runtime change is claimed. Done (model-matched): https://github.com/Khamel83/penny/pull/129

@@ -5,6 +5,25 @@ Incident marker (verbatim, for traceability):
 Issue: https://github.com/Khamel83/penny/issues/110 (OPEN, label `g2k:acceptance-pending`,
 created 2026-10-10T00:20:42Z, updated 2026-10-12T02:52:44Z). Refs #110.
 
+## Authorized default integration — October 24, 2026
+
+PR #145 candidate HEAD `0d534d968d8c8420042ab08c9a55e0feaced7eda` is preserved.
+Ran only the authorized merge:
+`git merge --no-commit --no-ff 5b7665981baafcb8c39b36f2222e20a6b196b22b`.
+Resolved two conflicts: retained both distinct `CONTEXT.md` sections (source
+checkpoint and default's Drop runtime diagnosis); kept one equivalent
+`skipped_count` expression in Doctor. All other default changes remain included.
+The merge is staged and intentionally uncommitted for the orchestrator.
+
+Merged-source verification: the same Drop/Doctor/export command below passed
+**71 tests**. Synthetic SQLite smoke again observed `unready/uncertain_effect`
+→ `ready/ok`, `skipped_count=1`, and no replay claim. No real ledger, provider
+or runtime was accessed. Earlier full-suite collection failure was not
+rechecked. Native CI, trusted exact-head review and original runtime acceptance
+remain separate pending gates. Refs #110; keep `g2k:acceptance-pending`.
+
+The earlier checkpoint below describes the pre-integration candidate.
+
 ## Local candidate verification — October 24, 2026
 
 This checkpoint supersedes source-freshness and local-test claims in the

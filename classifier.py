@@ -15,6 +15,13 @@ import requests
 log = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# OpenRouter tries these in order when the configured model has no allowed
+# provider (October 24, 2026: gemini-2.5-flash-lite lost its only one).
+FALLBACK_MODELS = ("openai/gpt-4.1-nano", "meta-llama/llama-3.1-8b-instruct")
+
+
+def _models(model: str) -> list[str]:
+    return [model, *(m for m in FALLBACK_MODELS if m != model)]
 
 CATEGORIES = ["groceries", "errands", "home", "health", "work", "kids", "inbox", "project"]
 
@@ -115,6 +122,9 @@ def classify(
             },
             json={
                 "model": model,
+                "models": _models(model),
+                # Thinking models can spend the whole token cap before answering.
+                "reasoning": {"enabled": False},
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
@@ -213,6 +223,9 @@ def detect_content_type(
             },
             json={
                 "model": model,
+                "models": _models(model),
+                # Thinking models can spend the whole token cap before answering.
+                "reasoning": {"enabled": False},
                 "messages": [
                     {"role": "system", "content": CONTENT_TYPE_PROMPT},
                     {

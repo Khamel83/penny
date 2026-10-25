@@ -1,3 +1,4 @@
+import logging
 import queue
 import threading
 import time
@@ -270,3 +271,98 @@ def test_idle_worker_is_terminated_after_ttl():
     assert supervisor.expire_idle() is True
     assert factory.workers[0].terminated.is_set()
     assert supervisor.status()["worker_pid"] is None
+
+
+def test_hung_worker_fails_after_deadline_and_next_request_gets_new_worker():
+    """penny#138: an alive worker that never answers must not block forever."""
+    factory = FakeFactory()
+    supervisor = SharedWhisperSupervisor(
+        worker_factory=factory,
+        memory_guard=StaticMemoryGuard(),
+        grace_seconds=0.2,
+        idle_ttl_seconds=300.0,
+        job_deadline_seconds=1.0,
+        model_id=MODEL_ID,
+        model_revision=REVISION,
+    )
+    outcomes = []
+    thread = _run_request(supervisor, ClientKind.ATLAS, outcomes,
+                          audio_path="/tmp/a.wav", options={})
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    kind, exc = outcomes[0]
+    assert kind == "error" and "worker_deadline_exceeded" in str(exc)
+    assert factory.workers[0].terminated.is_set()
+    assert supervisor.status()["state"] == "idle"
+
+    outcomes.clear()
+    thread = _run_request(supervisor, ClientKind.ATLAS, outcomes,
+                          audio_path="/tmp/b.wav", options={})
+    deadline = time.monotonic() + 2
+    while len(factory.workers) < 2 or not factory.workers[1].submitted:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    factory.workers[1].complete(_result(factory.workers[1].submitted[0]["request_id"]))
+    thread.join(timeout=5)
+    assert outcomes[0][0] == "ok"
+
+
+def test_job_deadline_scales_with_audio_length():
+    clock = [0.0]
+    factory = FakeFactory()
+    supervisor = SharedWhisperSupervisor(
+        worker_factory=factory,
+        memory_guard=StaticMemoryGuard(),
+        job_deadline_seconds=900.0,
+        model_id=MODEL_ID,
+        model_revision=REVISION,
+        clock=lambda: clock[0],
+    )
+    job = supervisor._start_job(ClientKind.PENNY, audio_path="/tmp/long.wav",
+                                options={"_audio_seconds": 7200.0})
+    assert job.deadline_seconds == 14400.0
+    assert "_audio_seconds" not in factory.workers[0].submitted[0]["options"]
+
+def test_hung_worker_deadline_terminates_and_next_request_succeeds(caplog):
+    caplog.set_level(logging.WARNING, logger="shared_whisper.supervisor")
+    now = [100.0]
+    factory = FakeFactory()
+    supervisor = _supervisor(factory, clock=lambda: now[0])
+    outcomes = []
+    thread = _run_request(
+        supervisor, ClientKind.ATLAS, outcomes, audio_path="hang.wav", options={}
+    )
+    try:
+        while not factory.workers or not factory.workers[0].submitted:
+            time.sleep(0.005)
+        status = supervisor.status()
+        assert status["active_job_started_at"] is not None
+        assert status["active_job_age_seconds"] == 0
+        now[0] += 901
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        assert isinstance(outcomes[0][1], WhisperUnavailable)
+        assert str(outcomes[0][1]) == "worker_deadline_exceeded"
+        assert factory.workers[0].terminated.is_set()
+        assert "worker_deadline_exceeded" in caplog.text
+        assert supervisor.status()["active_job_started_at"] is None
+        assert supervisor.status()["active_job_age_seconds"] is None
+    finally:
+        now[0] += 1000
+        thread.join(timeout=1)
+
+    recovered = []
+    thread = _run_request(
+        supervisor, ClientKind.ATLAS, recovered, audio_path="next.wav", options={}
+    )
+    try:
+        limit = time.monotonic() + 1
+        while len(factory.workers) < 2 and time.monotonic() < limit:
+            time.sleep(0.005)
+        assert len(factory.workers) == 2
+        factory.workers[1].complete(_result("recovered"))
+        thread.join(timeout=1)
+        assert recovered == [("ok", _result("recovered"))]
+    finally:
+        now[0] += 1000
+        thread.join(timeout=1)

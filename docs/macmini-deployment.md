@@ -152,3 +152,44 @@ retroactively rewritten.
 Keep iCloud as a rebuildable mirror and homelab backup sets as the
 independent recovery source; neither should be silently substituted for the
 canonical SQLite ledger.
+
+## Shared-whisper keeper
+
+`launchd/com.penny.shared-whisper-keeper.plist.template` probes
+`http://127.0.0.1:10311/health` every two minutes. After two consecutive
+failures it kickstarts `com.penny.shared-whisper` (or bootstraps it when it is
+not loaded) and writes one syslog line tagged `penny-shared-whisper-keeper`.
+It uses macOS system tools on the internal disk and an empty strike directory
+inside the owner-only Darwin temporary directory, so it also covers a reboot
+where the SSD mounts late. State roots, state and strikes reject symlinks,
+wrong ownership and permissions other than 0700. Healthy JSON whitespace is
+accepted, including busy responses. Recovery logs report a launch request or
+a failure; they do not attest endpoint recovery. It contains no credentials and
+sends no notification; Uptime Kuma reports the same endpoint (infra check
+`atlas.mac-asr`).
+
+Install or update it:
+
+```sh
+# Preserve the existing keeper plist in an SSD deployment receipt first.
+# Render the reviewed source revision instead of installing a placeholder.
+venv/bin/python - <<'PYTHON'
+import pathlib
+import plistlib
+import subprocess
+
+source = pathlib.Path("launchd/com.penny.shared-whisper-keeper.plist.template")
+values = plistlib.loads(source.read_bytes())
+values["EnvironmentVariables"]["PENNY_SOURCE_REVISION"] = subprocess.check_output(
+    ["git", "rev-parse", "HEAD"], text=True
+).strip()
+target = pathlib.Path.home() / "Library/LaunchAgents/com.penny.shared-whisper-keeper.plist"
+target.write_bytes(plistlib.dumps(values))
+PYTHON
+plutil -lint ~/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist
+launchctl bootout "gui/$(id -u)/com.penny.shared-whisper-keeper" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.penny.shared-whisper-keeper.plist
+launchctl print "gui/$(id -u)/com.penny.shared-whisper-keeper"
+curl -fsS http://127.0.0.1:10311/health
+log show --last 1h --predicate 'eventMessage CONTAINS "penny-shared-whisper-keeper"'
+```

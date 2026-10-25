@@ -101,6 +101,16 @@ Private evidence: `~/.penny/real-memo-762-verification-2026-09-22.json`.
 The later health correction and preserved historical exceptions are documented
 in [capture health](capture-health.md) and the [current handoff](../HANDOFF.md).
 
+## Explicit owner skips
+
+After reviewing the exact uncertain handoff, an owner may intentionally
+decline delivery while retaining the local original. An audited `skipped`
+state is excluded from sending/reconciliation and reported as `skipped_count`
+in Doctor. It is not an accepted or archived receipt. Preserve payload,
+original attempt evidence and before-image; never use a skip to represent an
+unapproved loss or to silence a current provider failure.
+[Note 779 owner decision and verification](drop-owner-skip-779-20261010.md).
+
 ## Operation after the production gate
 
 Penny hands one text artifact and allowlisted metadata to the existing Drop

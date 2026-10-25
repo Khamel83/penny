@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Restart com.penny.shared-whisper when its /health stops answering.
+
+On 2026-10-16 the server never came back after a Mac reboot and MinusPod
+episodes stalled for about 80 minutes. launchd KeepAlive only restarts a
+process that exits; it cannot see a server that never started or stopped
+answering. This keeper probes /health every two minutes and, after two
+consecutive failures, kickstarts the agent (or bootstraps it if it is not
+loaded). The server is threaded, so /health answers during transcription and
+a healthy busy worker is left alone.
+
+The keeper uses only macOS system tools on the internal disk, so it works
+while the enrolled SSD is still mounting. Its empty strike directory lives in
+the validated owner-only Darwin temporary directory; it never opens a shared
+marker file. Recovery logs distinguish a launch request from a failure. It
+sends no network notification. Uptime Kuma reports the same endpoint through
+the infra check atlas.mac-asr.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.penny.shared-whisper-keeper</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PENNY_SOURCE_REVISION</key>
+        <string>YOUR_PENNY_SOURCE_REVISION_HERE</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>umask 077
+fail() { /usr/bin/logger -t penny-shared-whisper-keeper "$1"; exit 1; }
+uid=$(/usr/bin/id -u) || exit 1
+private_dir() {
+    [ ! -L "$1" ] &amp;&amp; [ -d "$1" ] &amp;&amp;
+        [ "$(/usr/bin/stat -f '%u:%OLp' "$1")" = "$uid:700" ]
+}
+temp_root=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR) || fail "private temporary directory unavailable"
+private_dir "$temp_root" || fail "unsafe temporary directory"
+state="${temp_root%/}/penny-shared-whisper-keeper"
+/bin/mkdir "$state" 2&gt;/dev/null || private_dir "$state" || fail "unsafe keeper state directory"
+private_dir "$state" || fail "unsafe keeper state directory"
+mark="$state/strike"
+job="gui/$uid/com.penny.shared-whisper"
+if health=$(/usr/bin/curl -sf -m 5 http://127.0.0.1:10311/health) &amp;&amp;
+    printf '%s' "$health" | /usr/bin/tr '\r\n' '  ' | /usr/bin/grep -Eq '"service"[[:space:]]*:[[:space:]]*"penny-shared-whisper"' &amp;&amp;
+    printf '%s' "$health" | /usr/bin/awk '
+        BEGIN { RS = "[{},]"; stale = 0 }
+        {
+            gsub(/[[:space:]]/, "")
+            split($0, field, ":")
+            if (field[1] == "\"active_job_age_seconds\"" &amp;&amp;
+                field[2] != "null" &amp;&amp; field[2] + 0 &gt; 1800) stale = 1
+        }
+        END { exit stale }
+    '; then
+    if [ -e "$mark" ] || [ -L "$mark" ]; then
+        private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"
+    fi
+    exit 0
+fi
+if /bin/mkdir "$mark" 2&gt;/dev/null; then exit 0; fi
+private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"
+if /bin/launchctl kickstart -k "$job" ||
+    /bin/launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.penny.shared-whisper.plist"; then
+    /usr/bin/logger -t penny-shared-whisper-keeper "recovery requested for com.penny.shared-whisper after two failed health checks"
+    exit 0
+fi
+fail "recovery failed for com.penny.shared-whisper after two failed health checks"</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>KeepAlive</key>
+    <false/>
+    <key>WorkingDirectory</key>
+    <string>/</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>1024</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

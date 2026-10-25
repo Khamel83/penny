@@ -1,4 +1,96 @@
-# Penny infrastructure
+## Shared ASR TCC containment — October 19, 2026 local
+
+The Mac mini shared ASR service is intentionally contained. Its launchd
+process failed during Python startup on the SSD-backed runtime with
+`Fatal Python error: Failed to import encodings module` and
+`InterruptedError: [Errno 4] Interrupted system call`. Unified logs record
+955 `kTCCServiceSystemPolicyRemovableVolumes` watchdog events across 101 PIDs
+from 20:17:00–20:29:38 PDT. This is a launchd/removable-volume authorization
+condition; a same-environment manual alternate-port run stayed healthy for 15
+seconds.
+
+Only `com.penny.shared-whisper-keeper` and `com.penny.shared-whisper` are
+booted out. Both original installed plist files remain unchanged and their
+SHA-256 hashes, the private capture, and the full receipt are recorded in
+[the dated incident evidence](docs/asr-tcc-containment-20261019.md). Local and
+tailnet ASR health are intentionally DOWN, port 10311 is absent, and Infra's
+Kuma `atlas.mac-asr` monitor should remain red. `export`, `tasks`, `watcher`
+and `webhook` remain loaded; no other launchd label, source, model, provider,
+data, backup or privacy grant changed.
+
+Owner-only blocker: resolve the supported macOS removable-volume
+authorization/runtime identity condition. After that gate, bootstrap the
+unchanged ASR plist first, verify stable health/no respawn, then bootstrap the
+unchanged keeper plist and verify its scheduled run and Kuma heartbeat. No
+TCC reset, SSD relocation, source workaround or unmanaged daemon is claimed or
+deployed.
+
+## Historical health acknowledgement — installed October 19, 2026 UTC
+
+Private `~/.penny/health-history.json` is on the existing SSD state path,
+mode0600, with exact-record fingerprints for the owner-retired exceptions.
+PR132 merged8606b497 Doctor/helper/operator bytes are installed; only webhook
+was reloaded/stamped. Current readiness/OCI are ready and Homelab API healthy.
+Kuma22/23/24all have persisted ordinary UP heartbeats at06:25:46/47UTC.
+No port, provider, credential, Kuma threshold or macOS permission changed.
+[Owner decision, deployment receipt and rollback](docs/health-audit-20261018.md).
+
+## ASR retry component — installed October 16, 2026 09:52 UTC
+
+Merged PR122/85900798 retry_receipt.py is installed with SHA256
+`c568bd45bde9ae5d3d801740471ed7503fd72566a8bbf32aa0fafa289ea8dd2b`.
+Only idle `com.penny.shared-whisper` was reloaded, now PID58688/source85900798.
+Callers, keeper and other plists stay unchanged; webhook remains c9b0368a.
+Primary HEAD65758e82 is preserved with intentional Doctor/retry-helper deltas.
+ASR health200/idle declares pinned Parakeet with no resident worker; a future
+ordinary retry remains unobserved. Original #112 test and installation acceptance
+is complete; normal-use observation does not keep that issue held.
+
+Actual retry root remains `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` on
+the enrolled mounted SSD. No migration was necessary. The helper now defaults
+there and rejects missing mounts/nonphysical overrides before receipt writes.
+Terminal receipt rename is fsynced before copied audio release;14day expiry
+preserves pending/unknown/malformed/symlink-containing records. Before activation,
+449files/10,059,792,302bytes were hash-verified into a durable write-protected
+local snapshot; original backup and source/plist before-images remain under
+`/Volumes/2TB_SSD/AI/Penny/deployments/20261016-retry112/`.
+[Acceptance, limits and rollback](HANDOFF.md).
+
+## Doctor component — installed October 16, 2026 UTC
+
+Only Doctor and `com.penny.webhook` were updated from merged PR115/c9b0368a.
+Doctor SHA256 is
+`3210731d6fa985342f4c3a29c5baa531c3eee22a8816dc72790cde00e4e10a71`;
+webhook PID30252 loads the c9b0368a source stamp. Primary Git HEAD65758e82 and
+its keeper branch are preserved; doctor.py is the intentional runtime delta.
+ASR PID2025/source c341598c and all peer plists remain unchanged. The existing
+port5678 `/ready` succeeds locally and from OCI through its existing Mac SSH
+route, with zero unready components and explicit skipped_count=1. No new route,
+credential, grant or observer configuration was introduced. The OCI scheduled
+Doctor observer has a narrower environment; it remains separate evidence.
+
+A first immediate probe raced startup and restored the prior bytes; independent
+readback verified service before a separate bounded-startup attempt accepted.
+Fresh backup verification, both attempts and scoped rollback before-images are
+on SSD in `/Volumes/2TB_SSD/AI/Penny/deployments/20261016-doctor115{,-warmup}/`.
+[Current receipt and validation](HANDOFF.md).
+
+## Shared ASR keeper — installed October 16, 2026
+
+`com.penny.shared-whisper-keeper` runs every 120 seconds with `RunAtLoad` and
+`KeepAlive=false`, using macOS system tools from `/`. Its only volatile state
+is an empty strike directory below the validated 0700 Darwin per-user temporary
+root, so late SSD mounts do not prevent probing. After two failed local health
+checks it requests recovery of the existing ASR label. Healthy busy responses
+clear the strike; failed recovery exits nonzero and logs the failure.
+
+Merged source `6330b398` is installed with its exact source stamp. Only the
+keeper was reloaded; the ASR daemon PID stayed unchanged. Installed hash,
+initial and first natural exit-0 runs and independent Homelab health are verified, with an SSD
+before-image/receipt. The shared endpoint is
+`http://omars-mac-mini.deer-panga.ts.net:10311/health` (current IP100.89.194.46).
+Infra owns Kuma monitor `atlas.mac-asr`; its monitor receipt is separate from
+keeper recovery. [Evidence and rollback](docs/shared-whisper-keeper-20261016.md).
 
 ## Current storage placement — October 9, 2026
 

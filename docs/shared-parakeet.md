@@ -22,9 +22,14 @@ than 1.0 s behind the previous word start is clamped to that start instead of
 failing the whole transcript, and the shared protocol validator applies the
 same 1.0 s tolerance. A larger backward jump still fails as
 `backwards_parakeet_token_time`. For new Parakeet output, brief restarts are
-accepted; eight consecutive repeated
-tokens or the existing low-diversity suffix signal trigger review. Existing
-Whisper quality-held records/policy are unchanged. A malformed output or severe
+accepted. Eight consecutive repeated tokens still trigger review unless the
+Parakeet output has matching, acoustically aligned word starts at speaking rate:
+the run must have fewer than 20 tokens, strictly increasing starts and a median
+start-to-start gap of at least 0.12 seconds. Shared, negative, nonfinite,
+unrepresentably large, missing or mismatched timing cannot relax that hold.
+Timing alignment is segment-local, so an unrelated segment without word timing
+does not invalidate a fully timed run elsewhere. The existing low-diversity
+suffix check and Whisper quality-held records/policy are unchanged. A malformed output or severe
 repetition-quality failure triggers at most one
 Whisper retry of a bounded upload (maximum 660 seconds including context).
 Longer flagged uploads return a review error, requiring an excerpt rather than
@@ -37,6 +42,32 @@ retains existing Penny priority and 300-second idle unloading. Tiny Wyoming
 on 10300/10301 is unchanged. Actual backend identity is preserved in responses
 and Penny metadata/checkpoints; model-policy-specific checkpoints do not reuse
 old Whisper text as new Parakeet output. Mixed chunk results identify both.
+
+Jobs have a deadline of `max(900 seconds, 2 × audio duration)` when duration is
+available, otherwise 900 seconds. An unresponsive worker is terminated through
+the supervisor stop path and the request fails with
+`WhisperUnavailable("worker_deadline_exceeded")`; the next request creates a
+fresh worker. A warning records the client, elapsed time and deadline, not audio
+or transcript content. Health/status expose `active_job_started_at` as Unix
+epoch seconds and `active_job_age_seconds` measured with the monotonic clock;
+both are null when idle. The keeper treats age above 1800 seconds as unhealthy,
+even with HTTP 200, and requests service recovery after two consecutive strikes.
+This backstop also applies to legitimately long jobs; the fixed keeper bound
+can interrupt one after 30 minutes plus the strike interval.
+
+Retry receipts keep the copied upload and both model results owner-only. They
+are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
+volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path
+(no symlink aliases or `..`) and overrides the default. If the volume is unavailable and no explicit absolute override is
+set, retry receipt creation fails closed rather than copying bulk audio to the
+internal disk. Retention is bounded: once a receipt reaches a terminal state
+(`retry_completed` or `retry_failed`), its `audio.*` copy is deleted and only
+`receipt.json` stays. Only terminal receipt directories with receipts older
+than 14 days are pruned. Pending, review, unknown and unreadable receipts keep
+their audio and are never age-pruned. A fresh receipt in an old directory stays;
+symlink roots, receipt directories, receipts and audio are not followed for
+retention. Explicit overrides beneath the SSD also fail closed when its mount
+is unavailable.
 
 For an explicitly questioned passage, use the installed credential environment:
 
