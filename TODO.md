@@ -14,6 +14,9 @@
   `openai/gpt-4.1-nano` with OpenRouter `models` fallback to
   `meta-llama/llama-3.1-8b-instruct`; live call via the blocked model fell back
   to gpt-4.1-nano. G2K not used: Penny's contract keeps transcripts off G2K.
+  Owner then chose `~deepseek/deepseek-v4-flash-latest` (alias; resolved to
+  `deepseek-v4-flash-0731` on October 24) with reasoning disabled, keeping the
+  same fallback list.
 
 ## Shared ASR hang recovery — issue #138
 

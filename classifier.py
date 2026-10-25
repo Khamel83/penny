@@ -123,6 +123,8 @@ def classify(
             json={
                 "model": model,
                 "models": _models(model),
+                # Thinking models can spend the whole token cap before answering.
+                "reasoning": {"enabled": False},
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
@@ -222,6 +224,8 @@ def detect_content_type(
             json={
                 "model": model,
                 "models": _models(model),
+                # Thinking models can spend the whole token cap before answering.
+                "reasoning": {"enabled": False},
                 "messages": [
                     {"role": "system", "content": CONTENT_TYPE_PROMPT},
                     {
