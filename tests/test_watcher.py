@@ -4,6 +4,7 @@ import logging
 import ast
 import json
 import os
+import time
 import sqlite3
 import sys
 import shutil
@@ -2566,6 +2567,50 @@ class WatcherTests(unittest.TestCase):
                 ["open", "-g", "-a", "VoiceMemos"],
             ],
         )
+
+    def test_idle_sync_database_recycles_running_voicememod_once(self) -> None:
+        calls: list[list[str]] = []
+        db_path = Path(self.db_dir) / "CloudRecordings.db"
+        db_path.write_bytes(b"")
+        stale = time.time() - watcher.VOICE_MEMO_SYNC_IDLE_RECYCLE_SECONDS - 60
+        os.utime(db_path, (stale, stale))
+        recycle = ["pkill", "-TERM", "-u", str(os.getuid()), "-x", "voicememod"]
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[0] == "osascript":
+                return SimpleNamespace(returncode=0, stdout="Voice Memos", stderr="")
+            return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
+
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", db_path),
+            patch.object(watcher, "_voicememod_last_recycle", 0.0),
+            patch.object(watcher.subprocess, "run", side_effect=fake_run),
+        ):
+            watcher._voicememos_unresponsive_streak = 0
+            watcher._ensure_voicememos_running()
+            watcher._ensure_voicememos_running()
+
+        self.assertEqual(calls.count(recycle), 1)
+        self.assertEqual(calls[-1], ["open", "-g", "-a", "VoiceMemos"])
+
+    def test_fresh_sync_database_does_not_recycle_voicememod(self) -> None:
+        calls: list[list[str]] = []
+        db_path = Path(self.db_dir) / "CloudRecordings.db"
+        db_path.write_bytes(b"")
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="411\n", stderr="")
+
+        with (
+            patch.object(watcher, "CLOUDRECORDINGS_DB", db_path),
+            patch.object(watcher, "_voicememod_last_recycle", 0.0),
+            patch.object(watcher.subprocess, "run", side_effect=fake_run),
+        ):
+            watcher._ensure_voicememos_running()
+
+        self.assertFalse(any(args[0] == "pkill" for args in calls))
 
     def test_voicememos_unresponsive_is_relaunched_after_three_probes(self) -> None:
         calls: list[list[str]] = []

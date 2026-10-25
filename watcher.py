@@ -112,6 +112,11 @@ VOICE_MEMOS_RESPONSIVENESS_SCRIPT = (
 )
 VOICE_MEMO_UNRESPONSIVE_LIMIT = 3
 _voicememos_unresponsive_streak = 0
+# voicememod can stay alive with CloudKit import stalled (October 22, 2026:
+# two days of phone/watch memos stayed off the Mac after a reboot). Recycle it
+# when the sync database has been idle this long; launchd relaunches it.
+VOICE_MEMO_SYNC_IDLE_RECYCLE_SECONDS = 3 * 3600
+_voicememod_last_recycle = 0.0
 
 _DEPENDENCY_ISSUE_CODES = frozenset(
     {
@@ -251,6 +256,44 @@ def _voicememos_sync_daemon_running() -> bool:
             type(e).__name__,
         )
         return False
+
+
+def _cloud_recording_idle_seconds() -> float | None:
+    """Seconds since the sync database or its WAL last changed, if present."""
+    mtimes = []
+    for path in (CLOUDRECORDINGS_DB, Path(f"{CLOUDRECORDINGS_DB}-wal")):
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    if not mtimes:
+        return None
+    return max(0.0, time.time() - max(mtimes))
+
+
+def _recycle_idle_voicememod() -> None:
+    """Restart a running voicememod whose CloudKit import looks stalled."""
+    global _voicememod_last_recycle
+    idle = _cloud_recording_idle_seconds()
+    if idle is None or idle < VOICE_MEMO_SYNC_IDLE_RECYCLE_SECONDS:
+        return
+    now = time.monotonic()
+    if (
+        _voicememod_last_recycle
+        and now - _voicememod_last_recycle < VOICE_MEMO_SYNC_IDLE_RECYCLE_SECONDS
+    ):
+        return
+    _voicememod_last_recycle = now
+    log.warning(
+        "VoiceMemos sync database idle for %ss; recycling voicememod",
+        int(idle),
+    )
+    subprocess.run(
+        ["pkill", "-TERM", "-u", str(os.getuid()), "-x", "voicememod"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
 
 
 def _voicememos_responsive() -> bool:
@@ -1278,6 +1321,8 @@ def _ensure_voicememos_running() -> None:
                     "VoiceMemos sync daemon kickstart errored (class=%s)",
                     type(e).__name__,
                 )
+        else:
+            _recycle_idle_voicememod()
 
         refresh = subprocess.run(
             ["open", "-g", "-a", "VoiceMemos"],
