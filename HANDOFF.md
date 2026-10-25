@@ -1,3 +1,18 @@
+## Stalled Voice Memos sync — October 24, 2026 18:50 PDT
+
+Done: `/ready` was green but phone/watch memos had not reached the Mac since
+the October 22 10:11 reboot. Cause: `voicememod` was alive with CloudKit import
+stalled; the watcher only kickstarted it when it was missing. `killall
+voicememod` at 18:40 synced 5 recordings, and the watcher processed them.
+Source fix on branch `fix/voicememod-idle-recycle` (reused worktree
+`.worktrees/whisper-job-deadline`; keep it for reuse): recycle `voicememod`
+when the sync DB/WAL is idle for 3 h, at most once per 3 h.
+
+In flight: PR review/merge, then deploy from clean pushed main with
+`venv/bin/python scripts/deploy_penny.py` and check for
+`recycling voicememod` in `state/logs/watcher.system.log` after the next quiet
+period. Blocked on owner: classifier provider allowlist (see TODO).
+
 ## Issue #138 — worktree-only handoff, October 22, 2026
 
 Local edits complete: existing deadline policy retained; supervisor logs

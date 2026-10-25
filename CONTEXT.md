@@ -1,3 +1,11 @@
+## Stalled Voice Memos sync — October 24, 2026
+
+`/ready` cannot see memos that never left the phone. A live `voicememod` can
+stall CloudKit import for days; the watcher now recycles it after 3 idle hours.
+Peekaboo UI automation was not used: the stuck part is a background daemon,
+and a GUI tool adds Accessibility/Screen Recording TCC dependencies to an
+unattended LaunchAgent (see the October 19 TCC incident).
+
 ## Issue #138 — local source checkpoint, October 22, 2026
 
 The supplied source already includes a 900-second deadline scaled to twice

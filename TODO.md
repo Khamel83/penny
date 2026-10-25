@@ -1,3 +1,18 @@
+## Stalled Voice Memos sync — October 24, 2026 local
+
+- [x] Recover memos stuck off the Mac since the October 22 10:11 reboot.
+  `voicememod` (PID 843) was alive but imported nothing; `CloudRecordings.db`
+  was unchanged since 10:12. Killing it at 18:40 synced 5 recordings (Oct 22
+  11:57 through Oct 24 17:52); watcher began processing PK 462+ at 18:41.
+- [ ] Merge and deploy the watcher idle-sync recycle (restart `voicememod`
+  when the sync DB is idle 3 h, at most once per 3 h), then confirm
+  `scripts/deploy_penny.py` reports the new revision for `com.penny.watcher`.
+- [ ] Owner decision: classifier model `google/gemini-2.5-flash-lite` is
+  rejected by OpenRouter (only `google-ai-studio` serves it; the account's
+  allowed-providers list excludes it). Memos fall back to "unclear" in Notes.
+  Either allow `google-ai-studio` on OpenRouter or pick a model served by an
+  allowed provider.
+
 ## Shared ASR hang recovery — issue #138
 
 - [x] Complete local deadline observability and keeper stale-job recovery for
