@@ -59,7 +59,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_get_config_returns_config_with_expected_fields(self):
         cfg = config.get_config()
-        self.assertEqual(cfg.llm.model, "google/gemini-2.5-flash-lite")
+        self.assertEqual(cfg.llm.model, "openai/gpt-4.1-nano")
         self.assertEqual(cfg.google_tasks.list_name, "My Tasks")
         self.assertEqual(cfg.google_tasks.poll_interval_seconds, 180)
         self.assertIn("Groceries", cfg.apple_reminders.lists)
