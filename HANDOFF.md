@@ -11,7 +11,10 @@ when the sync DB/WAL is idle for 3 h, at most once per 3 h.
 Deployed: PR #141 merged; `deploy_penny.py --apply` activated `0ee8f38` at
 18:47 PDT and `/ready` reports ready at that revision. Next check: grep
 `recycling voicememod` in `state/logs/watcher.system.log` after a quiet period
-and confirm the sync DB mtime moves afterward. Blocked on owner: classifier provider allowlist (see TODO).
+and confirm the sync DB mtime moves afterward.
+Classifier: switched to `openai/gpt-4.1-nano` with an OpenRouter fallback list
+(owner approved any model); recheck that new memos log no
+`Content type provider failure`.
 
 ## Issue #138 — worktree-only handoff, October 22, 2026
 

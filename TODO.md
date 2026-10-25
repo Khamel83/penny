@@ -9,11 +9,11 @@
   https://github.com/Khamel83/penny/pull/141; `deploy_penny.py --apply`
   activated `0ee8f38` on all five labels at 18:47 PDT; `/ready` overall ready.
   First live recycle not yet observed (needs 3 idle hours).
-- [ ] Owner decision: classifier model `google/gemini-2.5-flash-lite` is
-  rejected by OpenRouter (only `google-ai-studio` serves it; the account's
-  allowed-providers list excludes it). Memos fall back to "unclear" in Notes.
-  Either allow `google-ai-studio` on OpenRouter or pick a model served by an
-  allowed provider.
+- [x] Classifier model blocked: `google/gemini-2.5-flash-lite` has no allowed
+  OpenRouter provider on this account. Owner approved any cheap model. Now
+  `openai/gpt-4.1-nano` with OpenRouter `models` fallback to
+  `meta-llama/llama-3.1-8b-instruct`; live call via the blocked model fell back
+  to gpt-4.1-nano. G2K not used: Penny's contract keeps transcripts off G2K.
 
 ## Shared ASR hang recovery — issue #138
 

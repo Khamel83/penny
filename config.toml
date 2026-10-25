@@ -4,7 +4,7 @@ url = "http://127.0.0.1:10311/v1"
 timeout_seconds = 90
 
 [llm]
-model = "google/gemini-2.5-flash-lite"
+model = "openai/gpt-4.1-nano"
 
 [google_tasks]
 list_name = "My Tasks"
