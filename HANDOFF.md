@@ -8,10 +8,10 @@ Source fix on branch `fix/voicememod-idle-recycle` (reused worktree
 `.worktrees/whisper-job-deadline`; keep it for reuse): recycle `voicememod`
 when the sync DB/WAL is idle for 3 h, at most once per 3 h.
 
-In flight: PR review/merge, then deploy from clean pushed main with
-`venv/bin/python scripts/deploy_penny.py` and check for
-`recycling voicememod` in `state/logs/watcher.system.log` after the next quiet
-period. Blocked on owner: classifier provider allowlist (see TODO).
+Deployed: PR #141 merged; `deploy_penny.py --apply` activated `0ee8f38` at
+18:47 PDT and `/ready` reports ready at that revision. Next check: grep
+`recycling voicememod` in `state/logs/watcher.system.log` after a quiet period
+and confirm the sync DB mtime moves afterward. Blocked on owner: classifier provider allowlist (see TODO).
 
 ## Issue #138 — worktree-only handoff, October 22, 2026
 

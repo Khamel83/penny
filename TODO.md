@@ -4,9 +4,11 @@
   `voicememod` (PID 843) was alive but imported nothing; `CloudRecordings.db`
   was unchanged since 10:12. Killing it at 18:40 synced 5 recordings (Oct 22
   11:57 through Oct 24 17:52); watcher began processing PK 462+ at 18:41.
-- [ ] Merge and deploy the watcher idle-sync recycle (restart `voicememod`
-  when the sync DB is idle 3 h, at most once per 3 h), then confirm
-  `scripts/deploy_penny.py` reports the new revision for `com.penny.watcher`.
+- [x] Merge and deploy the watcher idle-sync recycle (restart `voicememod`
+  when the sync DB is idle 3 h, at most once per 3 h). Merged in
+  https://github.com/Khamel83/penny/pull/141; `deploy_penny.py --apply`
+  activated `0ee8f38` on all five labels at 18:47 PDT; `/ready` overall ready.
+  First live recycle not yet observed (needs 3 idle hours).
 - [ ] Owner decision: classifier model `google/gemini-2.5-flash-lite` is
   rejected by OpenRouter (only `google-ai-studio` serves it; the account's
   allowed-providers list excludes it). Memos fall back to "unclear" in Notes.
