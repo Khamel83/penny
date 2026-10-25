@@ -56,6 +56,80 @@ def test_expired_send_is_uncertain_and_stale_claim_cannot_finish(db):
     assert db.execute('SELECT status FROM drop_deliveries').fetchone()[0] == 'uncertain'
     assert not ledger.finish_drop_delivery(claim, 'accepted', now=162)
 
+def test_owner_skip_requires_reference_and_preserves_delivery_evidence(db):
+    row = memo(db)
+    ledger.queue_drop_delivery(
+        db, row['id'], ledger.build_drop_payload(row, 'installation-test', False, True)
+    )
+    db.commit()
+    delivery = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+
+    with pytest.raises(ValueError, match='invalid_owner_decision_reference'):
+        ledger.owner_skip_drop_delivery(delivery['id'], decision_ref=' ')
+    assert db.execute('SELECT status FROM drop_deliveries').fetchone()[0] == 'pending'
+
+    assert ledger.owner_skip_drop_delivery(
+        delivery['id'], decision_ref='Refs #110', now=100
+    )
+    skipped = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+    assert skipped['status'] == 'skipped'
+    assert skipped['owner_skip_ref'] == 'Refs #110'
+    assert skipped['skipped_at'] == 100
+    assert skipped['payload'] == delivery['payload']
+    assert skipped['attempt_count'] == delivery['attempt_count']
+
+    assert not ledger.owner_skip_drop_delivery(
+        delivery['id'], decision_ref='Refs #110', now=101
+    )
+
+
+@pytest.mark.parametrize('state', ['uncertain', 'failed'])
+def test_owner_skip_preserves_unresolved_attempt_and_cannot_be_replayed(db, state):
+    row = memo(db)
+    ledger.queue_drop_delivery(
+        db, row['id'], ledger.build_drop_payload(row, 'installation-test', False, True)
+    )
+    db.commit()
+    claim = ledger.claim_drop_delivery(now=100, lease_seconds=60)
+    assert ledger.finish_drop_delivery(
+        claim, state, receipt={'synthetic': 'retained-evidence'},
+        error_code='synthetic_failure', now=101
+    )
+    before = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+
+    assert ledger.owner_skip_drop_delivery(
+        claim['id'], decision_ref='Refs #110', now=102
+    )
+    after = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+    assert after == {
+        **before, 'status': 'skipped', 'owner_skip_ref': 'Refs #110',
+        'skipped_at': 102,
+    }
+    assert ledger.claim_drop_delivery(now=1000) is None
+    assert not ledger.finish_drop_delivery(claim, 'accepted', now=103)
+    assert dict(db.execute('SELECT * FROM drop_deliveries').fetchone()) == after
+
+
+def test_owner_skip_does_not_override_live_claim_or_accepted_delivery(db):
+    row = memo(db)
+    ledger.queue_drop_delivery(
+        db, row['id'], ledger.build_drop_payload(row, 'installation-test', False, True)
+    )
+    db.commit()
+    claim = ledger.claim_drop_delivery(now=100, lease_seconds=60)
+    assert not ledger.owner_skip_drop_delivery(
+        claim['id'], decision_ref='Refs #110', now=101
+    )
+    assert db.execute('SELECT status FROM drop_deliveries').fetchone()[0] == 'sending'
+
+    db.execute(
+        "UPDATE drop_deliveries SET status='accepted', claim_token=NULL, lease_until=NULL"
+    )
+    db.commit()
+    assert not ledger.owner_skip_drop_delivery(
+        claim['id'], decision_ref='Refs #110', now=102
+    )
+
 
 def test_queue_rejects_placeholder_and_nonmemo(db):
     assert hasattr(ledger, 'build_drop_payload'), 'Drop payload builder is missing'

@@ -78,6 +78,7 @@ _SAFE_REASON_VALUES = frozenset(
         "unknown",
         "duplicate_owner",
         "memory_pressure_high",
+        "owner_skipped",
     }
 )
 _SAFE_DETAIL_KEYS = frozenset(
@@ -114,6 +115,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "retry_due_count",
         "schema_ok",
         "secret_configured",
+        "skipped_count",
         "slack_failed_count",
         "source_watermark",
         "source_health_age_seconds",
@@ -713,11 +715,12 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
         pending = states.get('pending', 0) + states.get('sending', 0)
         age = max(0, int(current-oldest)) if oldest is not None else 0
         uncertain, failed = states.get('uncertain', 0), states.get('failed', 0)
+        skipped = states.get('skipped', 0)
         state = 'unready' if uncertain or failed or age > 900 else ('degraded' if pending else 'ready')
         reason = 'uncertain_effect' if uncertain else ('terminal_failure' if failed else ('backlog' if pending else 'ok'))
         return dict(state=state, reason=reason, configured=True, pending_count=pending,
-                    uncertain_count=uncertain, failed_count=failed,
-                    skipped_count=states.get('skipped', 0), age_seconds=age)
+                    uncertain_count=uncertain, failed_count=failed, skipped_count=skipped,
+                    age_seconds=age)
     finally:
         conn.close()
 

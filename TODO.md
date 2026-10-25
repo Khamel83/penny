@@ -134,6 +134,22 @@ complete; this earlier storage operation did not implement retention.
   [Evidence](docs/drop-owner-skip-779-20261010.md),
   [Drop158](https://github.com/Khamel83/drop/issues/158).
 
+
+- [x] Verify retained issue #110 source candidate locally: guarded Drop skip,
+  metadata-only `skipped_count`, and unresolved attempt evidence/replay protection.
+  71 Drop/Doctor/export tests passed after authorized default integration;
+  synthetic SQLite smoke verified the uncertain-to-skipped readiness boundary
+  without real delivery.
+  [Evidence and remaining gates](docs/research/g2k-issue-110.md).
+- [x] Resolve PR #145's merge with authorized default
+  `5b7665981baafcb8c39b36f2222e20a6b196b22b`; preserve both runtime history and
+  guarded-skip source. Leave the resolved merge staged, without committing.
+- [ ] Publish the integrated issue #110 candidate through the orchestrator for
+  native CI and trusted exact-head review. Commit/publication, reviewed merge,
+  deployment, natural receipts and downstream recovery remain separate gates. Keep
+  https://github.com/Khamel83/penny/issues/110 open with
+  `g2k:acceptance-pending`. Refs #110.
+
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
 [previous TODO](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/TODO.md) and linked operational documents.

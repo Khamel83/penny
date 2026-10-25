@@ -203,6 +203,26 @@ Current capture acceptance verified October 4, 2026; the repair checkpoint below
 The owner authorized completion of Penny repairs and self-review/normal merge
 when hosted review is delayed. Protected dirty runtime files remain intact.
 
+
+## Issue #110 source checkpoint — October 24
+
+Retained candidate `effd7f5` adds an audited owner-approved Drop skip operation
+with additive ledger fields and metadata-only `skipped_count`. This verification
+adds regression coverage for failed/uncertain attempt evidence preservation and
+prevention of replay or stale completion after a skip. Drop/Doctor/export tests:
+69 passed. An isolated synthetic SQLite smoke observed `uncertain_effect` →
+ready with one skipped row and no replay claim. No real ledger was accessed.
+
+Authorized default `5b7665981baafcb8c39b36f2222e20a6b196b22b` is now integrated
+in an uncommitted merge at HEAD `0d534d968d8c8420042ab08c9a55e0feaced7eda`.
+Both the current default's runtime history and this source checkpoint are
+preserved. Doctor's equivalent skip-count expressions were resolved to one
+counter. Merged-source verification: 71 Drop/Doctor/export tests passed, plus
+the synthetic SQLite readiness/no-replay smoke. The earlier full-suite
+collection blocker was not rechecked. No commit, push, deployment, provider
+operation or new runtime acceptance is claimed. Keep #110 open and
+`g2k:acceptance-pending`. Refs #110.
+
 ## Drop handoff diagnosis — October 9 local / October 10 UTC
 
 One uncertain item is transcript 779 (outbox 335), attempted October 8

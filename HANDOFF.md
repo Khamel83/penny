@@ -307,6 +307,32 @@ Next: observe ordinary new captures. Recheck `curl -s
 http://127.0.0.1:5678/ready` and `curl -s http://127.0.0.1:10311/health`.
 Keep skipped 779 locally; do not requeue it automatically.
 
+
+## Issue #110 source checkpoint — October 24
+
+Done: preserved retained candidate `effd7f5`; added failed/uncertain evidence
+preservation and no-replay/stale-completion regressions. Local verification:
+`python3 -m pytest tests/test_drop_outbox.py tests/test_drop_delivery.py tests/test_doctor.py tests/test_export_drop.py -q`
+→ 71 passed on integrated source (previous candidate: 69). Synthetic SQLite smoke: unready `uncertain_effect` → ready with
+`skipped_count=1`, no replay claim. No real ledger or provider was accessed.
+
+Earlier full-suite collection blocker, not rechecked during merge resolution:
+`python3 -m pytest tests/ -q` could not import
+`tests.test_shared_whisper_server` from `tests/test_apple_pilot.py`.
+The shell has `python3`, not `python`.
+
+Resolved PR #145's authorized merge of default
+`5b7665981baafcb8c39b36f2222e20a6b196b22b` into unchanged HEAD
+`0d534d968d8c8420042ab08c9a55e0feaced7eda`. Preserved both distinct context
+sections and one equivalent Doctor skip-count expression. The merged default's
+runtime checkpoints remain historical evidence, not new worker observations.
+Next, orchestrator only: inspect/test the staged resolved merge, commit it,
+then publish for native CI and trusted exact-head review. Worker authorization
+prohibits commit, abort/reset, push, deployment and live reconciliation.
+No installation, natural receipt or downstream recovery is proven here.
+Keep #110 open and `g2k:acceptance-pending`; use `Refs #110`, not a closing
+keyword. [Evidence](docs/research/g2k-issue-110.md).
+
 ## Current acceptance — October 4, 2026
 
 P01 is complete: three ordinary voice notes (772–774, October 2–3) used pinned

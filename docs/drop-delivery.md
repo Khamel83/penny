@@ -133,6 +133,22 @@ Run bounded passes until counts reconcile. Historical records suppress the
 Drop-owned Slack notification. Maya's independent store-only receipt is required;
 do not assume the historical flag alone prevents its side effects.
 
+
+### Owner-approved local skip
+
+An unresolved Drop row may be kept local only through the ledger's
+`owner_skip_drop_delivery` operation. The operation requires a bounded,
+content-free owner decision reference (for example, `Refs #110`), accepts only
+`pending`, `uncertain`, or `failed` rows without a live claim, and records the
+reference and timestamp on the same row. It never changes payload bytes or
+attempt evidence, and it refuses accepted or actively claimed rows.
+
+Doctor reports `skipped_count` as metadata while excluding skipped rows from
+pending, failed, and uncertain counts. This is visibility, not downstream
+delivery or proof that an owner decision was correct. The operator must retain
+the ledger row and its prior receipts; no replay or resend is part of the
+skip.
+
 Payloads and receipts persist in the canonical SQLite ledger. A send intent is
 committed before network work. Lost/malformed responses and expired claims are
 uncertain, not unsent. Automatic read-back can resolve a matching archived copy;

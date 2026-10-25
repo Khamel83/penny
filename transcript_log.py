@@ -405,6 +405,16 @@ def _ensure_drop_schema(conn: sqlite3.Connection) -> None:
         accepted_at REAL, UNIQUE(transcript_id,payload_sha256))''')
     if 'historical' not in _table_columns(conn, 'drop_deliveries'):
         conn.execute('ALTER TABLE drop_deliveries ADD COLUMN historical INTEGER NOT NULL DEFAULT 1')
+    _add_column_if_missing(
+        conn,
+        table='drop_deliveries',
+        column='owner_skip_ref',
+        sql='ALTER TABLE drop_deliveries ADD COLUMN owner_skip_ref TEXT')
+    _add_column_if_missing(
+        conn,
+        table='drop_deliveries',
+        column='skipped_at',
+        sql='ALTER TABLE drop_deliveries ADD COLUMN skipped_at REAL')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_drop_due ON drop_deliveries(status,next_attempt_at)')
 
 
@@ -503,6 +513,57 @@ def finish_drop_delivery(claim, state, receipt=None, next_attempt_at=None, now=N
         return result.rowcount == 1
     finally:
         conn.close()
+
+
+_MAX_OWNER_DECISION_REFERENCE = 200
+
+
+def _safe_owner_decision_reference(decision_ref: object) -> str:
+    """Bounded, content-free owner-decision reference (issue URL or marker)."""
+    if not isinstance(decision_ref, str):
+        raise ValueError('invalid_owner_decision_reference')
+    candidate = decision_ref.strip()
+    if not candidate or len(candidate) > _MAX_OWNER_DECISION_REFERENCE:
+        raise ValueError('invalid_owner_decision_reference')
+    if any(character in candidate for character in '\r\n\x00'):
+        raise ValueError('invalid_owner_decision_reference')
+    return candidate
+
+
+def owner_skip_drop_delivery(row_id, *, decision_ref, now=None):
+    """Terminal, audited owner decision on exactly one Drop delivery row.
+
+    The `skipped` state is reachable only here: it requires a durable
+    owner-decision reference and refuses delivered rows, already-skipped rows
+    and rows under a live claim lease. Payload bytes, attempt counts and prior
+    attempt evidence are preserved; nothing is resent or replayed.
+    """
+    reference = _safe_owner_decision_reference(decision_ref)
+    now = time.time() if now is None else now
+    conn = None
+    try:
+        conn = _get_conn()
+        conn.execute('BEGIN IMMEDIATE')
+        result = conn.execute('''UPDATE drop_deliveries
+            SET status='skipped', owner_skip_ref=?, skipped_at=?, claim_token=NULL, lease_until=NULL
+            WHERE id=? AND status IN ('pending','uncertain','failed')
+              AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=?)''',
+            (reference, now, row_id, now))
+        conn.commit()
+        return result.rowcount == 1
+    except ValueError:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error("Failed to owner-skip Drop delivery id=%s: %s", row_id,
+                  _safe_exception_class(e))
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

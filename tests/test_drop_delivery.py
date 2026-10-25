@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import json
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 import transcript_log as ledger
@@ -29,6 +30,30 @@ def test_health_is_unready_for_uncertain_handoff(db):
     assert result['state'] == 'unready'
     assert result['uncertain_count'] == 1
     assert 'Hello' not in json.dumps(result)
+
+
+def test_health_reports_owner_skips_without_treating_them_as_pending(db):
+    import doctor
+    from types import SimpleNamespace
+
+    row = memo(db)
+    ledger.queue_drop_delivery(
+        db, row['id'], ledger.build_drop_payload(row, 'installation-test', False, True)
+    )
+    db.commit()
+    delivery_id = db.execute('SELECT id FROM drop_deliveries').fetchone()[0]
+    assert ledger.owner_skip_drop_delivery(
+        delivery_id, decision_ref='Refs #110', now=100
+    )
+
+    result = doctor._default_probe_drop(
+        SimpleNamespace(drop=SimpleNamespace(enabled=True, ingest_token='test')),
+        now=datetime.fromtimestamp(101, timezone.utc),
+    )
+    assert result['state'] == 'ready'
+    assert result['reason'] == 'ok'
+    assert result['pending_count'] == 0
+    assert result['skipped_count'] == 1
 
 
 def adapter():
