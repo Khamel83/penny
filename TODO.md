@@ -14,10 +14,17 @@
   procedure; `/ready` remains 503 for `drop: uncertain_effect`. No replay done.
 
 
-- [ ] Issue #110 source candidate: guarded owner-approved Drop skip and
-  metadata-only `skipped_count` are implemented locally with focused tests;
-  native CI, exact-head review/merge, deployment, and downstream recovery remain
-  pending. [Research](docs/research/g2k-issue-110.md). Refs #110.
+- [x] Verify retained issue #110 source candidate locally: guarded Drop skip,
+  metadata-only `skipped_count`, and unresolved attempt evidence/replay protection.
+  69 Drop/Doctor/export tests passed; synthetic SQLite smoke verified the
+  uncertain-to-skipped readiness boundary without real delivery.
+  [Evidence and remaining gates](docs/research/g2k-issue-110.md).
+- [ ] Publish the retained issue #110 candidate through the orchestrator for
+  native CI and trusted exact-head review; account for 25 upstream commits
+  before publication. Merge, deployment, natural receipts and downstream recovery
+  remain separate, unproven gates. Keep
+  https://github.com/Khamel83/penny/issues/110 open with
+  `g2k:acceptance-pending`. Refs #110.
 
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the

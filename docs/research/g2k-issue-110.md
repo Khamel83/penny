@@ -5,6 +5,43 @@ Incident marker (verbatim, for traceability):
 Issue: https://github.com/Khamel83/penny/issues/110 (OPEN, label `g2k:acceptance-pending`,
 created 2026-10-10T00:20:42Z, updated 2026-10-12T02:52:44Z). Refs #110.
 
+## Local candidate verification — October 24, 2026
+
+This checkpoint supersedes source-freshness and local-test claims in the
+retained October 12 investigation below, not its runtime evidence boundaries.
+Fetched `origin/main` is `5b7665981baafcb8c39b36f2222e20a6b196b22b`.
+The existing `g2k/issue-110` branch at `effd7f5` is ahead 3/behind 25;
+it was preserved without rebase or reset. Its candidate already implements
+`owner_skip_drop_delivery` and Doctor's metadata-only `skipped_count`.
+
+Added isolated regressions exercise both `failed` and `uncertain` rows after a
+real local claim/finish transition. They verify all prior row fields, including
+payload, receipt, error and attempt count, survive the audited skip; skipped
+rows cannot be claimed again or completed by a stale worker.
+
+Verification:
+- `python3 -m pytest tests/test_drop_outbox.py tests/test_drop_delivery.py tests/test_doctor.py tests/test_export_drop.py -q`:
+  **69 passed**.
+- A throwaway SQLite ledger inside this worktree exercised queue → claim →
+  uncertain → owner skip → Doctor. Observed `unready/uncertain_effect` before,
+  `ready/ok` with `skipped_count=1` after, and no replay claim. Synthetic data
+  only; scratch ledger removed.
+- `python3 -m pytest tests/ -q`: collection blocked at
+  `tests/test_apple_pilot.py`, which cannot import
+  `tests.test_shared_whisper_server`. No full-suite pass is claimed.
+- Initial smoke configuration used the wrong shape; rerun with the existing
+  `config.drop.enabled`/`ingest_token` shape passed. `python` is unavailable;
+  verification used `python3`.
+
+Publication is not authorized for this worker. Edits remain in the worktree
+for the orchestrator to integrate and publish; no push, merge, live deployment,
+ledger reconciliation, provider operation or downstream acceptance occurred.
+Native CI, trusted exact-head review, merge, exact-source installation, natural
+receipts and downstream recovery remain pending. Keep #110 open and
+`g2k:acceptance-pending`. Refs #110.
+
+## Retained investigation — October 12, 2026
+
 Scope and method: read-only investigation inside this worktree. Source facts are read from the
 fetched default branch `origin/main` = `6e975d7fb7e2d67a49c544b138bd353f6d98e53e`
 ("Reconcile all open work into the owning repository plan (#118)"); the local worktree branch

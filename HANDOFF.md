@@ -22,14 +22,26 @@ without replaying existing effects. Source review/merge is separate from the
 verified relocation and loaded runtime configuration.
 
 
-## Issue #110 source checkpoint — October 12
+## Issue #110 source checkpoint — October 24
 
-The local candidate implements a guarded, ledger-backed owner skip for unresolved
-Drop rows and exposes `skipped_count` in metadata-only Doctor output. Focused
-tests cover validation, preserved evidence, claim/accepted protections, and
-readiness visibility. The candidate is not installed or deployed. Native CI,
-trusted exact-head review, merge, deployment, and downstream recovery remain
-pending. Refs #110.
+Done: preserved retained candidate `effd7f5`; added failed/uncertain evidence
+preservation and no-replay/stale-completion regressions. Local verification:
+`python3 -m pytest tests/test_drop_outbox.py tests/test_drop_delivery.py tests/test_doctor.py tests/test_export_drop.py -q`
+→ 69 passed. Synthetic SQLite smoke: unready `uncertain_effect` → ready with
+`skipped_count=1`, no replay claim. No real ledger or provider was accessed.
+
+Blocked full suite: `python3 -m pytest tests/ -q` fails collection because
+`tests/test_apple_pilot.py` cannot import `tests.test_shared_whisper_server`.
+The shell has `python3`, not `python`.
+
+Next, orchestrator only: inspect retained source plus these edits, integrate the
+25 upstream commits without dropping retained bytes, then publish for native CI
+and trusted exact-head review. Fetched `origin/main`:
+`5b7665981baafcb8c39b36f2222e20a6b196b22b`; branch remains ahead 3/behind 25.
+Worker authorization prohibits push, merge, deployment and live reconciliation.
+No installation, natural receipt or downstream recovery is proven here.
+Keep #110 open and `g2k:acceptance-pending`; use `Refs #110`, not a closing
+keyword. [Evidence](docs/research/g2k-issue-110.md).
 
 ## Current acceptance — October 4, 2026
 

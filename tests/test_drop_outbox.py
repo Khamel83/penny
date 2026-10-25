@@ -83,6 +83,33 @@ def test_owner_skip_requires_reference_and_preserves_delivery_evidence(db):
     )
 
 
+@pytest.mark.parametrize('state', ['uncertain', 'failed'])
+def test_owner_skip_preserves_unresolved_attempt_and_cannot_be_replayed(db, state):
+    row = memo(db)
+    ledger.queue_drop_delivery(
+        db, row['id'], ledger.build_drop_payload(row, 'installation-test', False, True)
+    )
+    db.commit()
+    claim = ledger.claim_drop_delivery(now=100, lease_seconds=60)
+    assert ledger.finish_drop_delivery(
+        claim, state, receipt={'synthetic': 'retained-evidence'},
+        error_code='synthetic_failure', now=101
+    )
+    before = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+
+    assert ledger.owner_skip_drop_delivery(
+        claim['id'], decision_ref='Refs #110', now=102
+    )
+    after = dict(db.execute('SELECT * FROM drop_deliveries').fetchone())
+    assert after == {
+        **before, 'status': 'skipped', 'owner_skip_ref': 'Refs #110',
+        'skipped_at': 102,
+    }
+    assert ledger.claim_drop_delivery(now=1000) is None
+    assert not ledger.finish_drop_delivery(claim, 'accepted', now=103)
+    assert dict(db.execute('SELECT * FROM drop_deliveries').fetchone()) == after
+
+
 def test_owner_skip_does_not_override_live_claim_or_accepted_delivery(db):
     row = memo(db)
     ledger.queue_drop_delivery(

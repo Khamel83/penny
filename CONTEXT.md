@@ -19,14 +19,22 @@ The owner authorized completion of Penny repairs and self-review/normal merge
 when hosted review is delayed. Protected dirty runtime files remain intact.
 
 
-## Issue #110 source checkpoint — October 12
+## Issue #110 source checkpoint — October 24
 
-The local source candidate adds an audited owner-approved Drop skip operation
-with additive ledger fields and reports skipped rows as metadata without treating
-them as pending, failed, or uncertain. Focused tests cover invalid references,
-evidence preservation, live-claim/accepted-row protection, and Doctor visibility.
-This is not installed or deployed; native CI, trusted exact-head review, merge,
-runtime deployment, and downstream recovery remain separate gates. Refs #110.
+Retained candidate `effd7f5` adds an audited owner-approved Drop skip operation
+with additive ledger fields and metadata-only `skipped_count`. This verification
+adds regression coverage for failed/uncertain attempt evidence preservation and
+prevention of replay or stale completion after a skip. Drop/Doctor/export tests:
+69 passed. An isolated synthetic SQLite smoke observed `uncertain_effect` →
+ready with one skipped row and no replay claim. No real ledger was accessed.
+
+Fetched default branch is `origin/main` at
+`5b7665981baafcb8c39b36f2222e20a6b196b22b`; the retained branch is ahead 3,
+behind 25 and was preserved, not rebased. Full-suite collection is blocked by
+`tests.test_shared_whisper_server` import in `tests/test_apple_pilot.py`.
+Publication is reserved for the orchestrator; no push, deployment, provider
+operation or downstream acceptance is claimed. Keep #110 open and
+`g2k:acceptance-pending`. Refs #110.
 
 ## Decisions
 
