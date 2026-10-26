@@ -1,7 +1,10 @@
 ## iCloud transcript view — issue #136, October 25, 2026
 
 PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
-Source `f4e7e34`; both hosted checks started, trusted review pending.
+Implementation `f4e7e34` received trusted reviewer PASS; hosted Python 3.11
+and 3.12 checks passed on records head `8dd0916` (run `40268221328`).
+The final records-only commit still requires current-head trusted review/CI.
+Merge, deployment, snapshot reconciliation and natural acceptance are pending.
 
 
 - [x] Implement accepted-text projection in the existing watcher pass, retaining
