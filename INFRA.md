@@ -1,10 +1,12 @@
-## iCloud Markdown projection — source candidate October 25, 2026
+## iCloud Markdown projection — deployed October 26, 2026 UTC
 
-The existing watcher pass calls `transcript_view.py` with a 30-second deadline.
-Target: `iCloud Drive/Sync/Penny Transcripts`; private staging/lock:
-`~/Library/Caches/Penny/transcript-view`. No scheduler, port, credential or SSD
-archive placement changes. This is source only, not installed runtime evidence.
-[Contract and acceptance](docs/icloud-transcript-view.md).
+Exact merged source b4181aa is installed through the documented deployment;
+all five labels report it and `/ready` is ready. Existing watcher invokes the
+Markdown child; target is `iCloud Drive/Sync/Penny Transcripts`, with private
+staging/lock at `~/Library/Caches/Penny/transcript-view`. File Provider read
+latency currently prevents proven snapshot reconciliation. No scheduler, port,
+credential or SSD archive placement changed.
+[Deployment receipt and next gate](docs/icloud-view-deployment-20261026.md).
 
 ## Shared ASR TCC containment — October 19, 2026 local
 

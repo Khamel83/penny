@@ -1,34 +1,29 @@
-## iCloud transcript view — associate checkpoint October 25, 2026
+## iCloud transcript view — deployment handoff October 26, 2026 UTC
 
-PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
-Implementation `f4e7e34` received trusted reviewer PASS; hosted Python 3.11
-and 3.12 checks passed on records head `8dd0916` (run `40268221328`).
-The final records-only commit still requires current-head trusted review/CI.
-Merge, deployment, snapshot reconciliation and natural acceptance are pending.
+Deployment records PR: https://github.com/Khamel83/penny/pull/147.
 
 
-Engagement `maya-tier1-closeout-20261026`; associate `penny-assoc-icloud`;
-cap 2 Codex weekly points. Own only `.worktrees/icloud-transcript-view-136`,
-branch `feat/icloud-transcript-view-136`; existing untracked venv symlink retained.
-No new checkout. Retain this worktree for review/deployment follow-through.
+Done: PR146 merged b4181aa; documented clean-main deployment activated exactly
+that revision. Follow-up deployment check is current, watcher running/stable,
+`/ready` HTTP200 ready, shared ASR healthy/idle. All five labels stamped b4181aa.
+Baseline 345 IDs/paths plus INDEX.md preserved, no duplicates/non-Markdown files.
+Index hash verified. Full snapshot hashes/reconciliation blocked by File Provider
+read timeout; do not report downstream acceptance. No recording fabricated.
 
-Source implementation and tests complete. Full suite: 873 passed/2 skipped/
-60 subtests; trust: 499 tests/2 skipped/PASS; all five focused tests pass
-(the fifth timeout test was added after the full run). No production writes.
-Metadata-only snapshot inventory found 345 unique IDs plus index; 143 currently
-nonpassed ledger rows remain preserved as retained history. A blocking read-only
-File Provider scan was terminated; reconciliation is unproved.
+Next: after existing Markdown view reads are responsive, let the existing watcher
+reconcile and run a bounded private byte/hash comparison. Then observe a natural
+passed transcript beyond private baseline ID796, verify canonical Markdown bytes
+and exactly one automatic index entry. Keep #136 open. Health recheck:
+`curl -fsS http://127.0.0.1:5678/ready`; source check from runtime main:
+`venv/bin/python scripts/deploy_penny.py`. Do not bypass deployment guards or
+restart Apple providers for this task. Known parent-side directory probe remains
+outside the child's deadline; exact merged code was preserved as requested.
 
-Next: required trusted review/CI and normal merge; then the documented deployment
-from a clean merged main runtime checkout. The task worktree is a feature branch,
-so `scripts/deploy_penny.py --apply` correctly cannot be run here. Preserve active
-runtime edits and do not bypass its clean-main/path checks. After controlled
-deployment run `venv/bin/python scripts/deploy_penny.py` and independently check
-`curl -fsS http://127.0.0.1:5678/ready`. Verify the view result privately, then
-wait for an ordinary new accepted transcript and verify its Markdown/index.
-Keep https://github.com/Khamel83/penny/issues/136 open. Do not manufacture input,
-recover retired cloud archives, or resolve legacy quality by assumption.
-[Projection contract](docs/icloud-transcript-view.md).
+Reuse `.worktrees/icloud-transcript-view-136` on
+`docs/icloud-view-deployment-20261026`; existing untracked venv symlink retained.
+No additional checkout. Retain for remaining acceptance. Private deployment
+receipt and complete verification boundaries are in
+[dated evidence](docs/icloud-view-deployment-20261026.md).
 
 ## Stalled Voice Memos sync — October 24, 2026 18:50 PDT
 

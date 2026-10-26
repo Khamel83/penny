@@ -1,24 +1,17 @@
-## iCloud transcript view — source checkpoint October 25, 2026
+## iCloud transcript view — deployed October 26, 2026 UTC
 
-PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
-Implementation `f4e7e34` received trusted reviewer PASS; hosted Python 3.11
-and 3.12 checks passed on records head `8dd0916` (run `40268221328`).
-The final records-only commit still requires current-head trusted review/CI.
-Merge, deployment, snapshot reconciliation and natural acceptance are pending.
+Deployment records PR: https://github.com/Khamel83/penny/pull/147.
 
 
-`feat/icloud-transcript-view-136` starts at fetched main `0fd1273b` and adds a
-read-only-ledger projection to the existing watcher. Atomic Markdown writes,
-canonical-ID name retention, private staging/lock, index-last publication and a
-30-second child deadline are implemented. Tests: 873 full-suite passes, 2 skips,
-60 subtests; five focused passes; trust 499 tests/2 skips/PASS.
-Live metadata inventory: 345 unique snapshot IDs plus INDEX; 202 passed,
-110 pending and 33 needs-review. Nonpassed history is preserved, not accepted
-or re-exported. One read-only snapshot content scan blocked in File Provider
-and was terminated after metadata-only inventory succeeded. No live export,
-ledger, archive, runtime or downstream state was changed.
-Review/CI, deployment, reconciliation and natural-input acceptance remain pending.
-[Contract](docs/icloud-transcript-view.md), https://github.com/Khamel83/penny/issues/136.
+PR146 merged as `b4181aa8268d39d163ef877591927fef79a00e6b`; documented
+clean-main deployment completed. All five labels carry that revision; follow-up
+reports current. At04:24:47UTC watcher PID87077 is stable and `/ready` HTTP200
+is ready at b4181aa. Runtime main is clean.
+Snapshot metadata preserves 345 distinct transcript IDs plus INDEX.md with no
+duplicates/non-Markdown files. Index hash is recorded, but full byte comparison
+timed out in File Provider. Reconciliation and natural arrival remain unverified;
+#136 stays open. Private natural baseline maximum canonical ID is796.
+[Evidence and remaining gates](docs/icloud-view-deployment-20261026.md).
 
 ## Stalled Voice Memos sync — October 24, 2026
 
