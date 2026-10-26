@@ -1,5 +1,8 @@
 ## iCloud transcript view — deployment checkpoint October 26, 2026
 
+Deployment records PR: https://github.com/Khamel83/penny/pull/147.
+
+
 - [x] Merge PR146 and deploy exact `b4181aa` through the documented clean-main
   procedure. Follow-up reports current; watcher running and `/ready` ready.
 - [x] Verify baseline paths preserved: 345 unique transcript IDs + INDEX.md,

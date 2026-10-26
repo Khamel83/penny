@@ -1,5 +1,8 @@
 ## iCloud transcript view — deployed October 26, 2026 UTC
 
+Deployment records PR: https://github.com/Khamel83/penny/pull/147.
+
+
 PR146 merged as `b4181aa8268d39d163ef877591927fef79a00e6b`; documented
 clean-main deployment completed. All five labels carry that revision; follow-up
 reports current. At04:24:47UTC watcher PID87077 is stable and `/ready` HTTP200

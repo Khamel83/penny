@@ -1,5 +1,8 @@
 ## iCloud transcript view — deployment handoff October 26, 2026 UTC
 
+Deployment records PR: https://github.com/Khamel83/penny/pull/147.
+
+
 Done: PR146 merged b4181aa; documented clean-main deployment activated exactly
 that revision. Follow-up deployment check is current, watcher running/stable,
 `/ready` HTTP200 ready, shared ASR healthy/idle. All five labels stamped b4181aa.
