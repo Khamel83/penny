@@ -1,5 +1,9 @@
 ## iCloud transcript view — issue #136, October 25, 2026
 
+PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
+Source `f4e7e34`; both hosted checks started, trusted review pending.
+
+
 - [x] Implement accepted-text projection in the existing watcher pass, retaining
   snapshot filenames and nonaccepted history without re-exporting it.
   Five focused tests pass; full suite 873 passed, 2 skipped, 60 subtests;

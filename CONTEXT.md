@@ -1,5 +1,9 @@
 ## iCloud transcript view — source checkpoint October 25, 2026
 
+PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
+Source `f4e7e34`; both hosted checks started, trusted review pending.
+
+
 `feat/icloud-transcript-view-136` starts at fetched main `0fd1273b` and adds a
 read-only-ledger projection to the existing watcher. Atomic Markdown writes,
 canonical-ID name retention, private staging/lock, index-last publication and a

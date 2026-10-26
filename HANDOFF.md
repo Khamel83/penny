@@ -1,5 +1,9 @@
 ## iCloud transcript view — associate checkpoint October 25, 2026
 
+PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
+Source `f4e7e34`; both hosted checks started, trusted review pending.
+
+
 Engagement `maya-tier1-closeout-20261026`; associate `penny-assoc-icloud`;
 cap 2 Codex weekly points. Own only `.worktrees/icloud-transcript-view-136`,
 branch `feat/icloud-transcript-view-136`; existing untracked venv symlink retained.
