@@ -1,21 +1,15 @@
-## iCloud transcript view — issue #136, October 25, 2026
+## iCloud transcript view — deployment checkpoint October 26, 2026
 
-PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
-Implementation `f4e7e34` received trusted reviewer PASS; hosted Python 3.11
-and 3.12 checks passed on records head `8dd0916` (run `40268221328`).
-The final records-only commit still requires current-head trusted review/CI.
-Merge, deployment, snapshot reconciliation and natural acceptance are pending.
-
-
-- [x] Implement accepted-text projection in the existing watcher pass, retaining
-  snapshot filenames and nonaccepted history without re-exporting it.
-  Five focused tests pass; full suite 873 passed, 2 skipped, 60 subtests;
-  trust check 499 tests, 2 skipped, PASS. The fifth focused timeout test was
-  added after the full run and passed separately.
-- [ ] Required PR review/CI, merge, controlled deployment and snapshot reconciliation.
-- [ ] Natural new accepted transcript plus index readback. Keep
-  https://github.com/Khamel83/penny/issues/136 open. No fabricated recording.
-  [Contract and limitations](docs/icloud-transcript-view.md).
+- [x] Merge PR146 and deploy exact `b4181aa` through the documented clean-main
+  procedure. Follow-up reports current; watcher running and `/ready` ready.
+- [x] Verify baseline paths preserved: 345 unique transcript IDs + INDEX.md,
+  zero duplicates/non-Markdown files; index hash recorded privately and in evidence.
+- [ ] Complete byte/hash snapshot reconciliation: File Provider reads timed out;
+  counts and index hash alone do not prove completion.
+- [ ] Observe an ordinary new passed transcript after private baseline ID796,
+  verify automatic Markdown bytes and index entry. Keep
+  https://github.com/Khamel83/penny/issues/136 open; no fabricated recording.
+[Deployment receipt, limits and next check](docs/icloud-view-deployment-20261026.md).
 
 ## Stalled Voice Memos sync — October 24, 2026 local
 
