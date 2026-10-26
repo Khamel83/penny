@@ -1,3 +1,11 @@
+## iCloud Markdown projection — source candidate October 25, 2026
+
+The existing watcher pass calls `transcript_view.py` with a 30-second deadline.
+Target: `iCloud Drive/Sync/Penny Transcripts`; private staging/lock:
+`~/Library/Caches/Penny/transcript-view`. No scheduler, port, credential or SSD
+archive placement changes. This is source only, not installed runtime evidence.
+[Contract and acceptance](docs/icloud-transcript-view.md).
+
 ## Shared ASR TCC containment — October 19, 2026 local
 
 The Mac mini shared ASR service is intentionally contained. Its launchd

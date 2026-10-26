@@ -1,3 +1,35 @@
+## iCloud transcript view — associate checkpoint October 25, 2026
+
+PR: https://github.com/Khamel83/penny/pull/146 (Refs #136).
+Implementation `f4e7e34` received trusted reviewer PASS; hosted Python 3.11
+and 3.12 checks passed on records head `8dd0916` (run `40268221328`).
+The final records-only commit still requires current-head trusted review/CI.
+Merge, deployment, snapshot reconciliation and natural acceptance are pending.
+
+
+Engagement `maya-tier1-closeout-20261026`; associate `penny-assoc-icloud`;
+cap 2 Codex weekly points. Own only `.worktrees/icloud-transcript-view-136`,
+branch `feat/icloud-transcript-view-136`; existing untracked venv symlink retained.
+No new checkout. Retain this worktree for review/deployment follow-through.
+
+Source implementation and tests complete. Full suite: 873 passed/2 skipped/
+60 subtests; trust: 499 tests/2 skipped/PASS; all five focused tests pass
+(the fifth timeout test was added after the full run). No production writes.
+Metadata-only snapshot inventory found 345 unique IDs plus index; 143 currently
+nonpassed ledger rows remain preserved as retained history. A blocking read-only
+File Provider scan was terminated; reconciliation is unproved.
+
+Next: required trusted review/CI and normal merge; then the documented deployment
+from a clean merged main runtime checkout. The task worktree is a feature branch,
+so `scripts/deploy_penny.py --apply` correctly cannot be run here. Preserve active
+runtime edits and do not bypass its clean-main/path checks. After controlled
+deployment run `venv/bin/python scripts/deploy_penny.py` and independently check
+`curl -fsS http://127.0.0.1:5678/ready`. Verify the view result privately, then
+wait for an ordinary new accepted transcript and verify its Markdown/index.
+Keep https://github.com/Khamel83/penny/issues/136 open. Do not manufacture input,
+recover retired cloud archives, or resolve legacy quality by assumption.
+[Projection contract](docs/icloud-transcript-view.md).
+
 ## Stalled Voice Memos sync — October 24, 2026 18:50 PDT
 
 Done: `/ready` was green but phone/watch memos had not reached the Mac since
