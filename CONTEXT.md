@@ -1,3 +1,18 @@
+## iCloud transcript view — source checkpoint October 25, 2026
+
+`feat/icloud-transcript-view-136` starts at fetched main `0fd1273b` and adds a
+read-only-ledger projection to the existing watcher. Atomic Markdown writes,
+canonical-ID name retention, private staging/lock, index-last publication and a
+30-second child deadline are implemented. Tests: 873 full-suite passes, 2 skips,
+60 subtests; five focused passes; trust 499 tests/2 skips/PASS.
+Live metadata inventory: 345 unique snapshot IDs plus INDEX; 202 passed,
+110 pending and 33 needs-review. Nonpassed history is preserved, not accepted
+or re-exported. One read-only snapshot content scan blocked in File Provider
+and was terminated after metadata-only inventory succeeded. No live export,
+ledger, archive, runtime or downstream state was changed.
+Review/CI, deployment, reconciliation and natural-input acceptance remain pending.
+[Contract](docs/icloud-transcript-view.md), https://github.com/Khamel83/penny/issues/136.
+
 ## Stalled Voice Memos sync — October 24, 2026
 
 `/ready` cannot see memos that never left the phone. A live `voicememod` can

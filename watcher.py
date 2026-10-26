@@ -1784,6 +1784,25 @@ def _retry_pending_routes(limit: int) -> None:
             log.error("Retry failed for id=%s: %s", row["id"], type(e).__name__)
 
 
+def _process_transcript_view() -> None:
+    """File Provider must never hold the capture loop indefinitely."""
+    import subprocess
+    import sys
+    from transcript_view import DEFAULT_ROOT
+
+    if not DEFAULT_ROOT.is_dir():
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("transcript_view.py"))],
+            capture_output=True, timeout=30, check=False,
+        )
+        if result.returncode:
+            log.warning("Transcript view failed: view_unavailable")
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning("Transcript view failed: view_timeout_or_unavailable")
+
+
 def _process_ingest_pass() -> None:
     operations = (
         lambda: reconcile_linked_voice_memo_terminal_states(limit=100),
@@ -1794,6 +1813,7 @@ def _process_ingest_pass() -> None:
         lambda: _reconcile_archive_backfill(cfg.archive.delivery_batch_limit),
         lambda: _reconcile_published_archives(cfg.archive.delivery_batch_limit),
         _process_archive_outbox,
+        _process_transcript_view,
         _process_slack_outbox,
         _process_drop_outbox,
         _process_maya_outbox,
