@@ -1,3 +1,26 @@
+## Issue #148 — blocked investigation, October 29, 2026
+
+Refs #148. No implementation or runtime mutation performed. The incident gives
+three failures and a declaration hash, but no observation timestamps, failed
+Doctor component/reason codes, or deployed source revision. Historical green
+checkpoints below do not establish the cause of this fresh incident.
+
+Local declaration `homelab.yaml` requires exact-source-revision-plus-doctor,
+declares `repair_id: null`, no repair IDs, and disables destructive actions.
+The worktree-only worker cannot inspect the Mac runtime or private ledger.
+GitHub workspace-helper requests for the issue were unsuccessful; a bounded
+catalog search returned line locations, not failure evidence. No permission,
+health threshold, acknowledgement, retry limit or protected authority was changed.
+
+Human/Infra action required: provide sanitized metadata for the three fresh
+failures (timestamps, Doctor component status/reason codes, observed deployed
+revision), the matching catalog declaration/check semantics and permitted
+deployment boundary. Then reproduce that specific failure locally before
+choosing a source repair. No relevant regression can be selected from failure
+count/hash alone; tests and deployment were not run. No PR, push or merge.
+Keep acceptance pending until exact reviewed merged deployment and three fresh
+downstream successes; this checkpoint is not an implementation deliverable.
+
 ## iCloud transcript view — deployment handoff October 26, 2026 UTC
 
 Deployment records PR: https://github.com/Khamel83/penny/pull/147.
