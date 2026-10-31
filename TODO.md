@@ -7,11 +7,6 @@ Deployment records PR: https://github.com/Khamel83/penny/pull/147.
   procedure. Follow-up reports current; watcher running and `/ready` ready.
 - [x] Verify baseline paths preserved: 345 unique transcript IDs + INDEX.md,
   zero duplicates/non-Markdown files; index hash recorded privately and in evidence.
-- [ ] Complete byte/hash snapshot reconciliation: File Provider reads timed out;
-  counts and index hash alone do not prove completion.
-- [ ] Observe an ordinary new passed transcript after private baseline ID796,
-  verify automatic Markdown bytes and index entry. Keep
-  https://github.com/Khamel83/penny/issues/136 open; no fabricated recording.
 [Deployment receipt, limits and next check](docs/icloud-view-deployment-20261026.md).
 
 ## Stalled Voice Memos sync — October 24, 2026 local
@@ -43,9 +38,6 @@ Deployment records PR: https://github.com/Khamel83/penny/pull/147.
   suppression; 37 focused tests pass with that suppression seeded. Loopback
   HTTP smoke verifies the warning, hung-worker termination/503 and replacement
   success/200. Evidence and recheck command: [handoff](HANDOFF.md).
-- [ ] Deploy reviewed supervisor and keeper, force a safe synthetic hang, and
-  independently verify MinusPod resumes and Kuma `atlas.mac-asr` records the
-  failure. Not performed by the worktree-only worker.
 
 ## Shared ASR TCC containment — October 19, 2026 local
 
@@ -58,10 +50,6 @@ Deployment records PR: https://github.com/Khamel83/penny/pull/147.
   labels. Original plist hashes, data, source, model, providers, TCC state and
   the four peer labels were preserved; local and tailnet health remain DOWN by
   design. [Incident receipt and re-enable gate](docs/asr-tcc-containment-20261019.md).
-- [ ] Owner-only gate: resolve the supported macOS removable-volume
-  authorization/runtime condition, then bootstrap the unchanged original ASR
-  plist, verify stable health/no respawn, bootstrap the keeper, and verify its
-  scheduled run plus Kuma heartbeat. Do not claim recovery before those facts.
 
 ## Health investigation — October 18, 2026 local
 
@@ -125,6 +113,17 @@ Deployment records PR: https://github.com/Khamel83/penny/pull/147.
 
 # Penny TODO
 
+## Now
+
+Fleet limit: 10 items. Only the owner adds here ([rules](https://github.com/Khamel83/engage/blob/main/docs/design/2026-10-31-backlog-reset.md)).
+
+
+## Someday
+
+Dated lines; unpromoted lines archive after 30 days.
+
+Archived October 31, 2026: [backlog](docs/archive/backlog-2026-10-31.md).
+
 ## Shared ASR keeper — October 16, 2026
 
 - [x] Finish [PR119](https://github.com/Khamel83/penny/pull/119): private
@@ -160,11 +159,6 @@ complete; this earlier storage operation did not implement retention.
 - [x] Resolve PR #145's merge with authorized default
   `5b7665981baafcb8c39b36f2222e20a6b196b22b`; preserve both runtime history and
   guarded-skip source. Leave the resolved merge staged, without committing.
-- [ ] Publish the integrated issue #110 candidate through the orchestrator for
-  native CI and trusted exact-head review. Commit/publication, reviewed merge,
-  deployment, natural receipts and downstream recovery remain separate gates. Keep
-  https://github.com/Khamel83/penny/issues/110 open with
-  `g2k:acceptance-pending`. Refs #110.
 
 Updated October 4, 2026; natural-capture evidence below supersedes the October 2 input gates. This is Penny's active queue. Older dated
 checklists are superseded; their evidence remains in the
