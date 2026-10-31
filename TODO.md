@@ -238,7 +238,7 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-Active work queue is canonical in repository `TODO.md` (all open tasks outside Janitor block are resolved or completed; see handwritten queue and docs/REPO_PLAN.md).
+The canonical queue is tracked in the handwritten sections above (Now / Someday).
 <!-- janitor:end:todo -->
 
 ## Owning repository plan

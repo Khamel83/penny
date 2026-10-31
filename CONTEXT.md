@@ -317,11 +317,11 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-- Source commit `65f25969086727e956fd89547a45a51bd901d1cb` (docs: record deployed Penny acknowledgement and green Kuma heartbeats, #133).
-- Deployed acknowledgement of reviewed historical failures merged in PR #132 (`8606b497`); installed readiness, OCI projection, and Homelab API report healthy.
-- Parent Kuma 22 and checks 23/24 verified green with ordinary UP heartbeats at 06:25:46/47 UTC.
-- PR-only concurrency cancellation merged via PR #129 (`f5835ddf`).
-- Parakeet repetition timing (#111) and retry retention (#112) accepted and verified deployed in PR #126 (`64d32534`) and PR #122 (`85900798`).
+- 954a833 docs: reset backlog to the owner Now list (#151)
+- 4c7db13 g2k: issue #148 (#149)
+- a9c615a Record iCloud view deployment and remaining acceptance gates (#147)
+- b4181aa Maintain iCloud Markdown transcript view incrementally (#146)
+- 0fd1273 Infra incident: penny / penny.doctor-readiness (#145)
 <!-- janitor:end:recent -->
 ## Fleet CI cancellation - source checkpoint (October 16, 2026)
 
