@@ -317,11 +317,21 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-- 954a833 docs: reset backlog to the owner Now list (#151)
-- 4c7db13 g2k: issue #148 (#149)
-- a9c615a Record iCloud view deployment and remaining acceptance gates (#147)
-- b4181aa Maintain iCloud Markdown transcript view incrementally (#146)
-- 0fd1273 Infra incident: penny / penny.doctor-readiness (#145)
+## Penny current context — November 1, 2026
+
+Source: `f6875d5b8639d4f81360222a1a8f001e02edc933`.
+
+- The iCloud Markdown transcript view was deployed through PR146 (`b4181aa8268d39d163ef877591927fef79a00e6b`); PR147 (`a9c615a91b8f2cc2154de135455d9f22f2048288`) recorded the deployment. The baseline contains 345 distinct transcript IDs plus `INDEX.md`, with no duplicate or non-Markdown files recorded. Natural reconciliation remains unverified and issue #136 remains open. See [deployment evidence](docs/icloud-view-deployment-20261026.md).
+- The watcher’s three-hour idle recycle for stalled Voice Memos sync is deployed (`0ee8f384b7a2cdbc7b7e26332a95dbb33c9abf68`; deployment record `c386f3db20e613e57f80f24c36cd6fe707331fe5`). The first live recycle was not yet observed at the recorded checkpoint.
+- Shared ASR deadline handling was merged as `cdf6351ddfa0c11f1a84e4b135c4db08c15ba6b0`, with issue #138 implementation recorded by `f7115317263e3a99585af66e09a3360ac78d6b60`. Local test-double and loopback evidence verifies deadline warnings, HTTP 503, worker termination and replacement success; production deployment, MinusPod recovery and Kuma failure visibility were not verified by that checkpoint.
+- Shared ASR remains intentionally contained after the October 19 macOS removable-volume TCC failure (`97fae6187d5051f77b55ded578a20a19aaa4df7c`). The keeper and shared-ASR labels were unloaded, with local and tailnet ASR health down by design. Re-enabling requires owner-only macOS removable-volume authorization or a supported runtime-identity change; no workaround or TCC reset is deployed. See [containment evidence](docs/asr-tcc-containment-20261019.md).
+- Health acknowledgement was merged as `8606b49785bcd5c7c13b2476f3f465205f674609` and documented by `65f25969086727e956fd89547a45a51bd901d1cb`. The recorded state was ready with zero unready components and green Kuma parent/child heartbeats, while historical failures remained visible.
+- Parakeet repetition timing was merged as `64d32534eff8d7b85202e1ca3b99529490aa299c` and accepted by `bc3c025aa92c4b9d06888950685087dd43a5fdb9`. The exact reviewed modules were installed and independently read back; a future ordinary inference remains routine observation.
+- Retry retention was merged as part of `1956e84a5707e4fe44923f029c5b95b2b39bb6dd`; the recorded checkpoint states that its original test criteria and scoped installation were satisfied. A future ordinary retry was not an original completion requirement.
+- The documented source plan remains the ordering authority for open records, with coordinator #116. Source publication, installation, ordinary receipts and downstream effect remain separate facts.
+- The issue #110 source candidate remains preserved at `0d534d968d8c8420042ab08c9a55e0feaced7eda` with authorized default `5b7665981baafcb8c39b36f2222e20a6b196b22b`; its deployment and runtime acceptance remain unverified.
+
+Decisions and operating boundaries remain those in the project-owned context: one pinned Parakeet v3 primary with bounded Whisper second opinions, no replay of held recordings or old deliveries, Apple pilot disabled, and separate ownership of runtime state and downstream receipts.
 <!-- janitor:end:recent -->
 ## Fleet CI cancellation - source checkpoint (October 16, 2026)
 
