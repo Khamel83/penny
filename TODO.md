@@ -113,15 +113,6 @@ Deployment records PR: https://github.com/Khamel83/penny/pull/147.
 
 # Penny TODO
 
-## Now
-
-Fleet limit: 10 items. Only the owner adds here ([rules](https://github.com/Khamel83/engage/blob/main/docs/design/2026-10-31-backlog-reset.md)).
-
-
-## Someday
-
-Dated lines; unpromoted lines archive after 30 days.
-
 Archived October 31, 2026: [backlog](docs/archive/backlog-2026-10-31.md).
 
 ## Shared ASR keeper — October 16, 2026
