@@ -708,8 +708,9 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
     if not token_configured:
         return {'state': 'unready', 'reason': 'secret_missing', 'configured': False}
     current = _now(now).timestamp()
-    conn = sqlite3.connect(f'file:{_sqlite_path()}?mode=ro', uri=True, timeout=5)
+    conn = None
     try:
+        conn = sqlite3.connect(f'file:{_sqlite_path()}?mode=ro', uri=True, timeout=5)
         states = dict(conn.execute('SELECT status,count(*) FROM drop_deliveries GROUP BY status'))
         oldest = conn.execute("SELECT min(created_at) FROM drop_deliveries WHERE status IN ('pending','sending')").fetchone()[0]
         pending = states.get('pending', 0) + states.get('sending', 0)
@@ -721,8 +722,15 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
         return dict(state=state, reason=reason, configured=True, pending_count=pending,
                     uncertain_count=uncertain, failed_count=failed, skipped_count=skipped,
                     age_seconds=age)
+    except sqlite3.OperationalError:
+        # Database doesn't exist yet or can't be opened in read-only mode.
+        # This is normal during initial setup before any Drop deliveries exist.
+        return {'state': 'ready', 'reason': 'ok', 'configured': True,
+                'pending_count': 0, 'uncertain_count': 0, 'failed_count': 0,
+                'skipped_count': 0, 'age_seconds': 0}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
