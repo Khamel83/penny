@@ -707,9 +707,18 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
     token_configured = bool(getattr(drop, 'ingest_token', '')) or 'PENNY_DROP_TOKEN' in _launchd_environment_keys('com.penny.watcher', ('PENNY_DROP_TOKEN',))
     if not token_configured:
         return {'state': 'unready', 'reason': 'secret_missing', 'configured': False}
+    
+    db_path = _sqlite_path()
+    # If database file doesn't exist yet, that's normal during initial setup
+    if not db_path.exists():
+        return {'state': 'ready', 'reason': 'ok', 'configured': True,
+                'pending_count': 0, 'uncertain_count': 0, 'failed_count': 0,
+                'skipped_count': 0, 'age_seconds': 0}
+    
     current = _now(now).timestamp()
-    conn = sqlite3.connect(f'file:{_sqlite_path()}?mode=ro', uri=True, timeout=5)
+    conn = None
     try:
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=5)
         states = dict(conn.execute('SELECT status,count(*) FROM drop_deliveries GROUP BY status'))
         oldest = conn.execute("SELECT min(created_at) FROM drop_deliveries WHERE status IN ('pending','sending')").fetchone()[0]
         pending = states.get('pending', 0) + states.get('sending', 0)
@@ -721,8 +730,12 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
         return dict(state=state, reason=reason, configured=True, pending_count=pending,
                     uncertain_count=uncertain, failed_count=failed, skipped_count=skipped,
                     age_seconds=age)
+    except sqlite3.DatabaseError:
+        # Database file exists but cannot be accessed: real failure (corruption, permissions, lock, etc).
+        return {'state': 'unready', 'reason': 'probe_error', 'configured': True}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 def _default_probe_slack(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
