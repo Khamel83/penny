@@ -229,16 +229,10 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-## Penny active queue
-
-- [ ] Verify iCloud transcript-view reconciliation and natural arrival; issue #136 remains open. Preserve the deployed 345-ID plus `INDEX.md` baseline and recorded index hash. See [deployment evidence](docs/icloud-view-deployment-20261026.md).
-- [ ] Observe the first live three-hour idle recycle of `voicememod` under the deployed watcher behavior. The recycle implementation and deployment are recorded; the first live recycle was unobserved at the checkpoint.
-- [ ] Deploy and verify the shared ASR deadline and stale-job recovery behavior in production, including MinusPod recovery and Kuma failure visibility. Local test-double and loopback evidence is not production acceptance. See [handoff](HANDOFF.md).
-- [ ] Re-enable shared ASR only after owner-only macOS removable-volume authorization or a supported runtime-identity change. Keep `com.penny.shared-whisper-keeper` and `com.penny.shared-whisper` unloaded until the gate is satisfied; do not apply an unapproved TCC reset, source workaround, manual daemon, SSD move, or provider fallback. See [containment evidence](docs/asr-tcc-containment-20261019.md).
-- [ ] Complete deployment and runtime acceptance for the retained issue #110 candidate `0d534d968d8c8420042ab08c9a55e0feaced7eda`, which integrates authorized default `5b7665981baafcb8c39b36f2222e20a6b196b22b`. Keep #110 open and `g2k:acceptance-pending` until deployment, runtime receipt and downstream effect are verified. See [evidence](docs/research/g2k-issue-110.md).
-- [ ] Follow the ordered reconciliation in [docs/REPO_PLAN.md](docs/REPO_PLAN.md) and coordinator [#116](https://github.com/Khamel83/penny/issues/116), preserving explicit acceptance holds and recording source, installation, receipt and downstream effect separately.
-
-The archived backlog is preserved at [docs/archive/backlog-2026-10-31.md](docs/archive/backlog-2026-10-31.md).
+## Managed TODO (Janitor)
+All project-owned handwritten checkboxes in remote TODO.md are marked `[x]` or struck; no open checkboxes exist outside Janitor block. No invented tasks. Legacy managed-only queues preserved.
+Open issues observed from remote evidence (not converted to tasks): #110 (g2k:acceptance-pending, source `effd7f5`), coordinator #116 (repo plan), #136 (iCloud reconciliation), #148 (g2k issue per commit `4c7db13b`). Handwritten queue pointer: docs/REPO_PLAN.md and coordinator #116 map open records.
+Retained completed evidence per remote TODO.md: PR146/147 iCloud view, PR141 voicememod recycle, #138 deadline, TCC containment, health ack, #111, #112, #115, #119, SSD relocation, #110 verify/merge staged.
 <!-- janitor:end:todo -->
 
 ## Owning repository plan
