@@ -1,3 +1,34 @@
+## Issue #159 — blocked investigation, November 3, 2026
+
+Refs #159: https://github.com/Khamel83/penny/issues/159.
+No source/configuration repair or runtime mutation performed. The supplied
+incident reports three failures of `penny.doctor-readiness` and declaration hash
+`5231cdb63a84213204f2b465f337d41681a7b5de492e1c2684f406854ac9fd01`,
+but gives no failed Doctor component/reason code, observation timestamp, or
+deployed revision. Historical checkpoints do not establish this incident's cause.
+
+Source freshness: `git fetch origin` succeeded; remote default is `main` at
+`e927a0f419be709104ec1c8db405e64c42ecdd72`. Local `homelab.yaml` declares
+`penny.doctor`, not the incident check ID, requires
+`exact-source-revision-plus-doctor`, sets `repair_id: null`, has no repair IDs,
+and disables destructive actions. The deployment runbook requires reviewed
+merged source, a clean runtime checkout, backup, and Mac launchd verification.
+This worker has no authority to access that runtime or private state.
+
+Evidence lookup: the read-only `g2k-workspace` GitHub request rejected the issue
+URL as an invalid repository slug. One bounded path-format correction failed
+repository resolution. No further helper retries, credentials, private logs,
+or files outside the worktree were accessed.
+
+Human/Infra blocker: supply sanitized timestamps, component status/reason codes
+and deployed revision for the three failures, plus the catalog declaration
+matching the supplied hash and its approved deployment boundary. Then reproduce
+the specific failed check locally and select the smallest authorized repair.
+No tests or deployment were run: there is no established failure scenario or
+implementation to verify. No implementation PR, push or merge was attempted.
+Keep #159 open; acceptance requires exact reviewed merged deployment and three
+fresh downstream successes verified by Infra.
+
 ## Issue #148 — blocked investigation, October 29, 2026
 
 Refs #148. No implementation or runtime mutation performed. The incident gives
