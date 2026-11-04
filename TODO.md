@@ -1,3 +1,13 @@
+## Readiness incident — issue #161
+
+- [ ] Blocked: Infra must repair the OCI projection that fails
+  `penny.doctor-readiness`. The 17:00 UTC collection is
+  `doctor_transport_error`; the 16:00 Doctor observation was ready at
+  `b4181aa`. Projection source is `Khamel83/infra:infra/oci-penny-health/`,
+  not Penny. https://github.com/Khamel83/penny/issues/161.
+  [Evidence](HANDOFF.md#issue-161--blocked-infra-owns-the-failing-projection-november-4-2026).
+  No Penny implementation, tests, deployment, or acceptance is claimed.
+
 ## Readiness incident — issue #159
 
 - [ ] Blocked: establish the failed component and matching catalog/deployment
