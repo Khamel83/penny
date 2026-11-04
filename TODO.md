@@ -1,3 +1,12 @@
+## Readiness incident — issue #159
+
+- [ ] Blocked: establish the failed component and matching catalog/deployment
+  contract before implementing a repair for
+  https://github.com/Khamel83/penny/issues/159. Failure count/hash alone do not
+  identify a safe source change; bounded workspace-helper lookup failed.
+  [Evidence and required Infra metadata](HANDOFF.md#issue-159--blocked-investigation-november-3-2026).
+  No implementation, tests, deployment or acceptance is claimed.
+
 ## iCloud transcript view — deployment checkpoint October 26, 2026
 
 Deployment records PR: https://github.com/Khamel83/penny/pull/147.
