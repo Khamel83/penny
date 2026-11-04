@@ -1,3 +1,12 @@
+## Doctor-readiness check — November 4, 2026 UTC
+
+`penny.doctor-readiness` is Infra's loopback projection on port 8793, not
+Penny's Mac `/ready` route. At 17:51 UTC that projection was HTTP 503 /
+`collection_unknown` because the 17:00 collector receipt was
+`doctor_transport_error`. The 16:00 receipt was ready at `b4181aa` with no
+unready component. Installed projection bytes match Infra main. Penny has no
+repair authority for that surface. [Blocker](HANDOFF.md).
+
 ## iCloud transcript view — deployed October 26, 2026 UTC
 
 Deployment records PR: https://github.com/Khamel83/penny/pull/147.

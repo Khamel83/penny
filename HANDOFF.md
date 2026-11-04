@@ -1,3 +1,31 @@
+## Issue #161 — blocked, Infra owns the failing projection, November 4, 2026
+
+Refs #161: https://github.com/Khamel83/penny/issues/161.
+No Penny source or configuration repair. The catalog-valid check is not
+Penny Doctor on the Mac. `Khamel83/infra:config/project-catalog.yml` declares
+`penny.doctor-readiness` as loopback HTTP `127.0.0.1:8793/healthz`, HTTP 200,
+`json_service=penny-doctor`, `json_status=ready`, `repair_id: null`. Its
+monitoring contract is retained Doctor readiness with a 26-hour collection
+bound. Penny `homelab.yaml` still declares `penny.doctor`, Mac launchd, and
+`scripts/deploy_penny.py`; it does not own port 8793.
+
+Observed on this OCI host at 17:51 UTC: the installed projection returned
+HTTP 503, `status=unknown`, `reason=collection_unknown`,
+`source_revision=unknown`, `observed_at=2026-11-04T17:00:17Z`. The 17:00
+collector receipt is `doctor_transport_error`. The 16:00 receipt was
+`observed` / overall `ready` / Doctor exit 0 at `b4181aa8268d39d163ef877591927fef79a00e6b`,
+with all 13 components `ready`/`ok`. Installed
+`penny-health-projection.py` and `penny-health.py` match origin/main
+`infra/oci-penny-health/` (sha256 `e4a6da84…efe7d8f5` and `abea20dd…981acd7`).
+The projection publishes the newest attempt, so one transport failure
+overrides a retained ready receipt inside the 26-hour bound.
+
+Human/Infra action: repair and deploy the Infra collector/projection.
+Preserve the ready-only check, `repair_id: null`, and no destructive repair.
+A Penny Doctor or threshold change cannot make 8793 ready while collection
+fails, and this worker must not change Infra source, SSH, or the installed
+units. No Penny tests were run. Keep #161 open.
+
 ## Issue #159 — blocked investigation, November 3, 2026
 
 Refs #159: https://github.com/Khamel83/penny/issues/159.
