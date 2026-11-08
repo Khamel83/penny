@@ -1,21 +1,15 @@
-## Readiness incident — issue #161
+## Readiness incidents — recovered and reconciled November 8, 2026
 
-- [ ] Blocked: Infra must repair the OCI projection that fails
-  `penny.doctor-readiness`. The 17:00 UTC collection is
-  `doctor_transport_error`; the 16:00 Doctor observation was ready at
-  `b4181aa`. Projection source is `Khamel83/infra:infra/oci-penny-health/`,
-  not Penny. https://github.com/Khamel83/penny/issues/161.
-  [Evidence](HANDOFF.md#issue-161--blocked-infra-owns-the-failing-projection-november-4-2026).
-  No Penny implementation, tests, deployment, or acceptance is claimed.
-
-## Readiness incident — issue #159
-
-- [ ] Blocked: establish the failed component and matching catalog/deployment
-  contract before implementing a repair for
-  https://github.com/Khamel83/penny/issues/159. Failure count/hash alone do not
-  identify a safe source change; bounded workspace-helper lookup failed.
-  [Evidence and required Infra metadata](HANDOFF.md#issue-159--blocked-investigation-november-3-2026).
-  No implementation, tests, deployment or acceptance is claimed.
+- [x] Resolve the Infra-owned projection failure tracked by
+  [#161](https://github.com/Khamel83/penny/issues/161). The Infra controller
+  [accepted downstream recovery](https://github.com/Khamel83/penny/issues/161#issuecomment-6638424828)
+  and closed it November4 at18:16:01UTC. Fresh November8 catalog observation
+  reports penny.doctor-readiness=ok; this was an Infra repair, not a Penny patch.
+- [x] Resolve the readiness incident tracked by
+  [#159](https://github.com/Khamel83/penny/issues/159). The controller
+  [accepted recovery](https://github.com/Khamel83/penny/issues/159#issuecomment-6625008783)
+  and closed it November4 at07:15:27UTC. Historical investigation limits remain
+  in HANDOFF.md; no capture, transcript, credential or runtime change here.
 
 ## iCloud transcript view — deployment checkpoint October 26, 2026
 
