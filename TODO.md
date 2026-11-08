@@ -242,10 +242,7 @@ benchmark or manufactured capture is required.
 - Held row 769 and synthetic quarantine row 493 are intentional preserved states,
   not requests to retranscribe, replay or erase evidence.
 <!-- janitor:begin:todo -->
-## Managed TODO (Janitor)
-All project-owned handwritten checkboxes in remote TODO.md are marked `[x]` or struck; no open checkboxes exist outside Janitor block. No invented tasks. Legacy managed-only queues preserved.
-Open issues observed from remote evidence (not converted to tasks): #110 (g2k:acceptance-pending, source `effd7f5`), coordinator #116 (repo plan), #136 (iCloud reconciliation), #148 (g2k issue per commit `4c7db13b`). Handwritten queue pointer: docs/REPO_PLAN.md and coordinator #116 map open records.
-Retained completed evidence per remote TODO.md: PR146/147 iCloud view, PR141 voicememod recycle, #138 deadline, TCC containment, health ack, #111, #112, #115, #119, SSD relocation, #110 verify/merge staged.
+The handwritten queue in TODO.md is canonical; all open readiness and deployment items are recorded in the project-owned sections above.
 <!-- janitor:end:todo -->
 
 ## Owning repository plan
