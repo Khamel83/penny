@@ -331,20 +331,11 @@ gate. Long-term stability remains observation over ordinary use.
 Previous dated checkpoints remain in the
 [historical context](https://github.com/Khamel83/penny/blob/6ccf2286a2c6af1919e43b4eaba72465f8eb614b/CONTEXT.md).
 <!-- janitor:begin:recent -->
-## Verified recent state (reconciled from remote docs, source SHA 655d84422c9217600479f77d7a518ceabe61b3ca)
-- iCloud transcript view: PR147 recorded deployment; PR146 merged `b4181aa8268d39d163ef877591927fef79a00e6b` clean-main deploy, 345 transcript IDs + INDEX.md, reconciliation unverified (#136 open). (2026-10-26)
-- Stalled Voice Memos sync recovered Oct 24; watcher idle-sync recycle merged PR141 `0ee8f38` deployed.
-- Issue #138 shared ASR deadline observability completed locally (37 tests pass); merged via PR139 `cdf6351ddfa0c11f1a84e4b135c4db08c15ba6b0`.
-- Shared ASR TCC containment Oct 19: labels unloaded, health down by design; re-enable gate owner-only.
-- Penny health green Oct 18: PR132 `8606b497` merged, Kuma heartbeats UP.
-- Parakeet timing #111 accepted via PR126 `64d32534` (2026-10-16).
-- Retry retention #112 via PR122 `85900798` installed.
-- Doctor reporting PR115 `c9b0368a` deployed.
-- Shared ASR keeper PR119 `6330b398` merged.
-- Issue #110 source checkpoint Oct 24: retained candidate `effd7f5`, authorized default `5b7665981baafcb8c39b36f2222e20a6b196b22b` integrated uncommitted; #110 open `g2k:acceptance-pending`.
-- Fleet CI cancellation prepared on `feat/fleet-ci-cancellation-20261016` (PR129 `f5835ddfab0c0e52e4f65a7471c5e4b32daed568` merged model-matched).
-- Latest commit 655d844 `Infra incident: penny / penny.doctor-readiness (#157)` indicates incident documentation activity (past, not open task).
-- Open records observed: #110, coordinator #116, #136, #148 (commit `4c7db13b`). Handwritten queue all checked/struck.
+## Readiness incident closure reconciled — November 8, 2026
+
+Issues #159 and #161 are CLOSED/COMPLETED with native Infra-controller acceptance comments (November 4 at 07:15:27 and 18:16:01 UTC respectively). Fresh complete Janitor collection 2026-11-08T23:39:40.247425Z reports penny.doctor-readiness=ok. The two unchecked blocker TODOs are now completed with their acceptance links. This changes Penny records only; the repair/projection remains Infra-owned. No Penny pipeline, launchd, capture, media, credential or transcript mutation.
+
+Owned `.worktrees/nov8-todo-closeout` / `docs/close-recovered-readiness` retains the record changes until native review/CI/merge. Commit 1c326c52fac761e500fd0476d58f7e409ae33b2e closes recovered readiness incident TODOs with controller acceptance (PR #163). Earlier failure observations below remain dated history, not current blockers.
 <!-- janitor:end:recent -->
 ## Fleet CI cancellation - source checkpoint (October 16, 2026)
 
