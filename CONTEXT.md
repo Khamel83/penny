@@ -1,11 +1,16 @@
-## Doctor-readiness check — November 4, 2026 UTC
+## Readiness incident closure reconciled — November 8, 2026
 
-`penny.doctor-readiness` is Infra's loopback projection on port 8793, not
-Penny's Mac `/ready` route. At 17:51 UTC that projection was HTTP 503 /
-`collection_unknown` because the 17:00 collector receipt was
-`doctor_transport_error`. The 16:00 receipt was ready at `b4181aa` with no
-unready component. Installed projection bytes match Infra main. Penny has no
-repair authority for that surface. [Blocker](HANDOFF.md).
+Issues159 and161 are CLOSED/COMPLETED with native Infra-controller acceptance
+comments (November4 at07:15:27 and18:16:01UTC respectively). Fresh complete
+Janitor collection2026-11-08T23:39:40.247425Z reports penny.doctor-readiness=ok.
+The two unchecked blocker TODOs are now completed with their acceptance links.
+This changes Penny records only; the repair/projection remains Infra-owned.
+No Penny pipeline, launchd, capture, media, credential or transcript mutation.
+
+Owned .worktrees/nov8-todo-closeout / docs/close-recovered-readiness retains the
+record changes until native review/CI/merge. Next: verify that source gate, then
+remove only this clean temporary worktree; active runtime and all peer trees stay.
+Earlier failure observations below remain dated history, not current blockers.
 
 ## iCloud transcript view — deployed October 26, 2026 UTC
 
