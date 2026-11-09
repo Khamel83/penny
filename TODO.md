@@ -1,3 +1,13 @@
+## INF-335 — Factory traceability contract, November 9
+
+Existing Penny payload already preserves installation/transcript IDs and exact
+transcript SHA256. No capture/outbox/Apple/Maya code or deployment change needed.
+[Contract and runtime gates](docs/factory-traceability.md) distinguish Drop
+acceptance from native completion. Real end-to-end acceptance remains OPEN;
+Factory operator owns scoped credentials and future Dispatch cutoff.
+
+- [ ] INF-335: qualify actual voice/native completion with unchanged Apple/Maya behavior.
+
 ## Readiness incidents — recovered and reconciled November 8, 2026
 
 - [x] Resolve the Infra-owned projection failure tracked by
