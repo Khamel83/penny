@@ -77,7 +77,7 @@ general non-voice entrypoints/notifications, full provider/value-aware role poli
 and a reusable public publisher are not qualified here. FactoryPR75 is OPEN and
 CONFLICTING; reconcile its remaining thin handoff/model contract against already
 merged voice work rather than merge stale runtime code. Public sharing was blocked
-by automatic approval review because the worker's approval policy was never;
+by automatic approval review because the worker's approval policy was never configured;
 no alternate publisher or access bypass was attempted after the owner stop.
 
 Next ordinary verification: observe the next real voice order through its native
