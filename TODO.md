@@ -1,3 +1,8 @@
+## Current Factory voice acceptance — November8 local / November9 UTC
+
+- [x] Deploy and naturally validate Penny → Drop → Factory voice intake and clickable #inbox question/result delivery. [natural voice acceptance](docs/evidence/2026-11-08-factory-voice-acceptance.md).
+- [ ] Broader Factory305 work, general non-voice delivery and public-publisher qualification remain separate; Bears work stopped by owner.
+
 ## INF-335 — Factory traceability contract, November 9
 
 Existing Penny payload already preserves installation/transcript IDs and exact

@@ -1,3 +1,14 @@
+## Current Factory voice acceptance — November8 local / November9 UTC
+
+Natural Penny823 → Drop2030 → INF-354 → implementation356/review is verified.
+Existing OCI routine now owns voice alert transport; exact reviewed release6e40542
+is installed, health ready/cursor2031/notification_errors0. Real result and controlled
+question/completion each delivered once, with clickable native ticket buttons.
+Penny Apple behavior remains unchanged; Maya store-only cursor is past the note.
+Private website output exists; public sharing was denied and owner stopped site work.
+This supersedes earlier voice deployment/receipt-pending checkpoints below.
+[natural voice acceptance](docs/evidence/2026-11-08-factory-voice-acceptance.md) records exact source, runtime, receipts, load, preserved legacy work and open305 scope.
+
 ## INF-335 — Factory traceability contract, November 9
 
 Existing Penny payload already preserves installation/transcript IDs and exact
