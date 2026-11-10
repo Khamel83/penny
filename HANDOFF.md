@@ -1,3 +1,12 @@
+## Runtime deployed at current source — November 10, 2026
+
+`scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
+`~/.penny/deployments/20261110T214053Z`). Check `deploy_penny.py` reports `current` for
+all five services and `/ready` 200 with `source_revision` `89cd0be`. This supersedes
+earlier notes that the runtime loaded `b4181aa`: `/ready` had reported the old revision because
+launchd pinned `PENNY_SOURCE_REVISION` and the later `doctor.py` change had not been deployed.
+Lesson: after any code change merged to main, run the deploy; docs-only commits do not need it.
+
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
 Natural Penny823 → Drop2030 → INF-354 → implementation356/review is verified.
