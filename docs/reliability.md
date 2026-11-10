@@ -122,9 +122,18 @@ The scheduled backup creates an immutable, versioned set containing a
 transactionally consistent SQLite snapshot, fully materialized archive objects,
 and a catalog of hashes and metadata. A scratch verifier checks catalog paths,
 object hashes, SQLite integrity/schema/row count/max ID, and safe extras. The
-latest verification receipt is written atomically with mode `0600` only after
-local verification and remote catalog verification both succeed. A failed run
-never advances the prior good receipt.
+same six-hour export job verifies the newest existing set before publishing
+another. The latest verification receipt is written atomically with mode `0600`
+only after local verification and remote catalog verification both succeed. A
+failed run never advances the prior good receipt; it writes `backup_alert.json`
+beside that receipt. Doctor reports `backup_verification_failed` for a current
+failure and `backup_stale` when the good receipt is older than eight hours.
+
+Retention keeps the newest two verified sets. A set is removed only after
+`verify_backup_set` succeeds and a newer verified set remains. Archive objects
+are not deleted. `PENNY_BACKUP_REMOTE` selects the homelab root and defaults to
+`homelab:/mnt/main2/backups/penny`. Home-directory remotes are rejected so sets
+do not land on the boot SSD.
 
 JSON transcript exports are readable aids only. Restore is staging-only: verify
 the set and catalog in a scratch directory, stop writers, restore the whole

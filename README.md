@@ -36,7 +36,9 @@ for original audio, Markdown transcript, and JSON manifest. Text-only, Maya, and
 Tasks rows may be recorded as `not_applicable`/`no_raw_audio` instead. The
 manifest is published last, after hashes and complete-copy checks succeed.
 Versioned homelab backup sets contain a consistent SQLite snapshot, archive
-bytes, and a catalog; verification runs in a scratch directory only.
+bytes, and a catalog; verification runs in a scratch directory only. The
+scheduled job keeps the newest two verified sets on `PENNY_BACKUP_REMOTE`
+(default `homelab:/mnt/main2/backups/penny`), not the boot disk.
 
 ## Phase A status and boundaries
 

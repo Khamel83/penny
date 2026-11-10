@@ -1,3 +1,5 @@
+Remote homelab sets no longer use `~/backups/penny` on the boot disk. The configurable remote is `PENNY_BACKUP_REMOTE`, default `homelab:/mnt/main2/backups/penny`. The Mac placement below is unchanged.
+
 # Mac backup placement — 2026-09-22
 
 The owner approved moving backup staging to the always-connected SSD and keeping Homelab as the off-host backup destination. This changes installed placement, not the live capture ledger or audio-object root.

@@ -22,7 +22,10 @@ if str(SCRIPTS) not in sys.path:
 
 from archive import sha256_file
 from backup import (
+    BACKUP_RETAINED_SETS,
     BackupError,
+    RetentionPlan,
+    apply_retention,
     create_backup_set,
     plan_retention,
     verify_backup_set,
@@ -190,23 +193,40 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(BackupError):
             verify_backup_set(receipt.set_path, link)
 
-    def test_retention_plan_is_deterministic_and_never_deletes_objects(self) -> None:
+    def test_retention_plan_keeps_newest_two_verified_sets_and_never_deletes_objects(self) -> None:
         self._add_object()
-        old = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=91))
-        new = create_backup_set(self.db, self.archive, self.backup, self.now)
+        oldest = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=3))
+        middle = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=2))
+        newest = create_backup_set(self.db, self.archive, self.backup, self.now)
         plan = plan_retention(self.backup, self.now)
-        self.assertEqual(plan.expired_set_ids, (old.set_path.name,))
-        self.assertEqual(plan.retained_set_ids, (new.set_path.name,))
+        self.assertEqual(BACKUP_RETAINED_SETS, 2)
+        self.assertEqual(plan.expired_set_ids, (oldest.set_path.name,))
+        self.assertEqual(plan.retained_set_ids, (middle.set_path.name, newest.set_path.name))
+        self.assertTrue(oldest.set_path.exists())
         self.assertTrue((self.backup / "objects").exists())
         self.assertFalse(plan.deletes_objects)
+        removed = apply_retention(self.backup, plan)
+        self.assertEqual(removed, (oldest.set_path.name,))
+        self.assertFalse(oldest.set_path.exists())
+        self.assertTrue(middle.set_path.exists())
+        self.assertTrue(newest.set_path.exists())
+        self.assertTrue((self.backup / "objects").exists())
 
-    def test_retention_keeps_newest_valid_set_when_all_are_expired(self) -> None:
+    def test_retention_keeps_newest_two_when_older_than_any_day_window(self) -> None:
         self._add_object()
         first = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=180))
         second = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=91))
+        third = create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(days=30))
         plan = plan_retention(self.backup, self.now)
         self.assertEqual(plan.expired_set_ids, (first.set_path.name,))
-        self.assertEqual(plan.retained_set_ids, (second.set_path.name,))
+        self.assertEqual(plan.retained_set_ids, (second.set_path.name, third.set_path.name))
+
+    def test_retention_refuses_to_delete_without_a_verified_set(self) -> None:
+        with self.assertRaises(BackupError):
+            apply_retention(
+                self.backup,
+                RetentionPlan("2026-11-10T00:00:00Z", ("20261109T000000Z",), ()),
+            )
 
     def test_verifier_rejects_catalog_object_inventory_drift(self) -> None:
         self._add_object()
@@ -223,15 +243,18 @@ class BackupTests(unittest.TestCase):
 
         def runner(command: list[str], **_: object) -> object:
             calls.append(command)
+            if command[0] == "ssh" and "findmnt" in command:
+                return SimpleNamespace(returncode=0, stdout="/mnt/main2\n")
             if command[0] == "ssh" and "sha256sum" in command:
                 return SimpleNamespace(returncode=0, stdout="0" * 64 + "  catalog.json\n")
             return SimpleNamespace(returncode=0, stdout="")
 
         with self.assertRaises(backup_penny.SyncError):
             backup_penny.sync_backup_set(receipt, runner=runner)
-        self.assertEqual([call[0] for call in calls], ["ssh", "rsync", "rsync", "ssh"])
-        self.assertEqual(calls[0][2:5], ["mkdir", "-p", "--"])
+        self.assertEqual([call[0] for call in calls], ["ssh", "ssh", "rsync", "rsync", "ssh"])
+        self.assertEqual(calls[1][2:5], ["mkdir", "-p", "--"])
         self.assertTrue(all("--protect-args" not in call for call in calls))
+        self.assertTrue(all("objects" not in call or call[0] == "rsync" for call in calls))
 
     def test_remote_rejects_shell_whitespace_without_protect_args(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
@@ -275,20 +298,32 @@ class BackupTests(unittest.TestCase):
                     backup_penny.sync_backup_set(receipt, remote=remote, runner=runner)
                 self.assertEqual(calls, [])
 
-    def test_remote_accepts_default_and_safe_absolute_roots(self) -> None:
+    def test_remote_accepts_spinning_disk_default_and_rejects_boot_disk(self) -> None:
         self.assertEqual(
             backup_penny._safe_remote(backup_penny.DEFAULT_REMOTE),
-            ("homelab", "~/backups/penny/"),
+            ("homelab", "/mnt/main2/backups/penny/"),
         )
         self.assertEqual(
             backup_penny._safe_remote("backup-host:/srv/penny.backups/nightly"),
             ("backup-host", "/srv/penny.backups/nightly/"),
         )
+        receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **_: object) -> object:
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with self.assertRaisesRegex(backup_penny.SyncError, "remote_on_boot_disk"):
+            backup_penny.sync_backup_set(receipt, remote="homelab:~/backups/penny/", runner=runner)
+        self.assertEqual(calls, [])
 
     def test_remote_rsync_failure_is_fatal(self) -> None:
         receipt = create_backup_set(self.db, self.archive, self.backup, self.now)
 
         def runner(command: list[str], **_: object) -> object:
+            if command[0] == "ssh" and "findmnt" in command:
+                return SimpleNamespace(returncode=0, stdout="/mnt/main2\n")
             if command[0] == "rsync":
                 return SimpleNamespace(returncode=23, stdout="")
             return SimpleNamespace(returncode=0, stdout="")
@@ -302,12 +337,14 @@ class BackupTests(unittest.TestCase):
 
         def runner(command: list[str], **_: object) -> object:
             calls.append(command)
+            if "findmnt" in command:
+                return SimpleNamespace(returncode=0, stdout="/mnt/main2\n")
             return SimpleNamespace(returncode=1, stdout="")
 
         with self.assertRaises(backup_penny.SyncError):
             backup_penny.sync_backup_set(receipt, runner=runner)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0:3], ["ssh", "homelab", "mkdir"])
+        self.assertEqual(calls[0][2], "findmnt")
+        self.assertEqual(calls[1][0:3], ["ssh", "homelab", "mkdir"])
 
     def test_export_json_is_atomic_and_export_main_fails_on_sync(self) -> None:
         destination = self.root / "export" / "history.json"
@@ -577,7 +614,95 @@ class BackupTests(unittest.TestCase):
         plan = plan_retention(self.backup, self.now)
         self.assertEqual(plan.expired_set_ids, ())
         self.assertEqual(plan.retained_set_ids, (old.set_path.name,))
+        self.assertTrue(corrupt.set_path.exists())
         self.assertTrue(any("invalid_set_verification" in warning for warning in plan.warnings))
+        self.assertEqual(apply_retention(self.backup, plan), ())
+        self.assertTrue(corrupt.set_path.exists())
+
+    def test_remote_prune_keeps_newest_two_sets_and_does_not_touch_objects(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **_: object) -> object:
+            calls.append(command)
+            if "findmnt" in command:
+                return SimpleNamespace(returncode=0, stdout="/mnt/main2\n")
+            if "ls" in command:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="20261108T000000Z\n20261109T000000Z\n20261110T000000Z\n20261110T060000Z\n",
+                )
+            return SimpleNamespace(returncode=0, stdout="")
+
+        removed = backup_penny.prune_remote_sets(
+            "homelab:/mnt/main2/backups/penny",
+            verified_set_id="20261110T060000Z",
+            runner=runner,
+        )
+        self.assertEqual(removed, ("20261108T000000Z", "20261109T000000Z"))
+        rm_targets = [call[-1] for call in calls if "rm" in call]
+        self.assertEqual(
+            rm_targets,
+            [
+                "/mnt/main2/backups/penny/sets/20261108T000000Z",
+                "/mnt/main2/backups/penny/sets/20261109T000000Z",
+            ],
+        )
+        self.assertTrue(all("objects" not in target for target in rm_targets))
+
+    def test_failed_backup_writes_alert_without_advancing_receipt(self) -> None:
+        receipt_path = self.backup / "last_verification.json"
+        code = backup_penny.main(
+            [
+                "--db",
+                str(self.root / "missing.db"),
+                "--archive-root",
+                str(self.archive),
+                "--backup-root",
+                str(self.backup),
+                "--remote",
+                "homelab:/mnt/main2/backups/penny",
+                "--verification-receipt",
+                str(receipt_path),
+                "--skip-export",
+            ]
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse(receipt_path.exists())
+        alert = json.loads((self.backup / "backup_alert.json").read_text(encoding="utf-8"))
+        self.assertEqual(alert["status"], "failed")
+        self.assertEqual(alert["reason"], "backup_verification_failed")
+        self.assertNotIn("path", alert)
+
+    def test_failed_sync_still_keeps_only_newest_two_local_sets(self) -> None:
+        self._add_object()
+        create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(hours=12))
+        create_backup_set(self.db, self.archive, self.backup, self.now - timedelta(hours=6))
+        with patch.object(
+            backup_penny,
+            "_refresh_latest_verification",
+            side_effect=backup_penny.SyncError("scheduled_verification_missing"),
+        ), patch.object(backup_penny, "sync_backup_set", side_effect=backup_penny.SyncError("rsync_failed")):
+            code = backup_penny.main(
+                [
+                    "--db",
+                    str(self.db),
+                    "--archive-root",
+                    str(self.archive),
+                    "--backup-root",
+                    str(self.backup),
+                    "--remote",
+                    "homelab:/mnt/main2/backups/penny",
+                    "--now",
+                    self.now.isoformat(),
+                    "--verification-receipt",
+                    str(self.backup / "last_verification.json"),
+                    "--skip-export",
+                ]
+            )
+        self.assertEqual(code, 1)
+        remaining = sorted(path.name for path in (self.backup / "sets").iterdir() if path.is_dir())
+        self.assertEqual(len(remaining), 2)
+        self.assertNotIn((self.now - timedelta(hours=12)).strftime("%Y%m%dT%H%M%SZ"), remaining)
 
 
 if __name__ == "__main__":

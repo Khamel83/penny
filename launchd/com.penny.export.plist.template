@@ -24,12 +24,13 @@
         <key>PENNY_BACKUP_ROOT</key>
         <string>/Users/macmini/.penny/backup</string>
         <key>PENNY_BACKUP_REMOTE</key>
-        <string>homelab:~/backups/penny</string>
+        <string>homelab:/mnt/main2/backups/penny</string>
         <key>PENNY_BACKUP_VERIFICATION_RECEIPT</key>
         <string>/Users/macmini/.penny/backup/last_verification.json</string>
         <key>PENNY_BACKUP_SCRATCH_ROOT</key>
         <string>/Users/macmini/Library/Caches/Penny/backup-scratch</string>
     </dict>
+    <!-- Six-hour backup and verify_backup_set schedule. Keep at most two verified sets. -->
     <key>StartInterval</key>
     <integer>21600</integer>
     <key>RunAtLoad</key>

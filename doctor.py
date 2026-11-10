@@ -48,6 +48,7 @@ _SAFE_REASON_VALUES = frozenset(
         "callback_secret_missing",
         "backup_stale",
         "backup_unverified",
+        "backup_verification_failed",
         "bind_policy",
         "configuration_missing",
         "database_unavailable",
@@ -164,7 +165,7 @@ _SAFE_DETAIL_KEYS = frozenset(
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
 _DEFAULT_HEALTH_MAX_AGE_SECONDS = 15 * 60
-_DEFAULT_BACKUP_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_DEFAULT_BACKUP_MAX_AGE_SECONDS = 8 * 60 * 60
 
 
 def _configured_value(value: object) -> bool:
@@ -993,6 +994,23 @@ def _verification_receipt_path(root: Path) -> Path:
     return root / "last_verification.json"
 
 
+def _backup_alert_state(receipt_path: Path, receipt_verified_at: object) -> dict[str, Any]:
+    """A failed attempt newer than the good receipt is an immediate alert."""
+    alert_path = receipt_path.with_name("backup_alert.json")
+    if alert_path.is_symlink() or not alert_path.is_file():
+        return {}
+    try:
+        alert = json.loads(alert_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return {"verification_failed": True, "reason": "backup_verification_failed"}
+    if not isinstance(alert, dict) or alert.get("status") != "failed":
+        return {}
+    observed = alert.get("observed_at")
+    if isinstance(receipt_verified_at, str) and isinstance(observed, str) and observed < receipt_verified_at:
+        return {}
+    return {"verification_failed": True, "reason": "backup_verification_failed"}
+
+
 def _latest_catalog(root: Path) -> tuple[Path | None, bool]:
     sets = root / "sets"
     if sets.is_symlink() or not sets.is_dir():
@@ -1027,7 +1045,11 @@ def _default_probe_backup(
         try:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, TypeError):
-            return {**data, "reason": "backup_unverified"}
+            return {
+                **data,
+                "reason": "backup_unverified",
+                **_backup_alert_state(receipt_path, None),
+            }
         receipt_id = str(receipt.get("backup_set_id", ""))
         receipt_hash = str(receipt.get("catalog_sha256", "")).lower()
         receipt_set_catalog = root / "sets" / receipt_id / "catalog.json"
@@ -1098,7 +1120,7 @@ def _default_probe_backup(
             data["reason"] = "backup_unverified"
         elif not timestamp_valid:
             data["reason"] = "timestamp_invalid"
-        return data
+        return {**data, **_backup_alert_state(receipt_path, timestamp if isinstance(timestamp, str) else None)}
     # A catalog proves a set was published, not that a scratch restore passed.
     # Keep that distinction explicit and fail closed until a verification
     # receipt is written by the backup operator.
@@ -1111,7 +1133,8 @@ def _default_probe_backup(
             data["timestamp_valid"] = timestamp_valid
         except (OSError, UnicodeError, ValueError, TypeError):
             data["reason"] = "backup_unverified"
-    return data
+            return {**data, **_backup_alert_state(receipt_path, None)}
+    return {**data, **_backup_alert_state(receipt_path, None)}
 
 
 def _default_probe_ingress(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -1277,6 +1300,8 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "ready", "ok"
         return "degraded", "disabled"
     if name == "backup":
+        if values.get("verification_failed"):
+            return "unready", "backup_verification_failed"
         if not values.get("verified", False):
             return "unready", _safe_reason(values.get("reason"), "backup_unverified")
         if values.get("timestamp_valid") is False:

@@ -1,3 +1,11 @@
+## Issue #169 — backup retention, source only, November 10
+
+Owner decision: keep the newest two verified backup sets, not 90 days. The
+homelab remote is configurable and defaults to `homelab:/mnt/main2/backups/penny`,
+not `~/backups/penny` on the boot SSD. The six-hour export job verifies before
+removal and Doctor alerts on a failed or eight-hour-overdue verification.
+Homelab `ls`/`df` and deploy were not run from this worktree.
+
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
 Natural Penny823 → Drop2030 → INF-354 → implementation356/review is verified.

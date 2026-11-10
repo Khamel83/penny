@@ -1,3 +1,8 @@
+## Issue #169 — backup retention, November 10
+
+- [x] Source: retain the newest two verified sets, reject boot-disk remotes, and alert when verification fails or is older than eight hours. Focused backup/doctor/deploy tests passed in this worktree.
+- [ ] Deploy the reviewed source and read back homelab `ls ~/backups/penny/sets | wc -l` (at most 2) and `df /` (not reduced by Penny). This worktree cannot deploy or SSH.
+
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
 - [x] Deploy and naturally validate Penny → Drop → Factory voice intake and clickable #inbox question/result delivery. [natural voice acceptance](docs/evidence/2026-11-08-factory-voice-acceptance.md).

@@ -30,7 +30,9 @@ ESCAPED_BACKSLASH = "\\\\"  # two backslash characters. A backslash cannot appea
 
 
 BACKUP_SCHEMA_VERSION = 1
-BACKUP_RETENTION_DAYS = 90
+BACKUP_RETAINED_SETS = 2
+BACKUP_ALERT_NAME = "backup_alert.json"
+DEFAULT_BACKUP_REMOTE = "homelab:/mnt/main2/backups/penny"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_PREFIX_RE = re.compile(r"^[0-9a-f]{2}$")
 _OBJECT_NAME_RE = re.compile(r"^(?P<sha>[0-9a-f]{64})(?P<extension>\.[A-Za-z0-9]{1,10})?$")
@@ -807,22 +809,25 @@ def verify_backup_set(set_path: Path, scratch_root: Path) -> VerificationReceipt
 def plan_retention(
     backup_root: Path,
     now: datetime | str | None = None,
-    retention_days: int = BACKUP_RETENTION_DAYS,
+    retain_sets: int = BACKUP_RETAINED_SETS,
 ) -> RetentionPlan:
-    """Return a deterministic deletion plan; this function never deletes."""
+    """Return a deterministic deletion plan; this function never deletes.
+
+    The newest `retain_sets` verified sets are kept. An older set is eligible
+    for removal only after `verify_backup_set` succeeds. Unverified sets stay.
+    Archive objects are never part of the plan.
+    """
     backup_root = Path(backup_root).expanduser()
     if not backup_root.is_absolute():
         backup_root = backup_root.resolve()
-    if retention_days < 1:
-        raise ValueError("retention_days must be positive")
-    cutoff_dt = _utc(now) - timedelta(days=retention_days)
+    if isinstance(retain_sets, bool) or not isinstance(retain_sets, int) or retain_sets < 1:
+        raise ValueError("retain_sets must be positive")
+    current = _utc(now)
     sets_root = backup_root / "sets"
-    expired: list[str] = []
-    retained: list[str] = []
-    valid_expired: list[tuple[datetime, str]] = []
     warnings: list[str] = []
+    verified: list[tuple[datetime, str]] = []
     if not sets_root.exists():
-        return RetentionPlan(_utc_text(cutoff_dt), (), (), ())
+        return RetentionPlan(_utc_text(current), (), (), ())
     if sets_root.is_symlink() or not sets_root.is_dir():
         raise BackupError("sets_root_invalid")
     for candidate in sorted(sets_root.iterdir(), key=lambda item: item.name):
@@ -847,24 +852,62 @@ def plan_retention(
         if verification is None or not verification.valid:
             warnings.append("invalid_set_verification")
             continue
-        if created < cutoff_dt:
-            expired.append(candidate.name)
-            valid_expired.append((created, candidate.name))
-        else:
-            retained.append(candidate.name)
-    if not retained and valid_expired:
-        # Never discard the only valid rollback point.  Preserve the newest
-        # *verified* set; corrupt/unknown timestamps never enter this choice.
-        _, newest = max(valid_expired)
-        expired.remove(newest)
-        retained.append(newest)
+        verified.append((created, candidate.name))
+    verified.sort()
+    retained_pairs = verified[-retain_sets:]
+    expired_pairs = verified[:-retain_sets]
+    cutoff = retained_pairs[0][0] if retained_pairs else current
     return RetentionPlan(
-        cutoff=_utc_text(cutoff_dt),
-        expired_set_ids=tuple(expired),
-        retained_set_ids=tuple(retained),
+        cutoff=_utc_text(cutoff),
+        expired_set_ids=tuple(name for _, name in expired_pairs),
+        retained_set_ids=tuple(name for _, name in retained_pairs),
         warnings=tuple(sorted(set(warnings))),
         deletes_objects=False,
     )
+
+
+def apply_retention(backup_root: Path, plan: RetentionPlan) -> tuple[str, ...]:
+    """Delete set directories the verified plan marked expired.
+
+    Refuses to run unless the plan retained at least one verified set. Does
+    not delete archive objects, symlinks, or ids that were not verified.
+    """
+    if not plan.retained_set_ids:
+        raise BackupError("retention_refused_without_verified_set")
+    backup_root = Path(backup_root).expanduser()
+    if not backup_root.is_absolute():
+        backup_root = backup_root.resolve()
+    sets_root = backup_root / "sets"
+    if sets_root.is_symlink() or not sets_root.is_dir():
+        raise BackupError("sets_root_invalid")
+    retained = set(plan.retained_set_ids)
+    removed: list[str] = []
+    for set_id in plan.expired_set_ids:
+        if not _SET_ID_RE.fullmatch(set_id) or set_id in retained:
+            raise BackupError("retention_set_id_invalid")
+        target = sets_root / set_id
+        if target.is_symlink() or not target.is_dir():
+            raise BackupError("retention_set_invalid")
+        resolved = target.resolve()
+        _assert_inside(resolved, sets_root.resolve(), label="retention_set")
+        if resolved.parent != sets_root.resolve():
+            raise BackupError("retention_set_invalid")
+        for root, dirs, files in os.walk(resolved):
+            current = Path(root)
+            if current.is_symlink():
+                raise BackupError("retention_set_symlink")
+            os.chmod(current, 0o700)
+            for name in dirs + files:
+                child = current / name
+                if child.is_symlink():
+                    raise BackupError("retention_set_symlink")
+                os.chmod(child, 0o700 if child.is_dir() else 0o600)
+        shutil.rmtree(resolved)
+        removed.append(set_id)
+    if removed:
+        fsync_directory(sets_root)
+    return tuple(removed)
+
 
 
 def sqlite_integrity(path: Path) -> str:
@@ -879,12 +922,15 @@ def sqlite_integrity(path: Path) -> str:
 
 
 __all__ = [
-    "BACKUP_RETENTION_DAYS",
+    "BACKUP_ALERT_NAME",
+    "BACKUP_RETAINED_SETS",
     "BACKUP_SCHEMA_VERSION",
+    "DEFAULT_BACKUP_REMOTE",
     "BackupError",
     "BackupReceipt",
     "RetentionPlan",
     "VerificationReceipt",
+    "apply_retention",
     "create_backup_set",
     "plan_retention",
     "sqlite_integrity",
