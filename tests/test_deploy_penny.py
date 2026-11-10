@@ -76,6 +76,16 @@ def test_drop_runtime_configuration_preserves_existing_credentials(tmp_path, mon
     assert 'PENNY_DROP_TOKEN' not in webhook['EnvironmentVariables']
 
 
+def test_deploy_moves_only_the_boot_disk_backup_remote():
+    migrated = deploy.migrate_backup_remote({
+        "PENNY_BACKUP_REMOTE": "homelab:~/backups/penny/",
+        "EXISTING_SECRET": "keep-me",
+    })
+    assert migrated["PENNY_BACKUP_REMOTE"] == "homelab:/mnt/main2/backups/penny"
+    assert migrated["EXISTING_SECRET"] == "keep-me"
+    custom = deploy.migrate_backup_remote({"PENNY_BACKUP_REMOTE": "homelab:/data/penny"})
+    assert custom["PENNY_BACKUP_REMOTE"] == "homelab:/data/penny"
+
 def wrapped_export(tmp_path, monkeypatch):
     label = 'com.penny.export'
     path = make_installed(tmp_path, monkeypatch, label, deploy.ENTRYPOINTS[label])

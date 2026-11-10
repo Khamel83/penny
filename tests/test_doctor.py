@@ -793,6 +793,65 @@ def test_backup_receipt_hash_and_latest_set_are_bound(tmp_path: Path, monkeypatc
     assert mismatched["verified"] is False
 
 
+
+def test_backup_failure_and_overdue_verification_are_unready(tmp_path: Path, monkeypatch):
+    from doctor import _default_probe_backup, _infer_status
+
+    assert _infer_status(
+        "backup",
+        {"verified": True, "age_seconds": 9 * 60 * 60, "timestamp_valid": True},
+    ) == ("unready", "backup_stale")
+    assert _infer_status(
+        "backup",
+        {
+            "verified": True,
+            "age_seconds": 60,
+            "timestamp_valid": True,
+            "verification_failed": True,
+        },
+    ) == ("unready", "backup_verification_failed")
+
+    root = tmp_path / "backup"
+    latest = root / "sets" / "20260810T120000Z"
+    latest.mkdir(parents=True)
+    catalog = latest / "catalog.json"
+    catalog.write_text(
+        json.dumps({"database": {"row_count": 1, "max_transcript_id": 1}}),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(catalog.read_bytes()).hexdigest()
+    receipt = root / "last_verification.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "verified",
+                "valid": True,
+                "backup_set_id": latest.name,
+                "catalog_sha256": digest,
+                "row_count": 1,
+                "max_transcript_id": 1,
+                "verified_at": "2026-08-10T12:00:00Z",
+                "remote_catalog_verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "backup_alert.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "reason": "backup_verification_failed",
+                "observed_at": "2026-08-10T12:05:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PENNY_BACKUP_ROOT", str(root))
+    failed = _default_probe_backup(now=datetime(2026, 8, 10, 12, 6, tzinfo=timezone.utc))
+    assert failed["verification_failed"] is True
+    assert _infer_status("backup", failed) == ("unready", "backup_verification_failed")
 def test_doctor_probes_are_read_only_and_do_not_open_bodies_or_tcc(tmp_path: Path, monkeypatch):
     from doctor import run_doctor
 

@@ -19,8 +19,7 @@ log = logging.getLogger(__name__)
 
 TRANSCRIPT_DB = Path("~/.penny/transcripts.db").expanduser()
 EXPORT_FILE = Path("~/.penny/transcript_history.json").expanduser()
-BACKUP_HOST = "homelab"
-BACKUP_DIR = "~/backups/penny/"
+BACKUP_DIR = "homelab:/mnt/main2/backups/penny/"
 
 
 def dump_transcripts() -> list[dict]:
@@ -75,7 +74,18 @@ def export_json(records: list[dict], destination: Path | None = None) -> Path:
     return destination
 
 
-def rsync_to_homelab() -> bool:
+def rsync_to_homelab(remote: str | None = None) -> bool:
+    destination = remote or os.environ.get("PENNY_BACKUP_REMOTE") or BACKUP_DIR
+    if not destination.endswith("/"):
+        destination += "/"
+    if (
+        ":~/" in destination
+        or destination.startswith("~/")
+        or ":/home/" in destination
+        or ":/root/" in destination
+    ):
+        log.error("transcript export remote is on the boot disk")
+        return False
     try:
         result = subprocess.run(
             [
@@ -83,7 +93,7 @@ def rsync_to_homelab() -> bool:
                 "--include", "transcript_history.json",
                 "--exclude", "*",
                 str(EXPORT_FILE.parent) + "/",
-                f"{BACKUP_HOST}:{BACKUP_DIR}",
+                destination,
             ],
             capture_output=True,
             text=True,

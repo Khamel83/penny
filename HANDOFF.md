@@ -1,3 +1,17 @@
+## Issue #169 — backup retention, source only, November 10
+
+Done in this worktree: newest two verified sets, verification before removal,
+`PENNY_BACKUP_REMOTE` default `homelab:/mnt/main2/backups/penny`, six-hour job
+runs `verify_backup_set`, and Doctor reports `backup_verification_failed` or
+`backup_stale`. Deploy rewrites an installed `homelab:~/backups/penny` remote.
+Focused tests: `python3 -m pytest -q tests/test_backup.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py` — 114 passed, 9 subtests.
+
+Not done: no deploy, no homelab SSH. `ls ~/backups/penny/sets` and `df /` are
+unproven. Next: review, merge, `scripts/deploy_penny.py --apply` from the Mac
+runtime, then on the homelab confirm the set count is at most 2 and `/` is not
+shrinking because of Penny. A missing `/mnt/main2` mount must stay a failure;
+do not mkdir it on the boot disk.
+
 ## Runtime deployed at current source — November 10, 2026
 
 `scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt

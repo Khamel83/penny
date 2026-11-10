@@ -31,6 +31,19 @@ ENTRYPOINTS = {
     'com.penny.tasks': [str(ROOT / 'tasks_poller.py')],
     'com.penny.export': [str(ROOT / 'scripts/backup_penny.py')],
 }
+BOOT_DISK_REMOTES = {
+    "homelab:~/backups/penny",
+    "homelab:~/backups/penny/",
+}
+SPINNING_DISK_REMOTE = "homelab:/mnt/main2/backups/penny"
+
+
+def migrate_backup_remote(environment: dict) -> dict:
+    """Move the known boot-SSD destination; leave any other remote untouched."""
+    current = environment.get("PENNY_BACKUP_REMOTE")
+    if isinstance(current, str) and current.strip() in BOOT_DISK_REMOTES:
+        environment["PENNY_BACKUP_REMOTE"] = SPINNING_DISK_REMOTE
+    return environment
 
 
 class DeploymentError(RuntimeError):
@@ -95,7 +108,7 @@ def installed(label: str) -> tuple[Path, dict]:
 def backup_before_deploy() -> None:
     """Use the installed backup placement and mount guard, never shell defaults."""
     _, data = installed('com.penny.export')
-    environment = {**os.environ, **data.get('EnvironmentVariables', {})}
+    environment = migrate_backup_remote({**os.environ, **data.get('EnvironmentVariables', {})})
     command([*data['ProgramArguments'], '--skip-export'], env=environment)
 
 
@@ -123,7 +136,9 @@ def reload_agent(label: str, sha: str, backup_dir: Path) -> dict:
         old_worker = health.get('worker_pid')
     shutil.copy2(path, backup_dir / path.name)
     os.chmod(backup_dir / path.name, 0o600)
-    data.setdefault('EnvironmentVariables', {})['PENNY_SOURCE_REVISION'] = sha
+    environment = data.setdefault('EnvironmentVariables', {})
+    environment['PENNY_SOURCE_REVISION'] = sha
+    migrate_backup_remote(environment)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name)
         os.chmod(temporary, 0o600)
