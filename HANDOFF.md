@@ -1,3 +1,24 @@
+## Issue #171 — doctor-readiness, blocked, November 12, 2026
+
+Refs #171. No Penny source or configuration repair. The catalog-valid check is
+loopback HTTP `127.0.0.1:8793/healthz`, HTTP 200, `json_service=penny-doctor`,
+`json_status=ready`, `repair_id: null`. Penny `homelab.yaml` still declares
+`penny.doctor`, Mac launchd, and `scripts/deploy_penny.py`; `repair_ids` is
+empty and destructive actions are disabled. It does not own port 8793.
+
+At 08:14 UTC the installed projection returned HTTP 200, `status=ready`,
+`reason=doctor_ready`, `source_revision=89cd0be`. The 07:00 collector exited 1
+and recorded `status=unknown` / `overall=unknown`. The 06:00 and 08:00 runs
+observed overall ready. No Penny change landed between those runs. Current
+`main` (`47b221e`) is not the loaded revision; deploying the backup-retention
+change is a separate unverified deploy and is not this repair.
+
+Human/Infra action: read the 07:00 collector reason and repair the OCI
+collector or projection. Preserve the ready-only check and `repair_id: null`.
+A Doctor threshold change cannot explain one unknown collection between two
+ready observations. This worker must not change Infra units or read receipt
+files outside the worktree. No Penny tests were run. Keep #171 open.
+
 ## Issue #169 — backup retention, source only, November 10
 
 Done in this worktree: newest two verified sets, verification before removal,

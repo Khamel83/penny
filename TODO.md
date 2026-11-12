@@ -1,3 +1,9 @@
+## Issue #171 — doctor-readiness, November 12
+
+- [ ] Infra must repair the OCI collector/projection that recorded unknown at
+  07:00 UTC and exited 1. The declared check was ready again at 08:14 UTC.
+  Penny source has `repair_id: null` and does not own port 8793. Refs #171.
+
 ## Issue #169 — backup retention, November 10
 
 - [x] Source: retain the newest two verified sets, reject boot-disk remotes, and alert when verification fails or is older than eight hours. Focused backup/doctor/deploy tests passed in this worktree.

@@ -1,3 +1,11 @@
+## Issue #171 — doctor-readiness blocked, November 12
+
+The declared check is the OCI loopback projection, not Mac Doctor. It was ready
+at 08:14 UTC (`doctor_ready`, source `89cd0be`) after the 07:00 collector
+recorded unknown and exited 1. Adjacent hours were ready. No Penny repair is
+authorized: `repair_id` is null, and the collector is not in this repository.
+Do not treat undeployed backup-retention source as this incident's fix.
+
 ## Issue #169 — backup retention, source only, November 10
 
 Owner decision: keep the newest two verified backup sets, not 90 days. The
