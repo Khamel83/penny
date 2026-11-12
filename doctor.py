@@ -731,6 +731,14 @@ def _default_probe_drop(config=None, *, now=None, **_kwargs):
         return dict(state=state, reason=reason, configured=True, pending_count=pending,
                     uncertain_count=uncertain, failed_count=failed, skipped_count=skipped,
                     age_seconds=age)
+    except sqlite3.OperationalError as exc:
+        # A database without the drop_deliveries table (fresh/unmigrated ledger)
+        # is not a failure; treat as empty.
+        if 'no such table' in str(exc).lower():
+            return {'state': 'ready', 'reason': 'ok', 'configured': True,
+                    'pending_count': 0, 'uncertain_count': 0, 'failed_count': 0,
+                    'skipped_count': 0, 'age_seconds': 0}
+        return {'state': 'unready', 'reason': 'probe_error', 'configured': True}
     except sqlite3.DatabaseError:
         # Database file exists but cannot be accessed: real failure (corruption, permissions, lock, etc).
         return {'state': 'unready', 'reason': 'probe_error', 'configured': True}
