@@ -160,6 +160,29 @@ The dated records below explain earlier stages. Current component revisions
 and installed state are defined above.
 
 
+## Release — automatic on merge (issue #182)
+
+A release is a change to any path that the running Mac system executes or that
+`scripts/deploy_penny.py` installs: all Python source under the repository root
+(including `scripts/`, `shared_whisper/`, `webhook/`), the launchd templates and
+plists it rewrites, and `scripts/deploy_penny.py` itself. Documentation-only
+changes (Markdown under `docs/`, `README.md`, `CONTEXT.md`, `TODO.md`,
+`HANDOFF.md`, `INFRA.md`, `AGENTS.md`) do not start a release.
+
+When `main` changes a release path, `scripts/deploy_penny.py` (or its
+replacement) runs unattended, once per commit, preserving the current guards:
+clean pushed `main` checkout, dirty-tree and not-main refusals, revision match
+with `origin/main`, installed-path verification, SSD volume guard, and the
+pre-deployment backup. A failed or stuck release must surface to the owner's
+monitoring; Infra owns the check (see the catalog `penny.doctor-readiness`
+contract and the monitoring entry for the deploy).
+
+Comparison is by release path, not commit count: a commit that touches only
+non-release paths does not trigger a deploy.
+
+Evidence for a completed release: merged SHA, installed SHA, and deploy time,
+recorded in this issue and the deploy receipt under `~/.penny/deployments/`.
+
 ## Direct Maya endpoint — checked October 2, 2026 02:02 UTC
 
 Installed `com.penny.watcher`, `com.penny.webhook` and `com.penny.tasks` have
