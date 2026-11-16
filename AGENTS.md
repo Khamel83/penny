@@ -50,7 +50,7 @@ copy `fast` or `code` mode names without rechecking `agy --help`. Pass
 `--effort` only when current model/agent compatibility is verified. Use
 `-p` or `--print="..."`; never use bare `--print`.
 
-### Gateway2000
+### g2k
 
 ```bash
 g2k-check
@@ -60,7 +60,7 @@ g2k-sensitive -p "<explicitly authorized sensitive task>"
 ```
 
 Do not send raw audio, transcripts, personal-provider content, or credentials
-to Gateway2000 without explicit approval. `g2k-check` proves isolated client
+to g2k without explicit approval. `g2k-check` proves isolated client
 readiness only; a gateway response does not prove Maya, Slack, Apple, Tasks,
 Hermes, or backup delivery.
 
@@ -87,7 +87,7 @@ continues to use its existing Apple-effect ledger and transport.
 - [`docs/reliability.md`](docs/reliability.md) — reliability contract
 - [Claude Code CLI](https://code.claude.com/docs/en/cli-usage)
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
-- [Gateway2000 README](https://github.com/Khamel83/gateway2000/blob/main/README.md) and its `docs/RUNBOOK.md` are the route and client detail; `agy --help` is the Antigravity syntax source.
+- [g2k README](https://github.com/Khamel83/g2k/blob/main/README.md) is the route and client detail; `agy --help` is the Antigravity syntax source.
 <!-- janitor:begin:capability -->
 ## Shared agent capability: g2k
 
