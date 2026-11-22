@@ -6,6 +6,7 @@ import hmac
 import os
 import tempfile
 import threading
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -51,10 +52,21 @@ def create_app(
 
     @app.get("/health")
     def health():
+        status = supervisor.status()
         payload = {
             "service": "penny-shared-whisper",
             "apple_pilot_enabled": pilot_store is not None,
-            **supervisor.status(),
+            **status,
+            # Fields stock MinusPod's remote Whisper health probe reads
+            # (transcriber/remote.py _HEALTH_INSTANCE_FIELDS). One worker
+            # serves one request at a time.
+            "instance": socket.gethostname(),
+            "model": status.get("model_id"),
+            "device": "mps",
+            "compute_type": status.get("resident_backend") or "mlx",
+            "batch_size": 1,
+            "max_concurrent": 1,
+            "vad_filter": False,
         }
         return jsonify(payload)
 
