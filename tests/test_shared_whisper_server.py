@@ -67,6 +67,19 @@ def test_health_exposes_sanitized_model_and_worker_status(app):
     assert "shared-secret" not in str(payload)
 
 
+def test_health_has_stock_minuspod_probe_fields(app):
+    flask_app, _ = app
+
+    payload = flask_app.test_client().get("/health").get_json()
+
+    # Stock MinusPod 2.102 remote Whisper probe needs a string "instance"
+    # plus these fields (transcriber/remote.py _HEALTH_INSTANCE_FIELDS).
+    assert isinstance(payload["instance"], str) and payload["instance"]
+    for field in ("model", "device", "compute_type", "batch_size", "max_concurrent", "vad_filter"):
+        assert field in payload
+    assert payload["max_concurrent"] == 1
+
+
 def test_transcription_requires_shared_service_authentication(app):
     flask_app, _ = app
 
