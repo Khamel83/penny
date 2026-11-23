@@ -181,7 +181,7 @@ Comparison is by release path, not commit count: a commit that touches only
 non-release paths does not trigger a deploy.
 
 Evidence for a completed release: merged SHA, installed SHA, and deploy time,
-recorded in this issue and the deploy receipt under `~/.penny/deployments/`.
+recorded in the deploy receipt under `~/.penny/deployments/`.
 
 ## Direct Maya endpoint — checked October 2, 2026 02:02 UTC
 
