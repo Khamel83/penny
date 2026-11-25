@@ -172,3 +172,42 @@ def test_worker_bounds_cache_and_releases_it_after_success_and_failure(monkeypat
     assert all(options == {"path_or_hf_repo": "/pinned/model", "language": "en",
                            "word_timestamps": True} for _, options in calls)
 
+
+
+def _process_title(module_file: str) -> str:
+    """The setproctitle() title a Shared Whisper process gives itself."""
+
+    from pathlib import Path
+    import re
+
+    source = (Path(__file__).resolve().parents[1] / "shared_whisper" / module_file).read_text()
+    titles = re.findall(r'setproctitle\("([^"]+)"\)', source)
+    assert len(titles) == 1, module_file
+    return titles[0]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # penny#186/#196: a Parakeet child that survived kill must count as an
+        # owner after a restart, by its title or by its command line when
+        # setproctitle is unavailable. Titles are read from the source, so a
+        # rename that the markers miss fails here.
+        f"4242 {_process_title('parakeet_worker.py')}",
+        "4242 /opt/penny/venv/bin/python3 -m shared_whisper.parakeet_worker /models/parakeet",
+        f"4243 {_process_title('worker.py')}",
+    ],
+)
+def test_memory_guard_counts_each_penny_model_worker_as_an_owner(line):
+    assert MacMemoryGuard(process_reader=lambda: line).large_owner_state() == "present"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"100 {_process_title('server.py')}",
+        "100 /opt/penny/venv/bin/python3 -m shared_whisper.server",
+    ],
+)
+def test_memory_guard_does_not_count_the_service_itself(line):
+    assert MacMemoryGuard(process_reader=lambda: line).large_owner_state() == "absent"
