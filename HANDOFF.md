@@ -37,8 +37,16 @@ release lock too (refuses with `release_in_progress`), waits until launchd no
 longer has the old agent before loading the new one, and releases the lock
 before bootstrap so the new agent's first run can take it.
 
+Fifth review round (after `0a857c4`): `--install` and `--uninstall` set the
+status to `blocked` (`install_incomplete`, `uninstall_incomplete`) before they
+unload the agent, so a reinstall whose bootstrap fails or that is killed after
+the unload leaves Doctor `release` degraded instead of ready with no agent
+loaded; the new agent's first run replaces it. A refused `--install`
+(`DeploymentError` from an export agent that does not validate) now prints a
+`failed` JSON line and exits 1 instead of a traceback.
+
 Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
-(133 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+(138 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
 needs Flask and fails the same way on main in this sandbox).
 
 Not proven: that `git fetch` and `git ls-remote origin` work under launchd on

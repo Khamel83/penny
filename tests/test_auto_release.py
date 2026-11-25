@@ -659,7 +659,26 @@ def test_uninstall_keeps_the_agent_files_while_launchd_still_has_it(tmp_path, mo
     with pytest.raises(release.ReleaseError, match='agent_still_loaded'):
         release.uninstall(launchctl, sleep=naps.append)
     assert plist.exists() and status_file.exists()
+    status = json.loads(status_file.read_text())
+    assert (status['state'], status['reason']) == ('blocked', 'uninstall_incomplete')
     assert len(naps) == release.UNLOAD_CHECKS
+
+
+def test_uninstall_cut_off_after_the_unload_leaves_the_release_blocked(tmp_path, monkeypatch):
+    plist, status_file = _installed_release(tmp_path, monkeypatch)
+    launchctl = Launchctl()
+    launchctl.loaded = True
+
+    def killed(*args, **kwargs):
+        raise SystemExit(143)
+
+    # The process dies after the agent is gone, before the files are removed.
+    monkeypatch.setattr(release.Path, 'unlink', killed)
+    with pytest.raises(SystemExit):
+        release.uninstall(launchctl, sleep=lambda seconds: None)
+    assert not launchctl.loaded and plist.exists()
+    status = json.loads(status_file.read_text())
+    assert (status['state'], status['reason']) == ('blocked', 'uninstall_incomplete')
 
 
 def test_uninstall_prints_a_failure_when_the_agent_stays_loaded(tmp_path, monkeypatch, capsys):
@@ -749,6 +768,90 @@ def test_install_waits_until_the_old_agent_is_unloaded(tmp_path, monkeypatch):
     # The lock is free again, so the new agent's first run can take it.
     with open(tmp_path / 'home/.penny/release/release.lock', 'a') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _status(tmp_path) -> dict:
+    return json.loads((tmp_path / 'home/.penny/release/status.json').read_text())
+
+
+def _ready_status(tmp_path) -> None:
+    directory = tmp_path / 'home/.penny/release'
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'status.json').write_text(json.dumps(
+        {'schema': 1, 'state': 'current', 'reason': 'up_to_date',
+         'updated_at': '2026-11-25T00:00:00Z'}))
+
+
+def test_install_marks_the_release_blocked_until_the_new_agent_runs(tmp_path, monkeypatch):
+    _export_agent(tmp_path, monkeypatch)
+    _ready_status(tmp_path)
+    launchctl = Launchctl()
+    launchctl.loaded = True
+    assert release.install(launchctl, sleep=lambda seconds: None)['status'] == 'installed'
+    # Only the new agent's first run (RunAtLoad) replaces this.
+    assert (_status(tmp_path)['state'], _status(tmp_path)['reason']) == ('blocked', 'install_incomplete')
+
+
+def test_a_refused_bootstrap_leaves_the_release_blocked_not_ready(tmp_path, monkeypatch):
+    _export_agent(tmp_path, monkeypatch)
+    _ready_status(tmp_path)
+
+    class Refused(Launchctl):
+        def __call__(self, *args):
+            if args[0] == 'bootstrap':
+                self.calls.append('bootstrap')
+                return subprocess.CompletedProcess(args, 5, '', '')
+            return super().__call__(*args)
+
+    launchctl = Refused()
+    launchctl.loaded = True
+    with pytest.raises(release.ReleaseError, match='bootstrap_failed'):
+        release.install(launchctl, sleep=lambda seconds: None)
+    assert not launchctl.loaded
+    status = _status(tmp_path)
+    assert (status['state'], status['reason']) == ('blocked', 'install_incomplete')
+    import doctor
+    monkeypatch.setattr(doctor, '_release_status_path',
+                        lambda: tmp_path / 'home/.penny/release/status.json')
+    probe = doctor._default_probe_release()
+    assert doctor._infer_status('release', probe) == ('degraded', 'release_blocked')
+
+
+def test_an_install_cut_off_after_the_unload_leaves_the_release_blocked(tmp_path, monkeypatch):
+    _export_agent(tmp_path, monkeypatch)
+    _ready_status(tmp_path)
+
+    class Killed(Launchctl):
+        def __call__(self, *args):
+            if args[0] == 'bootstrap':
+                raise SystemExit(143)
+            return super().__call__(*args)
+
+    launchctl = Killed()
+    launchctl.loaded = True
+    with pytest.raises(SystemExit):
+        release.install(launchctl, sleep=lambda seconds: None)
+    assert not launchctl.loaded
+    assert _status(tmp_path)['state'] == 'blocked'
+
+
+def test_install_keeps_the_status_when_the_export_agent_is_refused(tmp_path, monkeypatch, capsys):
+    home = tmp_path / 'home'
+    (home / 'Library/LaunchAgents').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    export = {'Label': 'com.penny.export', 'ProgramArguments': ['/bin/sh', '-c', 'true'],
+              'WorkingDirectory': str(ROOT)}
+    (home / 'Library/LaunchAgents/com.penny.export.plist').write_bytes(plistlib.dumps(export))
+    _ready_status(tmp_path)
+    launchctl = Launchctl()
+    launchctl.loaded = True
+    monkeypatch.setattr(release, '_launchctl', launchctl)
+    assert release.main(['--install']) == release.EXIT_PROBLEM
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed == {'status': 'failed', 'error': 'runtime_path_mismatch:com.penny.export'}
+    # Nothing was unloaded, so the status still describes the loaded agent.
+    assert launchctl.calls == [] and launchctl.loaded
+    assert _status(tmp_path)['state'] == 'current'
 
 
 def test_install_does_not_load_a_second_agent_while_the_old_one_stays(tmp_path, monkeypatch):

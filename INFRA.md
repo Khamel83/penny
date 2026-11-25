@@ -48,7 +48,12 @@ commit with `--retry`; remove with `--uninstall` (releases are manual again).
 `--install` and `--uninstall` refuse while a release runs
 (`release_in_progress`) and wait until launchd no longer has the old agent
 (`agent_still_loaded` otherwise: install loads nothing new, uninstall keeps the
-plist and status file so Doctor keeps reporting the job).
+plist so Doctor keeps reporting the job). Before the unload both set the
+status to `blocked` (`install_incomplete` or `uninstall_incomplete`); only the
+new agent's first run replaces it. A reinstall whose bootstrap fails or that is
+cut off midway therefore shows Doctor `release` degraded, not ready while no
+agent is loaded. A refused `--install` (for example an export agent that does
+not validate) prints one `failed` line, exits 1 and changes nothing.
 
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 

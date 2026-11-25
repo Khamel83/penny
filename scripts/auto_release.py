@@ -33,7 +33,12 @@ the run stopped, so the alert does not clear.
 
 ``--install`` and ``--uninstall`` take the same lock, so neither unloads the
 agent while a release runs (``release_in_progress``), and both wait until
-launchd no longer has the old agent (``agent_still_loaded`` otherwise).
+launchd no longer has the old agent (``agent_still_loaded`` otherwise). Both
+mark the status ``blocked`` before the unload (``install_incomplete`` or
+``uninstall_incomplete``), so one that fails or is cut off midway never leaves
+Doctor reporting a ready release while no agent is loaded. A refused
+``--install`` (for example an export agent that does not validate) prints one
+``failed`` JSON line and exits 1.
 
 Prints one JSON line per run with no command output, plist or credential.
 """
@@ -361,6 +366,21 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
     return {**result, 'state': 'failed', 'reason': error}
 
 
+def _write_status(directory: Path, outcome: dict, now: datetime | None = None) -> None:
+    """Write the status file Doctor reads (schema 1)."""
+    status = {
+        'schema': 1,
+        'state': outcome['state'],
+        'reason': _safe(outcome.get('reason')),
+        'target_revision': outcome.get('target_revision'),
+        'running_revision': outcome.get('running_revision'),
+        'release_paths': outcome.get('release_paths') or [],
+        'detail': _safe(outcome['detail']) if outcome.get('detail') else None,
+        'updated_at': _now_text(now),
+    }
+    _write_json(directory / 'status.json', status)
+
+
 def release_once(repo: Path = ROOT, *, directory: Path | None = None,
                  runtime_fn: Callable[[], dict] = default_runtime,
                  deploy_fn: Callable[[Path], dict] = default_deploy,
@@ -378,17 +398,7 @@ def release_once(repo: Path = ROOT, *, directory: Path | None = None,
         memory = _read_json(directory / 'state.json', {})
 
         def write_status(outcome: dict) -> None:
-            status = {
-                'schema': 1,
-                'state': outcome['state'],
-                'reason': _safe(outcome.get('reason')),
-                'target_revision': outcome.get('target_revision'),
-                'running_revision': outcome.get('running_revision'),
-                'release_paths': outcome.get('release_paths') or [],
-                'detail': _safe(outcome['detail']) if outcome.get('detail') else None,
-                'updated_at': _now_text(now),
-            }
-            _write_json(directory / 'status.json', status)
+            _write_status(directory, outcome, now)
 
         try:
             # --retry: the owner fixed the cause by hand; deploy the current
@@ -502,12 +512,19 @@ def install(launchctl: Callable[..., subprocess.CompletedProcess] | None = None,
     ``release_in_progress`` and try again), and waits until launchd no longer
     has the old agent. The lock is released before the new agent is loaded, so
     its first run (RunAtLoad) can take it.
+
+    Before the old agent is unloaded, status.json says ``blocked``
+    (``install_incomplete``), and only the new agent's first run replaces it.
+    A reinstall that fails or is cut off after the unload (bootstrap refused,
+    process killed) so leaves Doctor reporting the release as blocked, never
+    as ready while no release agent is loaded.
     """
     launchctl = launchctl or _launchctl
     sleep = sleep or time.sleep
     target = f'gui/{os.getuid()}/{LABEL}'
     with _release_lock():
         path = _write_plist()
+        _write_status(state_dir(), {'state': 'blocked', 'reason': 'install_incomplete'})
         _unload(launchctl, sleep, target)
     if launchctl('bootstrap', f'gui/{os.getuid()}', str(path)).returncode:
         raise ReleaseError('bootstrap_failed')
@@ -543,13 +560,17 @@ def uninstall(launchctl: Callable[..., subprocess.CompletedProcess] | None = Non
     Takes the release lock first, so a release in progress is never cut off
     (exit with ``release_in_progress`` and try again) and no run starts while
     the agent is removed. ``launchctl print`` decides whether the agent is
-    gone; bootout's own exit code is not trusted either way. If the agent is
-    still loaded, the plist and status.json stay, so Doctor keeps reporting
-    the release job instead of treating releases as manual.
+    gone; bootout's own exit code is not trusted either way. Before the
+    unload, status.json says ``blocked`` (``uninstall_incomplete``). If the
+    agent is still loaded, or the process is cut off before the files are
+    removed, the plist and that status stay, so Doctor reports the release job
+    as blocked (until a run of a still-loaded agent replaces it) instead of
+    treating releases as manual or ready.
     """
     launchctl = launchctl or _launchctl
     sleep = sleep or time.sleep
     with _release_lock():
+        _write_status(state_dir(), {'state': 'blocked', 'reason': 'uninstall_incomplete'})
         _unload(launchctl, sleep, f'gui/{os.getuid()}/{LABEL}')
         path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
         path.unlink(missing_ok=True)
@@ -576,10 +597,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.uninstall:
             print(json.dumps(uninstall(), sort_keys=True))
             return EXIT_OK
-    except (ReleaseError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        error = str(exc) if isinstance(exc, ReleaseError) else type(exc).__name__
-        if exc.__class__.__name__ == 'DeploymentError':
-            error = str(exc)
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        # ReleaseError and deploy_penny's DeploymentError (both RuntimeError)
+        # carry a bounded reason; _safe() turns any other text into 'unknown'.
+        error = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
         print(json.dumps({'status': 'failed', 'error': _safe(error)}, sort_keys=True))
         return EXIT_PROBLEM
     code, outcome = release_once(retry=args.retry)
