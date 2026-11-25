@@ -76,9 +76,9 @@ runtime, then on the homelab confirm the set count is at most 2 and `/` is not
 shrinking because of Penny. A missing `/mnt/main2` mount must stay a failure;
 do not mkdir it on the boot disk.
 
-## Issues #186 and #192 — Shared Whisper fails loudly, source only, November 25
+## Issues #186 and #192 — Shared Whisper fails loudly, released November 25, not yet accepted
 
-Done in source (draft PR on `claude/project-thread-4e5nn5`): workers send a
+Merged as [#196](https://github.com/Khamel83/penny/pull/196) (`1f6df02`): workers send a
 ready message and a request fails after 180 seconds with no start
 (`worker_start_timeout`); stopping a worker never raises or strands the job;
 `/health` returns 503 with `unhealthy_reason` after three restart-fixable
@@ -94,22 +94,34 @@ Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_share
 (simulated-hang and owner-check tests and the keeper tests; the server and Parakeet
 adapter tests need Flask, which this sandbox lacks, so CI runs them).
 
-Not done: no runtime deploy. Next: review and merge, release to the Mac
-(automatic once #182's release agent is installed, otherwise
-`scripts/deploy_penny.py --apply`), then reinstall only the keeper with the
-steps in docs/macmini-deployment.md "Shared-whisper keeper" (deploy does not
-install it). Read back `curl -s http://127.0.0.1:10311/health` showing
-`"healthy": true` (only the new code has that field; `/health` carries no
-revision), and `launchctl print gui/$(id -u)/com.penny.shared-whisper` and
-`launchctl print gui/$(id -u)/com.penny.shared-whisper-keeper` each showing
-`PENNY_SOURCE_REVISION` at the merged commit. If `/health` shows 503, the
-reason field says which hang it saw.
+Released November 25, about 20:50 UTC. The Mac checkout `/Users/macmini/penny` was
+on the stale branch `docs/deploy-current-89cd0be-20261110` (PR #168's head, already
+squash-merged), so the first `--apply` refused with `checkout_not_main`. After
+`git switch main` and a fast-forward to `1f6df02`, `deploy_penny.py --apply`
+reported `activated` and the status run `current` for all five labels. The keeper
+was then reinstalled from main. Readback: `/health` `"healthy": true`, idle, no
+worker; `launchctl print` showed `PENNY_SOURCE_REVISION`
+`1f6df026bae992a2744d0fcb1ebc3db89b062200` for `com.penny.shared-whisper` and
+`com.penny.shared-whisper-keeper`. The original keeper plist is saved at
+`~/.penny/deployments/keeper-before-1f6df02.plist`.
 
-## Runtime deployed at current source — November 10, 2026
+Not yet observed: Doctor under the installed service configuration, `/ready`, and
+one real request on the new code (`last_success_at` was null at readback). Until
+Doctor and `/ready` are read, docs/macmini-deployment.md does not count this
+deployment complete. If `/health` shows 503, the reason field says which hang it
+saw. Issues #186 and #192 were closed as completed on November 25 (about 20:51
+UTC) on the readback above.
 
-`scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
-`~/.penny/deployments/20261110T214053Z`). Check `deploy_penny.py` reports `current` for
-all five services and `/ready` 200 with `source_revision` `89cd0be`. This supersedes
+## Runtime release of November 10, 2026 (superseded)
+
+Superseded November 25: `deploy_penny.py` reports all five labels `current` at
+`1f6df02` (section above); Doctor and `/ready` at that revision are not yet read.
+The current acceptance check is the open TODO line for `1f6df02`, not the `89cd0be`
+check below.
+
+History: `scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
+`~/.penny/deployments/20261110T214053Z`). Its acceptance check was `deploy_penny.py` reporting
+`current` for all five services and `/ready` 200 with `source_revision` `89cd0be`. That superseded
 earlier notes that the runtime loaded `b4181aa`: `/ready` had reported the old revision because
 launchd pinned `PENNY_SOURCE_REVISION` and the later `doctor.py` change had not been deployed.
 Lesson: after any code change merged to main, run the deploy; docs-only commits do not need it.
