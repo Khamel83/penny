@@ -1,3 +1,29 @@
+## Issue #182 — automatic release on merge, source only, November 25
+
+Why Penny stopped deploying after November 10: releases were only ever run by
+hand on the Mac; nothing ran `deploy_penny.py --apply` after a merge. The first
+attempt at #182 was rejected because it had no caller and its path exclusions
+did not match INFRA.md.
+
+Done in source: `scripts/auto_release.py` with `--install`, `--uninstall` and
+`--retry`; the `com.penny.release` agent (every five minutes) runs the existing
+deploy unchanged, so its guards stay (clean pushed main, backup first, shared
+ASR busy check, per-agent reload and readback). Release paths live in INFRA.md
+between `release-paths` markers and a test compares them with the code. Status
+goes to `~/.penny/release/status.json`; Doctor's new `release` component makes
+a blocked, failed, partial or stale release visible through the existing
+`/ready` check that Infra already watches. Not installed: reports `disabled`.
+
+Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
+(103 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+needs Flask and fails the same way on main in this sandbox).
+
+Not proven: that `git fetch` and `git ls-remote origin` work under launchd on
+the Mac (credentials of the user agent). If the first run reports
+`fetch_failed` or `pushed_revision_mismatch`, check the remote's credential
+helper for the launch agent. Next: review, merge, then the install step in
+TODO.md on the Mac.
+
 ## Issue #169 — backup retention, source only, November 10
 
 Done in this worktree: newest two verified sets, verification before removal,

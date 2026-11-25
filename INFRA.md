@@ -1,3 +1,38 @@
+## Release — automatic on merge (source only, November 25, 2026)
+
+Not installed yet. `scripts/auto_release.py --install`, run once on the Mac
+runtime checkout, adds the `com.penny.release` launch agent. Every five minutes
+it fetches `origin/main`, compares it with the revision the five agents run, and
+when a release path changed it fast-forwards the checkout and runs
+`scripts/deploy_penny.py --apply` unchanged (clean pushed main, backup first,
+shared-ASR busy check, per-agent reload and readback). It reuses the export
+agent's interpreter, SSD guard and storage environment, copies no credential,
+and logs to `release.system.log` beside the export log.
+
+Which changed paths start a release (checked against the code by
+`tests/test_auto_release.py`):
+
+<!-- release-paths:begin -->
+- `docs/**`: not a release
+- `tests/**`: not a release
+- `.github/**`: not a release
+- `*.md`: not a release (repository root only)
+- `requirements.txt`: blocks the release
+- `requirements-asr.lock`: blocks the release
+- every other path: release
+<!-- release-paths:end -->
+
+A dependency change is blocked because the deploy does not install packages:
+install them, then run the deploy by hand. Each commit is tried once. While
+the shared ASR serves a client the run waits without starting; a deploy refused
+because the ASR became busy or `origin/main` moved is retried up to six times.
+A failure that left every agent on its old revision puts the checkout back.
+Status is `~/.penny/release/status.json`; Doctor's `release` component turns
+degraded on blocked, failed or a status older than one hour, unready on a
+partial release, and reports `disabled` while the agent is not installed.
+Pause with `touch ~/.penny/release/hold`; retry a failed commit with
+`--retry`; remove with `--uninstall` (releases are manual again).
+
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 
 Exact merged source b4181aa is installed through the documented deployment;

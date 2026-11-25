@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 def _config(tmp_path: Path, *, token: str = "ingest-secret", host: str = "127.0.0.1"):
     return SimpleNamespace(
         webhook=SimpleNamespace(ingest_token=token, host=host),
@@ -78,6 +80,7 @@ def _ready_probes(tmp_path: Path):
             "loopback_bind": True,
             "protected_bind": False,
         },
+        "release": {"configured": False},
     }
 
 
@@ -945,3 +948,63 @@ def test_reviewed_history_is_ready_but_new_failures_still_alert(tmp_path):
         probes[component][field] = new_count
         assert run_doctor(config=_config(tmp_path), probe_overrides=probes).overall != 'ready'
         probes[component][field] = before
+
+
+def _write_release_status(path: Path, state: str, updated_at: str) -> None:
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"schema": 1, "state": state, "updated_at": updated_at}))
+
+
+def test_release_component_is_disabled_until_the_agent_is_installed(tmp_path, monkeypatch):
+    import doctor
+
+    monkeypatch.setattr(doctor, "_release_status_path", lambda: tmp_path / "release/status.json")
+    probes = _ready_probes(tmp_path)
+    del probes["release"]
+    report = doctor.run_doctor(config=_config(tmp_path), probe_overrides=probes)
+    assert "release" not in {name for name, item in report.components.items() if item.state != "ready"}
+    assert (report.components["release"].state, report.components["release"].reason) == ("ready", "disabled")
+
+
+@pytest.mark.parametrize(
+    ("state", "age", "expected"),
+    [
+        ("current", 60, ("ready", "ok")),
+        ("released", 60, ("ready", "ok")),
+        ("running", 60, ("ready", "ok")),
+        ("waiting", 60, ("ready", "backlog")),
+        ("held", 60, ("ready", "disabled")),
+        ("blocked", 60, ("degraded", "release_blocked")),
+        ("failed", 60, ("degraded", "release_failed")),
+        ("partial", 60, ("unready", "release_partial")),
+        ("current", 2 * 60 * 60, ("degraded", "health_stale")),
+    ],
+)
+def test_release_component_reports_the_release_agent_status(tmp_path, monkeypatch, state, age, expected):
+    import doctor
+
+    now = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "release/status.json"
+    _write_release_status(path, state, (now - timedelta(seconds=age)).isoformat().replace("+00:00", "Z"))
+    monkeypatch.setattr(doctor, "_release_status_path", lambda: path)
+    probes = _ready_probes(tmp_path)
+    del probes["release"]
+    report = doctor.run_doctor(config=_config(tmp_path), now=now, probe_overrides=probes)
+    component = report.components["release"]
+    assert (component.state, component.reason) == expected
+    assert "release_state" not in component.details
+
+
+def test_release_component_rejects_unreadable_or_invalid_status(tmp_path, monkeypatch):
+    import doctor
+
+    now = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "release/status.json"
+    monkeypatch.setattr(doctor, "_release_status_path", lambda: path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    assert doctor._infer_status("release", doctor._default_probe_release(now=now)) == ("degraded", "probe_error")
+    path.write_text(json.dumps({"state": "launched", "updated_at": "2026-11-25T11:59:00Z"}))
+    assert doctor._infer_status("release", doctor._default_probe_release(now=now)) == ("degraded", "probe_error")
+    path.write_text(json.dumps({"state": "current", "updated_at": "2026-11-25T13:00:00Z"}))
+    assert doctor._infer_status("release", doctor._default_probe_release(now=now)) == ("degraded", "timestamp_invalid")

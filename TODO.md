@@ -1,3 +1,9 @@
+## Issue #182 — automatic release on merge, November 25
+
+- [x] Source: `scripts/auto_release.py` (launch agent every five minutes runs `deploy_penny.py --apply` unchanged when a release path merged), Doctor `release` component, release paths in INFRA.md checked by `tests/test_auto_release.py`. 29 new tests pass; the full suite shows only the failures it had before (missing packages in the cloud sandbox).
+- [ ] On the Mac runtime checkout after merge: `git pull --ff-only`, then `venv/bin/python scripts/auto_release.py --install`. The first run should release current main (it also ships #170 backup retention and #193 health fields). Read back `~/.penny/release/status.json` state `released`, all five agents on the merged SHA, and Doctor `release` ok; post the merged SHA, installed SHA and time on https://github.com/Khamel83/penny/issues/182.
+- [ ] After that acceptance, change Infra's catalog row for penny to `release.trigger: merged_main`.
+
 ## Issue #169 — backup retention, November 10
 
 - [x] Source: retain the newest two verified sets, reject boot-disk remotes, and alert when verification fails or is older than eight hours. Focused backup/doctor/deploy tests passed in this worktree.

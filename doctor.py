@@ -65,6 +65,9 @@ _SAFE_REASON_VALUES = frozenset(
         "permission_denied",
         "probe_error",
         "provider_failure",
+        "release_blocked",
+        "release_failed",
+        "release_partial",
         "quarantine",
         "retryable_failure",
         "schema_failure",
@@ -166,6 +169,11 @@ _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SET_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
 _DEFAULT_HEALTH_MAX_AGE_SECONDS = 15 * 60
 _DEFAULT_BACKUP_MAX_AGE_SECONDS = 8 * 60 * 60
+# The release agent writes its status every five minutes (INFRA.md "Release").
+_RELEASE_MAX_AGE_SECONDS = 60 * 60
+_RELEASE_STATES = frozenset(
+    {"current", "released", "waiting", "held", "running", "blocked", "failed", "partial"}
+)
 
 
 def _configured_value(value: object) -> bool:
@@ -1145,6 +1153,34 @@ def _default_probe_backup(
     return {**data, **_backup_alert_state(receipt_path, None)}
 
 
+def _release_status_path() -> Path:
+    return Path.home() / ".penny/release/status.json"
+
+
+def _default_probe_release(_config: Any = None, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
+    """Read the automatic release status; absent means releases are manual."""
+
+    path = _release_status_path()
+    if not path.exists() and not path.is_symlink():
+        return {"configured": False}
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("not a regular file")
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"configured": True, "query_ok": 0}
+    if not isinstance(status, dict) or status.get("state") not in _RELEASE_STATES:
+        return {"configured": True, "query_ok": 0}
+    age, valid = _age_seconds(status.get("updated_at"), now=now)
+    return {
+        "configured": True,
+        "query_ok": 1,
+        "release_state": status["state"],
+        "age_seconds": age or 0,
+        "timestamp_valid": valid,
+    }
+
+
 def _default_probe_ingress(config: Any, *, now: datetime | None = None, **_kwargs: Any) -> dict[str, Any]:
     del now
     config_token = getattr(getattr(config, "webhook", None), "ingest_token", "")
@@ -1334,6 +1370,31 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
         if not values.get("tasks_ok", True):
             return "degraded", "disabled"
         return "ready", "ok"
+    if name == "release":
+        if values.get("reason") == "probe_error":
+            return "degraded", "probe_error"
+        if not values.get("configured", False):
+            return "ready", "disabled"
+        if not values.get("query_ok", 0):
+            return "degraded", "probe_error"
+        state = values.get("release_state")
+        if state == "partial":
+            return "unready", "release_partial"
+        if state == "failed":
+            return "degraded", "release_failed"
+        if state == "blocked":
+            return "degraded", "release_blocked"
+        if values.get("timestamp_valid") is not True:
+            return "degraded", "timestamp_invalid"
+        if int(values.get("age_seconds", 0) or 0) > _RELEASE_MAX_AGE_SECONDS:
+            return "degraded", "health_stale"
+        if state == "waiting":
+            return "ready", "backlog"
+        if state == "held":
+            return "ready", "disabled"
+        if state in {"current", "released", "running"}:
+            return "ready", "ok"
+        return "degraded", "probe_error"
     if name == "ingress":
         if not values.get("secret_configured", False):
             return "unready", "secret_missing"
@@ -1361,6 +1422,7 @@ _PROBE_NAMES = (
     "backup",
     "services",
     "ingress",
+    "release",
 )
 _OPTIONAL_COMPONENTS = frozenset({"maya", "github_triage"})
 
@@ -1395,6 +1457,7 @@ def run_doctor(
         "backup": _default_probe_backup,
         "services": _default_probe_services,
         "ingress": _default_probe_ingress,
+        "release": _default_probe_release,
     }
     components: dict[str, ComponentStatus] = {}
     for name in _PROBE_NAMES:
