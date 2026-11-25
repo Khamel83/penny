@@ -19,6 +19,14 @@ retried on later runs a bounded number of times: a busy shared-ASR owner and
 ``origin/main`` moving during the deploy. A failed deploy that left every
 agent on its old revision returns the checkout to that revision.
 
+A revision that was released (by this job, or seen running) is never deployed
+again on its own: agents that later run another revision are reported
+``diverged`` until a new merge, a deploy by hand or ``--retry``. A partial
+release stays ``partial`` while the agents differ; only ``--retry`` or a deploy
+by hand converges them. While the hold file exists or ``origin`` cannot be
+fetched, the last failed, blocked, partial or diverged status stays in place
+with a ``detail`` naming why the run stopped, so the alert does not clear.
+
 Prints one JSON line per run with no command output, plist or credential.
 """
 from __future__ import annotations
@@ -52,6 +60,10 @@ RETRYABLE_DEPLOY_ERRORS = frozenset({'shared_whisper_busy', 'pushed_revision_mis
 # Twelve failed fetches in a row (an hour) turn waiting into failed.
 FETCH_FAILURE_LIMIT = 12
 REMEMBERED_TARGETS = 20
+# States that need a person. A held run or a failed fetch keeps the last one
+# of these in status.json instead of reporting a state Doctor treats as ready.
+TERMINAL_STATES = frozenset({'failed', 'blocked', 'partial', 'diverged'})
+STATUS_KEYS = ('state', 'reason', 'target_revision', 'running_revision', 'release_paths')
 
 # Which changed paths start a release. INFRA.md "Release" must list exactly
 # these rules; tests/test_auto_release.py checks that it does.
@@ -187,13 +199,33 @@ def _write_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
-def _running_revision(runtime: dict[str, dict]) -> str:
+def _loaded_revisions(runtime: dict[str, dict]) -> set[str]:
     revisions = {item.get('revision') for item in runtime.values() if item.get('loaded')}
     if not revisions or None in revisions:
         raise ReleaseError('running_revision_unknown')
-    if len(revisions) > 1:
-        raise ReleaseError('running_revision_mixed')
-    return revisions.pop()
+    return revisions
+
+
+def _remembered_partial(attempts: dict, target: str, revisions: set[str]) -> dict | None:
+    """The partial attempt that explains agents on different revisions.
+
+    A partial deploy leaves its own target on at least one agent, so the
+    record is found under the target or one of the running revisions even
+    after ``origin/main`` has moved on.
+    """
+    for revision in (target, *sorted(revisions)):
+        record = attempts.get(revision, {})
+        if record.get('outcome') == 'partial':
+            return record
+    return None
+
+
+def _keep_terminal(memory: dict, detail: str, otherwise: dict) -> dict:
+    """Keep the last state that needs a person; ``detail`` says why the run stopped."""
+    last = memory.get('last')
+    if isinstance(last, dict) and last.get('state') in TERMINAL_STATES:
+        return {**{key: last.get(key) for key in STATUS_KEYS}, 'detail': detail}
+    return otherwise
 
 
 def _unchanged(before: dict[str, dict], after: dict[str, dict]) -> bool:
@@ -209,9 +241,10 @@ def _all_at(runtime: dict[str, dict], revision: str) -> bool:
 
 def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[dict], None],
              runtime_fn: Callable[[], dict], deploy_fn: Callable[[Path], dict],
-             busy_fn: Callable[[], bool], fetch: bool) -> dict:
+             busy_fn: Callable[[], bool], fetch: bool, retry: bool = False) -> dict:
     if (directory / 'hold').exists():
-        return {'state': 'held', 'reason': 'hold_file_present'}
+        return _keep_terminal(memory, 'hold_file_present',
+                              {'state': 'held', 'reason': 'hold_file_present'})
     if git(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD') != 'main':
         raise ReleaseError('checkout_not_main')
     if git(repo, 'status', '--porcelain'):
@@ -223,38 +256,65 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
         except ReleaseError:
             memory['fetch_failures'] = int(memory.get('fetch_failures', 0)) + 1
             state = 'failed' if memory['fetch_failures'] >= FETCH_FAILURE_LIMIT else 'waiting'
-            return {'state': state, 'reason': 'fetch_failed'}
+            return _keep_terminal(memory, 'fetch_failed', {'state': state, 'reason': 'fetch_failed'})
         memory['fetch_failures'] = 0
     target = git(repo, 'rev-parse', '--verify', 'refs/remotes/origin/main^{commit}')
     head = git(repo, 'rev-parse', '--verify', 'HEAD^{commit}')
     before = runtime_fn()
-    running = _running_revision(before)
+    revisions = _loaded_revisions(before)
+    running = next(iter(revisions)) if len(revisions) == 1 else None
     result = {'target_revision': target, 'running_revision': running}
-    if running == target:
+    attempts = memory.setdefault('attempts', {})
+    record = attempts.get(target, {})
+
+    # A partial attempt leaves agents on different revisions (or one agent
+    # unloaded). Only --retry, or a deploy by hand, converges them; a new
+    # merge does not, and the status stays partial until then.
+    partial = _remembered_partial(attempts, target, revisions)
+    unsettled = running is None or (partial is not None and not _all_at(before, running))
+    if unsettled and not retry:
+        if partial is not None:
+            return {**result, 'state': 'partial', 'reason': partial.get('reason', 'unknown')}
+        raise ReleaseError('running_revision_mixed')
+    if running == target and not unsettled:
+        # Seen running: never deploy this revision again on its own.
+        if record.get('outcome') != 'released':
+            attempts[target] = {'outcome': 'released', 'reason': 'running_is_main'}
         return {**result, 'state': 'current', 'reason': 'running_is_main'}
-    try:
-        git(repo, 'cat-file', '-e', running + '^{commit}')
-    except ReleaseError:
-        raise ReleaseError('running_revision_not_on_main') from None
-    if not is_ancestor(repo, running, target):
-        raise ReleaseError('running_revision_not_on_main')
+
+    older = sorted(revisions - {target})
+    for revision in older:
+        try:
+            git(repo, 'cat-file', '-e', revision + '^{commit}')
+        except ReleaseError:
+            raise ReleaseError('running_revision_not_on_main') from None
+        if not is_ancestor(repo, revision, target):
+            raise ReleaseError('running_revision_not_on_main')
     if not is_ancestor(repo, head, target):
         raise ReleaseError('checkout_not_on_main')
 
-    changed = [path for path in git(repo, 'diff', '--name-only', '--no-renames', running, target).splitlines() if path]
+    changed = sorted({path for revision in older for path in
+                      git(repo, 'diff', '--name-only', '--no-renames', revision, target).splitlines()
+                      if path})
     manual = [path for path in changed if classify(path) == 'manual']
     release = [path for path in changed if classify(path) == 'release']
     result['release_paths'] = (manual + release)[:20]
     if manual:
         return {**result, 'state': 'blocked', 'reason': 'manual_release_required'}
-    if not release:
+    if not release and not unsettled:
+        if record.get('outcome') != 'released':
+            attempts[target] = {'outcome': 'released', 'reason': 'no_release_paths'}
         return {**result, 'state': 'current', 'reason': 'no_release_paths'}
 
-    attempts = memory.setdefault('attempts', {})
-    record = attempts.get(target, {})
-    if record.get('outcome') in {'failed', 'partial', 'released'}:
-        # Each revision is tried once; a new merge or a manual deploy moves on.
-        return {**result, 'state': record['outcome'], 'reason': record.get('reason', 'unknown')}
+    if not retry:
+        outcome = record.get('outcome')
+        if outcome == 'released':
+            # The agents left a revision that was already released (a rollback
+            # by hand or restored plists). Do not fight it: report it.
+            return {**result, 'state': 'diverged', 'reason': 'running_left_released_revision'}
+        if outcome in {'failed', 'partial'}:
+            # Each revision is tried once; a new merge or a manual deploy moves on.
+            return {**result, 'state': outcome, 'reason': record.get('reason', 'unknown')}
 
     if busy_fn():
         return {**result, 'state': 'waiting', 'reason': 'shared_whisper_busy'}
@@ -269,13 +329,13 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
         return {**result, 'running_revision': target, 'state': 'released', 'reason': 'activated'}
 
     error = _safe(receipt.get('error') or receipt.get('status'))
-    if not _unchanged(before, after):
+    if unsettled or not _unchanged(before, after):
         attempts[target] = {'outcome': 'partial', 'reason': error}
         return {**result, 'state': 'partial', 'reason': error}
     if moved:
         git(repo, 'reset', '--quiet', '--keep', head)
     if error in RETRYABLE_DEPLOY_ERRORS:
-        retries = int(record.get('retries', 0)) + 1
+        retries = 1 if retry else int(record.get('retries', 0)) + 1
         attempts[target] = {'outcome': 'waiting', 'reason': error, 'retries': retries}
         if retries < RETRY_LIMIT:
             return {**result, 'state': 'waiting', 'reason': error}
@@ -298,9 +358,6 @@ def release_once(repo: Path = ROOT, *, directory: Path | None = None,
         except BlockingIOError:
             return EXIT_BUSY, {'state': 'locked', 'reason': 'another_run_holds_the_lock'}
         memory = _read_json(directory / 'state.json', {})
-        if retry:
-            # The owner fixed the cause by hand; try the current target again.
-            memory['attempts'] = {}
 
         def write_status(outcome: dict) -> None:
             status = {
@@ -309,18 +366,24 @@ def release_once(repo: Path = ROOT, *, directory: Path | None = None,
                 'reason': _safe(outcome.get('reason')),
                 'target_revision': outcome.get('target_revision'),
                 'running_revision': outcome.get('running_revision'),
-                'release_paths': outcome.get('release_paths', []),
+                'release_paths': outcome.get('release_paths') or [],
+                'detail': _safe(outcome['detail']) if outcome.get('detail') else None,
                 'updated_at': _now_text(now),
             }
             _write_json(directory / 'status.json', status)
 
         try:
+            # --retry: the owner fixed the cause by hand; deploy the current
+            # target even if it was tried, released or left partial before.
             outcome = _release(repo, directory, memory, write_status, runtime_fn, deploy_fn,
-                               busy_fn, fetch)
+                               busy_fn, fetch, retry)
         except ReleaseError as exc:
             outcome = {'state': 'blocked', 'reason': str(exc)}
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             outcome = {'state': 'failed', 'reason': 'release_error:' + type(exc).__name__}
+        if not outcome.get('detail'):
+            # A held run or a failed fetch keeps this; a fresh result replaces it.
+            memory['last'] = {key: outcome.get(key) for key in STATUS_KEYS}
         attempts = memory.get('attempts', {})
         if len(attempts) > REMEMBERED_TARGETS:
             memory['attempts'] = dict(list(attempts.items())[-REMEMBERED_TARGETS:])
@@ -422,7 +485,8 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument('--uninstall', action='store_true',
                        help='unload and remove the launch agent; releases are manual again')
     group.add_argument('--retry', action='store_true',
-                       help='run once now and try a commit that already failed again')
+                       help='run once now and deploy origin/main even if it failed, was left '
+                            'partial or diverged; converges agents left on mixed revisions')
     args = parser.parse_args(argv)
     try:
         if args.install:
@@ -439,7 +503,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_PROBLEM
     code, outcome = release_once(retry=args.retry)
     print(json.dumps({key: outcome.get(key) for key in
-                      ('state', 'reason', 'target_revision', 'running_revision')}, sort_keys=True))
+                      ('state', 'reason', 'detail', 'target_revision', 'running_revision')},
+                     sort_keys=True))
     return code
 
 

@@ -27,11 +27,20 @@ install them, then run the deploy by hand. Each commit is tried once. While
 the shared ASR serves a client the run waits without starting; a deploy refused
 because the ASR became busy or `origin/main` moved is retried up to six times.
 A failure that left every agent on its old revision puts the checkout back.
+A partial release (agents left on different revisions, or one unloaded) stays
+`partial` on every run, also after a new merge, until `--retry` deploys
+`origin/main` to every agent or the deploy is run by hand. A revision that was
+released, or seen running, is never deployed again on its own: if the agents
+later run an older revision (a rollback by hand, restored plists) the status is
+`diverged` until a new merge, a deploy by hand or `--retry`.
 Status is `~/.penny/release/status.json`; Doctor's `release` component turns
-degraded on blocked, failed or a status older than one hour, unready on a
-partial release, and reports `disabled` while the agent is not installed.
-Pause with `touch ~/.penny/release/hold`; retry a failed commit with
-`--retry`; remove with `--uninstall` (releases are manual again).
+degraded on blocked, failed, diverged or a status older than one hour, unready
+on a partial release, and reports `disabled` while the agent is not installed.
+While the hold file exists or `origin` cannot be fetched, a failed, blocked,
+partial or diverged status stays as it was (with `detail` set to
+`hold_file_present` or `fetch_failed`), so the alert does not clear itself.
+Pause with `touch ~/.penny/release/hold`; retry a failed, partial or diverged
+commit with `--retry`; remove with `--uninstall` (releases are manual again).
 
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 

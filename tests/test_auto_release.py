@@ -52,9 +52,10 @@ def repos(tmp_path):
 class Agents:
     def __init__(self, revision: str):
         self.revisions = {label: revision for label in LABELS}
+        self.unloaded: set[str] = set()
 
     def __call__(self) -> dict:
-        return {label: {'label': label, 'loaded': True, 'revision': revision}
+        return {label: {'label': label, 'loaded': label not in self.unloaded, 'revision': revision}
                 for label, revision in self.revisions.items()}
 
 
@@ -69,6 +70,7 @@ class Deploy:
         head = git(repo, 'rev-parse', 'HEAD')
         if self.result == 'activated':
             self.agents.revisions = {label: head for label in LABELS}
+            self.agents.unloaded = set()
         elif self.result == 'partial':
             self.agents.revisions['com.penny.watcher'] = head
         return {'status': 'activated' if self.result == 'activated' else 'failed',
@@ -82,6 +84,13 @@ def run(checkout, tmp_path, agents, deploy, busy=False, **kwargs):
 
 def status(tmp_path) -> dict:
     return json.loads((tmp_path / 'state/status.json').read_text())
+
+
+def doctor_release(tmp_path, monkeypatch) -> tuple[str, str]:
+    """What Doctor's release component reports for the status the job wrote."""
+    import doctor
+    monkeypatch.setattr(doctor, '_release_status_path', lambda: tmp_path / 'state/status.json')
+    return doctor._infer_status('release', doctor._default_probe_release())
 
 
 def test_classify_follows_the_documented_rules():
@@ -184,7 +193,7 @@ def test_failed_deploy_is_tried_once_and_retry_tries_again(repos, tmp_path):
     assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
 
 
-def test_partial_release_is_reported_and_not_repeated(repos, tmp_path):
+def test_partial_release_stays_partial_until_retry_converges_it(repos, tmp_path, monkeypatch):
     work, checkout, _ = repos
     agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
     target = commit(work, 'watcher.py', 'v2\n')
@@ -192,9 +201,99 @@ def test_partial_release_is_reported_and_not_repeated(repos, tmp_path):
     code, outcome = run(checkout, tmp_path, agents, deploy)
     assert (code, outcome['state']) == (1, 'partial')
     assert git(checkout, 'rev-parse', 'HEAD') == target
+    # Later runs keep reporting partial (not blocked) and do not deploy again.
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason']) == (1, 'partial', 'command_failed:launchctl')
+    assert deploy.calls == 1
+    saved = status(tmp_path)
+    assert (saved['state'], saved['target_revision']) == ('partial', target)
+    assert doctor_release(tmp_path, monkeypatch) == ('unready', 'release_partial')
+    # --retry deploys to every agent from the mixed state.
+    deploy.result = 'activated'
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert set(agents.revisions.values()) == {target}
+    assert doctor_release(tmp_path, monkeypatch) == ('ready', 'ok')
     code, outcome = run(checkout, tmp_path, agents, deploy)
-    assert (code, outcome['state'], deploy.calls) == (1, 'blocked', 1)
-    assert outcome['reason'] == 'running_revision_mixed'
+    assert (code, outcome['state'], deploy.calls) == (0, 'current', 2)
+
+
+def test_partial_release_is_not_left_by_a_new_merge(repos, tmp_path):
+    work, checkout, _ = repos
+    old = git(checkout, 'rev-parse', 'HEAD')
+    agents = Agents(old)
+    first = commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents, result='partial', error='activation_not_verified:com.penny.watcher')
+    run(checkout, tmp_path, agents, deploy)
+    second = commit(work, 'core.py', 'v2\n')
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], outcome['target_revision']) == (1, 'partial', second)
+    assert outcome['reason'] == 'activation_not_verified:com.penny.watcher'
+    assert deploy.calls == 1 and git(checkout, 'rev-parse', 'HEAD') == first
+    # --retry fast-forwards to the new main and converges every agent on it.
+    deploy.result = 'activated'
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert git(checkout, 'rev-parse', 'HEAD') == second
+    assert set(agents.revisions.values()) == {second}
+
+
+def test_retry_from_a_partial_state_that_fails_again_stays_partial(repos, tmp_path):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents, result='partial', error='command_failed:launchctl')
+    run(checkout, tmp_path, agents, deploy)
+    # Busy owner: the retry waits; the next scheduled run is still partial.
+    code, outcome = run(checkout, tmp_path, agents, deploy, busy=True, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'waiting', 1)
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state']) == (1, 'partial')
+    # A retry whose deploy changes nothing still leaves the agents mixed.
+    deploy.result, deploy.error = 'failed', 'shared_whisper_busy'
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], outcome['reason']) == (1, 'partial', 'shared_whisper_busy')
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], deploy.calls) == (1, 'partial', 2)
+
+
+def test_partial_release_with_an_unloaded_agent_stays_partial(repos, tmp_path):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    target = commit(work, 'watcher.py', 'v2\n')
+
+    def unload_one(repo):
+        agents.revisions = {label: target for label in LABELS}
+        agents.unloaded = {'com.penny.export'}
+        return {'status': 'failed', 'error': 'command_failed:launchctl', 'services': []}
+
+    code, outcome = run(checkout, tmp_path, agents, unload_one)
+    assert (code, outcome['state']) == (1, 'partial')
+    # Every loaded agent runs main, but one is missing: not current.
+    code, outcome = run(checkout, tmp_path, agents, unload_one)
+    assert (code, outcome['state'], outcome['reason']) == (1, 'partial', 'command_failed:launchctl')
+    deploy = Deploy(agents)
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 1)
+
+
+def test_partial_release_that_unloaded_the_first_agent_stays_partial(repos, tmp_path):
+    work, checkout, _ = repos
+    old = git(checkout, 'rev-parse', 'HEAD')
+    agents = Agents(old)
+    commit(work, 'watcher.py', 'v2\n')
+
+    def unload_first(repo):
+        agents.unloaded = {'com.penny.shared-whisper'}
+        return {'status': 'failed', 'error': 'command_failed:launchctl', 'services': []}
+
+    assert run(checkout, tmp_path, agents, unload_first)[1]['state'] == 'partial'
+    code, outcome = run(checkout, tmp_path, agents, unload_first)
+    assert (code, outcome['state'], outcome['running_revision']) == (1, 'partial', old)
+    # A retry that changes nothing does not turn it into a plain failure.
+    code, outcome = run(checkout, tmp_path, agents, unload_first, retry=True)
+    assert (code, outcome['state']) == (1, 'partial')
 
 
 def test_dependency_change_blocks_until_deployed_by_hand(repos, tmp_path):
@@ -259,6 +358,129 @@ def test_fetch_failure_waits(repos, tmp_path):
     git(checkout, 'remote', 'set-url', 'origin', str(tmp_path / 'missing.git'))
     code, outcome = run(checkout, tmp_path, agents, Deploy(agents))
     assert (code, outcome['state'], outcome['reason']) == (0, 'waiting', 'fetch_failed')
+    for _ in range(release.FETCH_FAILURE_LIMIT - 1):
+        code, outcome = run(checkout, tmp_path, agents, Deploy(agents))
+    assert (code, outcome['state'], outcome['reason']) == (1, 'failed', 'fetch_failed')
+
+
+def _leave_failed(work, checkout, tmp_path, agents):
+    commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents, result='failed', error='command_failed:backup_penny.py')
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'failed'
+
+
+def _leave_blocked(work, checkout, tmp_path, agents):
+    commit(work, 'requirements.txt', 'flask\n')
+    assert run(checkout, tmp_path, agents, Deploy(agents))[1]['state'] == 'blocked'
+
+
+def _leave_partial(work, checkout, tmp_path, agents):
+    commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents, result='partial', error='command_failed:launchctl')
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'partial'
+
+
+def _leave_diverged(work, checkout, tmp_path, agents):
+    old = agents.revisions['com.penny.export']
+    commit(work, 'watcher.py', 'v2\n')
+    assert run(checkout, tmp_path, agents, Deploy(agents))[1]['state'] == 'released'
+    agents.revisions = {label: old for label in LABELS}
+    assert run(checkout, tmp_path, agents, Deploy(agents))[1]['state'] == 'diverged'
+
+
+@pytest.mark.parametrize(('leave', 'expected'), [
+    (_leave_failed, ('failed', 'command_failed:backup_penny.py', 'degraded', 'release_failed')),
+    (_leave_blocked, ('blocked', 'manual_release_required', 'degraded', 'release_blocked')),
+    (_leave_partial, ('partial', 'command_failed:launchctl', 'unready', 'release_partial')),
+    (_leave_diverged, ('diverged', 'running_left_released_revision', 'degraded', 'release_diverged')),
+])
+@pytest.mark.parametrize('stop', ['fetch', 'hold'])
+def test_fetch_failure_or_hold_keeps_a_terminal_status(repos, tmp_path, monkeypatch, leave, expected, stop):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    leave(work, checkout, tmp_path, agents)
+    before = status(tmp_path)
+    if stop == 'fetch':
+        git(checkout, 'remote', 'set-url', 'origin', str(tmp_path / 'missing.git'))
+    else:
+        (tmp_path / 'state/hold').touch()
+    detail = {'fetch': 'fetch_failed', 'hold': 'hold_file_present'}[stop]
+    deploy = Deploy(agents)
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason'], outcome['detail']) == (1, *expected[:2], detail)
+    saved = status(tmp_path)
+    assert (saved['state'], saved['reason'], saved['detail']) == (*expected[:2], detail)
+    assert saved['target_revision'] == before['target_revision']
+    assert doctor_release(tmp_path, monkeypatch) == expected[2:]
+    assert deploy.calls == 0
+    # Once the run can look again, the status is evaluated afresh.
+    if stop == 'fetch':
+        git(checkout, 'remote', 'set-url', 'origin', str(tmp_path / 'origin.git'))
+    else:
+        (tmp_path / 'state/hold').unlink()
+    code, outcome = run(checkout, tmp_path, agents, Deploy(agents))
+    assert outcome.get('detail') is None and status(tmp_path)['detail'] is None
+
+
+def test_hold_after_a_good_release_reports_held(repos, tmp_path, monkeypatch):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    commit(work, 'watcher.py', 'v2\n')
+    run(checkout, tmp_path, agents, Deploy(agents))
+    (tmp_path / 'state/hold').touch()
+    code, outcome = run(checkout, tmp_path, agents, Deploy(agents))
+    assert (code, outcome['state'], outcome['reason']) == (0, 'held', 'hold_file_present')
+    assert doctor_release(tmp_path, monkeypatch) == ('ready', 'disabled')
+
+
+def test_agents_leaving_a_released_revision_are_reported_not_redeployed(repos, tmp_path, monkeypatch):
+    work, checkout, _ = repos
+    old = git(checkout, 'rev-parse', 'HEAD')
+    agents = Agents(old)
+    target = commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents)
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'released'
+    # A rollback by hand (or restored plists) puts the agents back on old.
+    agents.revisions = {label: old for label in LABELS}
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason']) == (1, 'diverged', 'running_left_released_revision')
+        assert (outcome['target_revision'], outcome['running_revision']) == (target, old)
+    assert deploy.calls == 1
+    assert doctor_release(tmp_path, monkeypatch) == ('degraded', 'release_diverged')
+    # --retry releases main again.
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert set(agents.revisions.values()) == {target}
+
+
+def test_a_revision_seen_running_is_not_redeployed_after_a_rollback(repos, tmp_path):
+    work, checkout, _ = repos
+    old = git(checkout, 'rev-parse', 'HEAD')
+    target = commit(work, 'watcher.py', 'v2\n')
+    git(checkout, 'pull', '-q', '--ff-only', 'origin', 'main')
+    agents = Agents(target)  # deployed by hand before the job ran
+    deploy = Deploy(agents)
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'current'
+    agents.revisions = {label: old for label in LABELS}
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], deploy.calls) == (1, 'diverged', 0)
+
+
+def test_a_new_merge_after_a_divergence_is_released(repos, tmp_path):
+    work, checkout, _ = repos
+    old = git(checkout, 'rev-parse', 'HEAD')
+    agents = Agents(old)
+    commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents)
+    run(checkout, tmp_path, agents, deploy)
+    agents.revisions = {label: old for label in LABELS}
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'diverged'
+    fixed = commit(work, 'watcher.py', 'v3\n')
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert set(agents.revisions.values()) == {fixed}
 
 
 class Launchctl:

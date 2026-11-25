@@ -11,11 +11,20 @@ deploy unchanged, so its guards stay (clean pushed main, backup first, shared
 ASR busy check, per-agent reload and readback). Release paths live in INFRA.md
 between `release-paths` markers and a test compares them with the code. Status
 goes to `~/.penny/release/status.json`; Doctor's new `release` component makes
-a blocked, failed, partial or stale release visible through the existing
+a blocked, failed, partial, diverged or stale release visible through the existing
 `/ready` check that Infra already watches. Not installed: reports `disabled`.
 
+Review fixes on PR #195 (after `09ea493`): a released revision that the agents
+later leave is reported `diverged` (Doctor `release_diverged`, degraded) and is
+not redeployed without `--retry` or a new merge; a held run or failed fetch
+keeps the last failed/blocked/partial/diverged status with a `detail` instead
+of reporting ready; a partial release stays `partial` (Doctor
+`release_partial`, unready) on later runs and after new merges, and `--retry`
+now deploys from the mixed state (`deploy_penny.py` reloads every agent at
+HEAD whatever each ran before).
+
 Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
-(103 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+(121 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
 needs Flask and fails the same way on main in this sandbox).
 
 Not proven: that `git fetch` and `git ls-remote origin` work under launchd on

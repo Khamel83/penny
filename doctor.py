@@ -66,6 +66,7 @@ _SAFE_REASON_VALUES = frozenset(
         "probe_error",
         "provider_failure",
         "release_blocked",
+        "release_diverged",
         "release_failed",
         "release_partial",
         "quarantine",
@@ -172,7 +173,7 @@ _DEFAULT_BACKUP_MAX_AGE_SECONDS = 8 * 60 * 60
 # The release agent writes its status every five minutes (INFRA.md "Release").
 _RELEASE_MAX_AGE_SECONDS = 60 * 60
 _RELEASE_STATES = frozenset(
-    {"current", "released", "waiting", "held", "running", "blocked", "failed", "partial"}
+    {"current", "released", "waiting", "held", "running", "blocked", "failed", "partial", "diverged"}
 )
 
 
@@ -1384,6 +1385,9 @@ def _infer_status(name: str, data: Mapping[str, Any] | None) -> tuple[str, str]:
             return "degraded", "release_failed"
         if state == "blocked":
             return "degraded", "release_blocked"
+        if state == "diverged":
+            # The agents left a revision that was already released.
+            return "degraded", "release_diverged"
         if values.get("timestamp_valid") is not True:
             return "degraded", "timestamp_invalid"
         if int(values.get("age_seconds", 0) or 0) > _RELEASE_MAX_AGE_SECONDS:

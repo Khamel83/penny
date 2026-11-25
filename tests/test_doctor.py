@@ -977,6 +977,8 @@ def test_release_component_is_disabled_until_the_agent_is_installed(tmp_path, mo
         ("blocked", 60, ("degraded", "release_blocked")),
         ("failed", 60, ("degraded", "release_failed")),
         ("partial", 60, ("unready", "release_partial")),
+        ("diverged", 60, ("degraded", "release_diverged")),
+        ("diverged", 2 * 60 * 60, ("degraded", "release_diverged")),
         ("current", 2 * 60 * 60, ("degraded", "health_stale")),
     ],
 )
