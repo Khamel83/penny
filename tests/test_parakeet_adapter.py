@@ -367,10 +367,13 @@ def test_worker_pipe_keeps_only_safe_failure_reason(reason, expected):
     import json
     import queue
     from shared_whisper.parakeet_process import ParakeetWorker
+    import threading
     worker = object.__new__(ParakeetWorker)
     worker._results = queue.Queue()
+    worker._ready = threading.Event()
     worker._process = SimpleNamespace(stdout=io.StringIO(json.dumps({"error": reason}) + "\n"))
     worker._read()
+    assert worker.is_ready()  # an error reply still proves the child started
     error = worker._results.get_nowait()
     assert error.code == "quality_review"
     assert str(error) == expected
