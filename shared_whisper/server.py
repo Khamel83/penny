@@ -68,7 +68,10 @@ def create_app(
             "max_concurrent": 1,
             "vad_filter": False,
         }
-        return jsonify(payload)
+        # 503 when no request can complete (penny#186, penny#192). The
+        # launchd keeper's curl -f then restarts the service, and Uptime
+        # Kuma alerts, instead of a wedged worker staying green for hours.
+        return jsonify(payload), 200 if status.get("healthy", True) else 503
 
     @app.get("/ready")
     def ready():
@@ -373,6 +376,9 @@ def build_supervisor_from_environment() -> SharedWhisperSupervisor:
         job_deadline_seconds=_bounded_int(
             os.environ.get("PENNY_SHARED_WHISPER_JOB_DEADLINE_SECONDS", ""),
             default=900, lower=60, upper=7200),
+        worker_start_timeout_seconds=_bounded_int(
+            os.environ.get("PENNY_SHARED_WHISPER_START_TIMEOUT_SECONDS", ""),
+            default=180, lower=30, upper=1800),
         model_id=model_id,
         model_revision=model_revision,
     )

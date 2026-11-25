@@ -22,6 +22,9 @@ from .protocol import (
 # Bound reusable Metal buffers without changing model weights or decoding.
 MLX_CACHE_LIMIT_BYTES = 100 * 1024 * 1024
 
+# Errors the child reports before it can take a request.
+_STARTUP_ERRORS = frozenset({"offline_mode_required", "mlx_import_failed"})
+
 
 _FREE_PERCENT_RE = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 _LARGE_OWNER_MARKERS = (
@@ -154,6 +157,7 @@ class SubprocessWorker:
         self._model_path = str(model_path)
         self._model_id = model_id
         self._model_revision = model_revision
+        self._ready = False
         self._process = self._context.Process(
             target=_worker_main,
             args=(
@@ -184,6 +188,12 @@ class SubprocessWorker:
             kind, value = self._results.get(timeout=timeout)
         except queue.Empty:
             return None
+        if kind == "error" and value in _STARTUP_ERRORS:
+            return WhisperUnavailable("Whisper worker failed to start")
+        # Any other message proves the child started.
+        self._ready = True
+        if kind == "ready":
+            return None
         if kind == "ok":
             return value
         if kind == "quality_review":
@@ -194,6 +204,11 @@ class SubprocessWorker:
                 model_id=value["model_id"],
             )
         return WhisperUnavailable("Whisper worker failed while transcribing")
+
+    def is_ready(self) -> bool:
+        """True once the child has imported MLX and can take a request."""
+
+        return self._ready
 
     def terminate(self) -> None:
         if self._process.is_alive():
@@ -234,6 +249,9 @@ def _worker_main(
         results.put(("error", "mlx_import_failed"))
         return
 
+    # Tell the supervisor the child started; a child that never gets here
+    # fails its job at the start timeout (penny#192).
+    results.put(("ready", None))
     while True:
         request = requests.get()
         if request is None:

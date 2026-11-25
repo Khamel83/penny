@@ -55,6 +55,26 @@ even with HTTP 200, and requests service recovery after two consecutive strikes.
 This backstop also applies to legitimately long jobs; the fixed keeper bound
 can interrupt one after 30 minutes plus the strike interval.
 
+A worker that never starts is caught sooner (penny#192). Both workers send a
+ready message once the model process is up. If none arrives within
+`PENNY_SHARED_WHISPER_START_TIMEOUT_SECONDS` (default 180, bounded 30–1800),
+the request fails with `worker_start_timeout` and the child is stopped. A
+stop never raises: a child that survives kill is kept on an abandoned list, so
+no second model loads while it lives (penny#186).
+
+`/health` returns 503 (with the same JSON plus `healthy: false` and
+`unhealthy_reason`) when the service cannot finish work: three failures in a
+row that a restart can fix (`consecutive_failures`), an abandoned child still
+alive (`worker_did_not_exit`), a job 120 seconds past its deadline or start
+limit (`job_past_deadline`, `worker_start_timeout`), or a supervisor lock that
+does not answer within 3 seconds (`supervisor_unresponsive`). One success
+clears the count. Memory-pressure refusals and errors returned by a running
+model do not count. The keeper's `curl -sf` treats the 503 as a strike, so
+launchd restarts the service after two strikes; Doctor and Uptime Kuma show it
+down meanwhile. `consecutive_failures`, `last_failure_reason` and
+`last_success_at` are in the payload. While `/health` is 503 the deploy
+scripts refuse to proceed until the keeper has recovered the service.
+
 Retry receipts keep the copied upload and both model results owner-only. They
 are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
 volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path

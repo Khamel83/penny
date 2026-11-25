@@ -138,6 +138,7 @@ def test_worker_bounds_cache_and_releases_it_after_success_and_failure(monkeypat
     requests.put(None)
     _worker_main(requests, results, "/pinned/model", MODEL_ID, REVISION)
     assert events == [("limit", 100 * 1024 * 1024)] + ["transcribe", "sync", "clear"] * 3
+    assert results.get_nowait() == ("ready", None)
     first, failed, last = [results.get_nowait() for _ in range(3)]
     assert first[0] == last[0] == "ok"
     assert first[1].text == last[1].text == "hello"

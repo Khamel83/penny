@@ -3,6 +3,11 @@
 - [x] Source: retain the newest two verified sets, reject boot-disk remotes, and alert when verification fails or is older than eight hours. Focused backup/doctor/deploy tests passed in this worktree.
 - [ ] Deploy the reviewed source and read back homelab `ls ~/backups/penny/sets | wc -l` (at most 2) and `df /` (not reduced by Penny). This worktree cannot deploy or SSH.
 
+## Issues #186 and #192 — Shared Whisper fails loudly, November 25
+
+- [x] Source: 180-second start limit with a worker ready message, non-raising worker stop, and `/health` 503 with `unhealthy_reason` when nothing can finish, so the existing keeper restarts it. Simulated-hang tests in `tests/test_shared_whisper_hangs.py`.
+- [ ] After merge, release to the Mac and read back Shared Whisper `/health` (`healthy: true`, merged `source_revision`); then close #186 and #192 with that receipt.
+
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
 - [x] Deploy and naturally validate Penny → Drop → Factory voice intake and clickable #inbox question/result delivery. [natural voice acceptance](docs/evidence/2026-11-08-factory-voice-acceptance.md).

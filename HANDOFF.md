@@ -12,6 +12,25 @@ runtime, then on the homelab confirm the set count is at most 2 and `/` is not
 shrinking because of Penny. A missing `/mnt/main2` mount must stay a failure;
 do not mkdir it on the boot disk.
 
+## Issues #186 and #192 — Shared Whisper fails loudly, source only, November 25
+
+Done in source (draft PR on `claude/project-thread-4e5nn5`): workers send a
+ready message and a request fails after 180 seconds with no start
+(`worker_start_timeout`); stopping a worker never raises or strands the job;
+`/health` returns 503 with `unhealthy_reason` after three restart-fixable
+failures in a row, a child that survived kill, a job stuck past its limit, or
+a stuck supervisor lock. The keeper is unchanged: its `curl -sf` already
+counts a 503 as a strike. [Details](docs/shared-parakeet.md).
+Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_shared_whisper_supervisor.py tests/test_shared_whisper_worker.py`
+(13 new simulated-hang tests; the server and Parakeet adapter tests need
+Flask, which this sandbox lacks, so CI runs them).
+
+Not done: no runtime deploy. Next: review and merge, release to the Mac
+(automatic once #182's release agent is installed, otherwise
+`scripts/deploy_penny.py --apply`), then read back `curl -s
+http://127.0.0.1:10311/health` showing `"healthy": true` and the merged
+`source_revision`. If it shows 503, the reason field says which hang it saw.
+
 ## Runtime deployed at current source — November 10, 2026
 
 `scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt

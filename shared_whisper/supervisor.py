@@ -26,6 +26,18 @@ from .protocol import (
 
 logger = logging.getLogger(__name__)
 
+# /health turns unhealthy after this many back-to-back failures that a restart
+# can fix (penny#186, penny#192). One success clears the count.
+UNHEALTHY_AFTER_CONSECUTIVE_FAILURES = 3
+# A waiter thread fails a hung job at its deadline. If the job is still there
+# this long after, the waiter itself is stuck, so /health reports it.
+_STUCK_JOB_SLACK_SECONDS = 120.0
+# status() must answer even if a request thread holds the supervisor lock.
+_STATUS_LOCK_TIMEOUT_SECONDS = 3.0
+# macOS memory pressure is transient and a restart cannot clear it; doctor
+# alarms on it separately, so it does not count toward an unhealthy /health.
+_MEMORY_PRESSURE_REASON = "macOS memory pressure is too high"
+
 
 class SupervisorState(StrEnum):
     IDLE = "idle"
@@ -57,6 +69,9 @@ class WorkerHandle(Protocol):
 
     def is_alive(self) -> bool: ...
 
+    # Optional: ``is_ready()`` returns True once the model process has started
+    # and can take a request. Workers without it count as ready.
+
 
 WorkerFactory = Callable[[], WorkerHandle]
 
@@ -69,6 +84,7 @@ class _Job:
     started_at: float = 0.0
     started_at_epoch: float = 0.0
     deadline_seconds: float = 900.0
+    worker_started_at: float = 0.0
     completed: bool = False
     preempted: bool = False
     result: WhisperResult | None = None
@@ -87,6 +103,7 @@ class SharedWhisperSupervisor:
         grace_seconds: float = 30.0,
         idle_ttl_seconds: float = 300.0,
         job_deadline_seconds: float = 900.0,
+        worker_start_timeout_seconds: float = 180.0,
         model_id: str,
         model_revision: str,
         clock: Callable[[], float] = time.monotonic,
@@ -101,6 +118,10 @@ class SharedWhisperSupervisor:
         # /health green). Past this deadline the job fails and the worker is
         # replaced on the next request instead of blocking every client.
         self._job_deadline_seconds = max(1.0, job_deadline_seconds)
+        # A new worker that never finishes starting (penny#192: each Parakeet
+        # child hung at Python start) fails its job after this, instead of
+        # holding every client until the much longer job deadline.
+        self._worker_start_timeout_seconds = max(1.0, worker_start_timeout_seconds)
         self._model_id = model_id
         self._model_revision = model_revision
         self._clock = clock
@@ -110,12 +131,35 @@ class SharedWhisperSupervisor:
         self._state = SupervisorState.IDLE
         self._last_used_at: float | None = None
         self._preemption_count = 0
+        self._worker_started_at = 0.0
+        # Workers that survived terminate and kill. Never load another model
+        # while one of these is alive; /health reports it so launchd restarts.
+        self._abandoned_workers: list[WorkerHandle] = []
+        self._consecutive_failures = 0
+        self._last_failure_reason: str | None = None
+        self._last_success_at_epoch: float | None = None
 
     def status(self) -> dict[str, Any]:
-        """Return an allowlisted, secret-free operational snapshot."""
+        """Return an allowlisted, secret-free operational snapshot.
 
-        with self._condition:
+        ``healthy`` is False when no request can be expected to complete. The
+        HTTP layer turns that into a 503 so the launchd keeper restarts the
+        service and Uptime Kuma alerts.
+        """
+
+        if not self._condition.acquire(timeout=_STATUS_LOCK_TIMEOUT_SECONDS):
+            return {
+                "state": "unresponsive",
+                "model_id": self._model_id,
+                "model_revision": self._model_revision,
+                "healthy": False,
+                "unhealthy_reason": "supervisor_unresponsive",
+            }
+        try:
             worker = self._worker if self._worker and self._worker.is_alive() else None
+            job = self._job
+            now = self._clock()
+            unhealthy_reason = self._unhealthy_reason_locked(now)
             return {
                 "state": self._state.value,
                 "model_id": self._model_id,
@@ -123,13 +167,39 @@ class SharedWhisperSupervisor:
                 "worker_pid": worker.pid if worker else None,
                 "worker_count": 1 if worker else 0,
                 "resident_backend": self._worker_backend if worker else None,
-                "active_client": self._job.client.value if self._job else None,
-                "active_job_started_at": self._job.started_at_epoch if self._job else None,
+                "worker_ready": self._worker_ready(worker) if worker else None,
+                "active_client": job.client.value if job else None,
+                "active_job_started_at": job.started_at_epoch if job else None,
                 "active_job_age_seconds": (
-                    max(0.0, self._clock() - self._job.started_at) if self._job else None
+                    max(0.0, now - job.started_at) if job else None
                 ),
                 "preemption_count": self._preemption_count,
+                "healthy": unhealthy_reason is None,
+                "unhealthy_reason": unhealthy_reason,
+                "consecutive_failures": self._consecutive_failures,
+                "last_failure_reason": self._last_failure_reason,
+                "last_success_at": self._last_success_at_epoch,
             }
+        finally:
+            self._condition.release()
+
+    def _unhealthy_reason_locked(self, now: float) -> str | None:
+        if any(_safe_is_alive(worker) for worker in self._abandoned_workers):
+            return "worker_did_not_exit"
+        self._abandoned_workers = []
+        job = self._job
+        if job is not None:
+            if now - job.started_at > job.deadline_seconds + _STUCK_JOB_SLACK_SECONDS:
+                return "job_past_deadline"
+            if (
+                not self._worker_ready(job.worker)
+                and now - job.worker_started_at
+                > self._worker_start_timeout_seconds + _STUCK_JOB_SLACK_SECONDS
+            ):
+                return "worker_start_timeout"
+        if self._consecutive_failures >= UNHEALTHY_AFTER_CONSECUTIVE_FAILURES:
+            return "consecutive_failures"
+        return None
 
     def handle_request(
         self,
@@ -248,7 +318,8 @@ class SharedWhisperSupervisor:
         request_id = str(uuid.uuid4())
         job = _Job(client=client, request_id=request_id, worker=worker,
                    started_at=self._clock(), started_at_epoch=time.time(),
-                   deadline_seconds=deadline)
+                   deadline_seconds=deadline,
+                   worker_started_at=self._worker_started_at)
         self._job = job
         self._state = (
             SupervisorState.PENNY_RUNNING
@@ -272,6 +343,7 @@ class SharedWhisperSupervisor:
         except Exception as exc:
             self._job = None
             self._state = SupervisorState.IDLE
+            self._record_failure_locked("Whisper worker rejected the request")
             raise WhisperUnavailable("Whisper worker rejected the request") from exc
         self._condition.notify_all()
         return job
@@ -279,15 +351,20 @@ class SharedWhisperSupervisor:
     def _ensure_worker_locked(self, backend="primary") -> WorkerHandle:
         if backend != self._worker_backend and self._worker is not None:
             self._stop_worker_locked()
-            self._worker = None
         if self._worker is not None:
             if self._worker.is_alive():
                 return self._worker
             self._worker = None
+        if any(_safe_is_alive(worker) for worker in self._abandoned_workers):
+            self._record_failure_locked("Whisper worker did not exit")
+            raise WhisperUnavailable("Whisper worker did not exit")
+        self._abandoned_workers = []
         if self._memory_guard.has_existing_large_owner():
+            self._record_failure_locked("another large Whisper owner is present")
             raise WhisperUnavailable("another large Whisper owner is present")
         if self._memory_guard.pressure_high():
-            raise WhisperUnavailable("macOS memory pressure is too high")
+            self._last_failure_reason = _MEMORY_PRESSURE_REASON
+            raise WhisperUnavailable(_MEMORY_PRESSURE_REASON)
         factory = (
             self._worker_factory
             if backend == "primary"
@@ -295,11 +372,17 @@ class SharedWhisperSupervisor:
         )
         if factory is None:
             raise WhisperProtocolError("fallback_not_configured")
-        worker = factory()
+        try:
+            worker = factory()
+        except Exception as exc:
+            self._record_failure_locked("Whisper worker failed to start")
+            raise WhisperUnavailable("Whisper worker failed to start") from exc
         self._worker_backend = backend
         if not worker.is_alive():
+            self._record_failure_locked("Whisper worker failed to start")
             raise WhisperUnavailable("Whisper worker failed to start")
         self._worker = worker
+        self._worker_started_at = self._clock()
         self._last_used_at = self._clock()
         return worker
 
@@ -318,37 +401,32 @@ class SharedWhisperSupervisor:
                     return job.result
                 worker = job.worker
 
-            result = worker.poll(timeout=0.05)
+            try:
+                result = worker.poll(timeout=0.05)
+            except Exception:  # a broken pipe must not strand the job
+                result = None
             if result is None:
-                if self._clock() - job.started_at > job.deadline_seconds:
-                    with self._condition:
-                        if not job.preempted and not job.completed:
-                            logger.warning(
-                                "worker_deadline_exceeded client=%s age_seconds=%.1f deadline_seconds=%.1f",
-                                job.client.value, self._clock() - job.started_at,
-                                job.deadline_seconds,
-                            )
-                            job.error = WhisperUnavailable("worker_deadline_exceeded")
-                            job.completed = True
-                            if self._worker is job.worker:
-                                try:
-                                    self._stop_worker_locked()
-                                except WhisperUnavailable:
-                                    pass  # memory guard refuses a second owner
-                                self._worker = None
-                            if self._job is job:
-                                self._job = None
-                                self._state = SupervisorState.IDLE
-                            self._condition.notify_all()
+                now = self._clock()
+                if (
+                    not self._worker_ready(worker)
+                    and now - job.worker_started_at > self._worker_start_timeout_seconds
+                ):
+                    self._fail_hung_job(job, "worker_start_timeout")
                     continue
-                if not worker.is_alive():
+                if now - job.started_at > job.deadline_seconds:
+                    self._fail_hung_job(job, "worker_deadline_exceeded")
+                    continue
+                if not _safe_is_alive(worker):
                     with self._condition:
                         if not job.preempted and not job.completed:
                             job.error = WhisperUnavailable("Whisper worker exited")
                             job.completed = True
+                            if self._worker is job.worker:
+                                self._stop_worker_locked()
                             if self._job is job:
                                 self._job = None
                                 self._state = SupervisorState.IDLE
+                            self._record_failure_locked("Whisper worker exited")
                             self._condition.notify_all()
                 continue
 
@@ -357,8 +435,19 @@ class SharedWhisperSupervisor:
                     continue
                 if isinstance(result, BaseException):
                     job.error = result
+                    # An error the worker reports while started and alive is
+                    # about this audio; the model is still answering. One it
+                    # reports before starting or while exiting is not.
+                    if self._worker_ready(worker) and _safe_is_alive(worker):
+                        self._record_progress_locked()
+                    else:
+                        self._record_failure_locked(
+                            str(result) or type(result).__name__
+                        )
                 else:
                     job.result = result
+                    self._record_progress_locked()
+                    self._last_success_at_epoch = time.time()
                 job.completed = True
                 self._last_used_at = self._clock()
                 if self._job is job:
@@ -366,24 +455,80 @@ class SharedWhisperSupervisor:
                     self._state = SupervisorState.IDLE
                 self._condition.notify_all()
 
+    def _fail_hung_job(self, job: _Job, reason: str) -> None:
+        """Fail a job whose worker stopped making progress and drop the worker."""
+
+        with self._condition:
+            if job.preempted or job.completed:
+                return
+            logger.warning(
+                "%s client=%s age_seconds=%.1f deadline_seconds=%.1f "
+                "worker_age_seconds=%.1f",
+                reason,
+                job.client.value,
+                self._clock() - job.started_at,
+                job.deadline_seconds,
+                self._clock() - job.worker_started_at,
+            )
+            job.error = WhisperUnavailable(reason)
+            job.completed = True
+            if self._worker is job.worker:
+                self._stop_worker_locked()
+            if self._job is job:
+                self._job = None
+                self._state = SupervisorState.IDLE
+            self._record_failure_locked(reason)
+            self._condition.notify_all()
+
     def _preempt_locked(self, job: _Job) -> None:
         job.preempted = True
         self._preemption_count += 1
         if self._worker is job.worker:
             self._stop_worker_locked()
-            self._worker = None
         if self._job is job:
             self._job = None
         self._state = SupervisorState.IDLE
         self._condition.notify_all()
 
     def _stop_worker_locked(self) -> None:
+        """Stop the resident worker. Never raises and never leaves it resident.
+
+        A worker that survives terminate and kill is kept in the abandoned
+        list: no new model loads while it lives, and /health reports it.
+        """
+
         worker = self._worker
+        self._worker = None
         if worker is None:
             return
-        worker.terminate()
-        if worker.is_alive():
-            raise WhisperUnavailable("Whisper worker did not exit")
+        try:
+            worker.terminate()
+        except Exception as exc:  # noqa: BLE001 - a stuck child must not wedge the job
+            logger.warning(
+                "worker_terminate_failed pid=%s error=%s",
+                getattr(worker, "pid", None),
+                type(exc).__name__,
+            )
+        if _safe_is_alive(worker):
+            logger.error("worker_did_not_exit pid=%s", getattr(worker, "pid", None))
+            self._abandoned_workers.append(worker)
+
+    def _record_failure_locked(self, reason: str) -> None:
+        self._consecutive_failures += 1
+        self._last_failure_reason = reason[:200]
+
+    def _record_progress_locked(self) -> None:
+        self._consecutive_failures = 0
+
+    @staticmethod
+    def _worker_ready(worker: WorkerHandle | None) -> bool:
+        probe = getattr(worker, "is_ready", None)
+        if probe is None:
+            return True
+        try:
+            return bool(probe())
+        except Exception:  # noqa: BLE001 - an unreadable worker is not ready
+            return False
 
     def _expire_idle_locked(self) -> None:
         if self._job is None and self._worker is not None:
@@ -392,5 +537,13 @@ class SharedWhisperSupervisor:
                 and self._clock() - self._last_used_at >= self._idle_ttl_seconds
             ):
                 self._stop_worker_locked()
-                self._worker = None
                 self._last_used_at = None
+
+
+def _safe_is_alive(worker: WorkerHandle | None) -> bool:
+    if worker is None:
+        return False
+    try:
+        return bool(worker.is_alive())
+    except Exception:  # noqa: BLE001 - treat an unreadable process as alive
+        return True
