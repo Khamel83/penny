@@ -33,9 +33,11 @@ Not done: no runtime deploy. Next: review and merge, release to the Mac
 `scripts/deploy_penny.py --apply`), then reinstall only the keeper with the
 steps in docs/macmini-deployment.md "Shared-whisper keeper" (deploy does not
 install it). Read back `curl -s http://127.0.0.1:10311/health` showing
-`"healthy": true` and the merged `source_revision`, and `launchctl print
-gui/$(id -u)/com.penny.shared-whisper-keeper` showing the merged revision. If
-it shows 503, the reason field says which hang it saw.
+`"healthy": true` (only the new code has that field; `/health` carries no
+revision), and `launchctl print gui/$(id -u)/com.penny.shared-whisper` and
+`launchctl print gui/$(id -u)/com.penny.shared-whisper-keeper` each showing
+`PENNY_SOURCE_REVISION` at the merged commit. If `/health` shows 503, the
+reason field says which hang it saw.
 
 ## Runtime deployed at current source — November 10, 2026
 
