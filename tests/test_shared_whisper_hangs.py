@@ -309,6 +309,102 @@ def test_memory_pressure_refusals_do_not_turn_health_red():
     assert status["last_failure_reason"] == "macOS memory pressure is too high"
 
 
+class OwnerGuard:
+    """Process-list probe: ``present`` is another process holding a model."""
+
+    def __init__(self, *, present=False, error=False):
+        self.present = present
+        self.error = error
+        self.calls = 0
+        self.during_probe = None
+
+    def has_existing_large_owner(self):
+        self.calls += 1
+        hook, self.during_probe = self.during_probe, None
+        if hook is not None:
+            hook()
+        if self.error:
+            raise OSError("ps failed")
+        return self.present
+
+    def pressure_high(self):
+        return False
+
+
+def test_stuck_worker_left_by_a_previous_process_is_reported_without_a_restart_loop():
+    """After a restart the old stuck child is a foreign owner. /health must say
+    so at once, and must not count it as a failure a restart can fix."""
+    now = [1000.0]
+    factory = Factory()
+    guard = OwnerGuard(present=True)
+    supervisor = _supervisor(factory, now, guard=guard)
+
+    status = supervisor.status()  # no request has arrived yet
+    assert status["healthy"] is False
+    assert status["unhealthy_reason"] == "large_owner_present"
+    assert status["consecutive_failures"] == 0
+
+    for _ in range(5):
+        with pytest.raises(WhisperUnavailable, match="another large Whisper owner"):
+            supervisor.handle_request(ClientKind.ATLAS, audio_path="a.wav", options={})
+    status = supervisor.status()
+    assert status["unhealthy_reason"] == "large_owner_present"
+    assert status["consecutive_failures"] == 0
+    assert factory.workers == []  # no second model loaded
+
+    guard.present = False  # the old child finally exits
+    assert supervisor.status()["healthy"] is True
+    thread, outcome = _request(supervisor)
+    _wait_for(lambda: factory.workers and factory.workers[0].submitted)
+    factory.workers[0].results.put(_result("after"))
+    thread.join(timeout=2)
+    assert outcome == [_result("after")]
+
+
+def test_owner_probe_does_not_count_our_own_running_worker():
+    now = [1000.0]
+    factory = Factory()
+    guard = OwnerGuard()
+    supervisor = _supervisor(factory, now, guard=guard)
+    thread, outcome = _request(supervisor)
+    _wait_for(lambda: factory.workers and factory.workers[0].submitted)
+
+    guard.present = True  # the process list now shows our own worker
+    calls = guard.calls
+    status = supervisor.status()
+    assert guard.calls == calls  # not probed while our worker runs
+    assert status["healthy"] is True
+
+    factory.workers[0].results.put(_result("ok"))
+    thread.join(timeout=2)
+    assert supervisor.status()["healthy"] is True  # resident idle worker
+
+
+def test_owner_probe_is_discarded_when_our_worker_starts_during_it():
+    now = [1000.0]
+    factory = Factory()
+    guard = OwnerGuard()
+    supervisor = _supervisor(factory, now, guard=guard)
+
+    def start_our_worker():
+        supervisor._start_job(ClientKind.ATLAS, audio_path="a.wav", options={})
+        guard.present = True  # the probe then sees the worker we just started
+
+    guard.during_probe = start_our_worker
+    status = supervisor.status()
+    assert status["active_client"] == "atlas"
+    assert status["healthy"] is True
+
+
+def test_unreadable_process_list_reports_large_owner_present():
+    supervisor = _supervisor(Factory(), [0.0], guard=OwnerGuard(error=True))
+
+    status = supervisor.status()
+    assert status["healthy"] is False
+    assert status["unhealthy_reason"] == "large_owner_present"
+    assert status["consecutive_failures"] == 0
+
+
 def test_errors_from_a_running_model_are_not_counted_as_an_outage():
     """Bad audio gets an error back from a live model; that is not a hang."""
     now = [1000.0]

@@ -159,6 +159,8 @@ canonical SQLite ledger.
 `http://127.0.0.1:10311/health` every two minutes. After two consecutive
 failures it kickstarts `com.penny.shared-whisper` (or bootstraps it when it is
 not loaded) and writes one syslog line tagged `penny-shared-whisper-keeper`.
+A 503 whose `unhealthy_reason` is `large_owner_present` is not a strike: another
+process holds the model and a restart cannot clear it.
 It uses macOS system tools on the internal disk and an empty strike directory
 inside the owner-only Darwin temporary directory, so it also covers a reboot
 where the SSD mounts late. State roots, state and strikes reject symlinks,

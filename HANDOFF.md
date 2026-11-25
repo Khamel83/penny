@@ -19,17 +19,23 @@ ready message and a request fails after 180 seconds with no start
 (`worker_start_timeout`); stopping a worker never raises or strands the job;
 `/health` returns 503 with `unhealthy_reason` after three restart-fixable
 failures in a row, a child that survived kill, a job stuck past its limit, or
-a stuck supervisor lock. The keeper is unchanged: its `curl -sf` already
-counts a 503 as a strike. [Details](docs/shared-parakeet.md).
-Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_shared_whisper_supervisor.py tests/test_shared_whisper_worker.py`
-(13 new simulated-hang tests; the server and Parakeet adapter tests need
-Flask, which this sandbox lacks, so CI runs them).
+a stuck supervisor lock. Another process holding a model (often a child that
+outlived a restart) is its own 503, `large_owner_present`: checked while idle,
+not counted as a failure, and left alone by the keeper, which otherwise counts
+a 503 as a strike. The keeper template changed for that one case.
+[Details](docs/shared-parakeet.md).
+Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_shared_whisper_supervisor.py tests/test_shared_whisper_worker.py tests/test_shared_whisper_keeper.py`
+(17 simulated-hang tests and 2 new keeper tests; the server and Parakeet
+adapter tests need Flask, which this sandbox lacks, so CI runs them).
 
 Not done: no runtime deploy. Next: review and merge, release to the Mac
 (automatic once #182's release agent is installed, otherwise
-`scripts/deploy_penny.py --apply`), then read back `curl -s
-http://127.0.0.1:10311/health` showing `"healthy": true` and the merged
-`source_revision`. If it shows 503, the reason field says which hang it saw.
+`scripts/deploy_penny.py --apply`), then reinstall only the keeper with the
+steps in docs/macmini-deployment.md "Shared-whisper keeper" (deploy does not
+install it). Read back `curl -s http://127.0.0.1:10311/health` showing
+`"healthy": true` and the merged `source_revision`, and `launchctl print
+gui/$(id -u)/com.penny.shared-whisper-keeper` showing the merged revision. If
+it shows 503, the reason field says which hang it saw.
 
 ## Runtime deployed at current source — November 10, 2026
 

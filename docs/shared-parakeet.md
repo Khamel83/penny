@@ -75,6 +75,17 @@ down meanwhile. `consecutive_failures`, `last_failure_reason` and
 `last_success_at` are in the payload. While `/health` is 503 the deploy
 scripts refuse to proceed until the keeper has recovered the service.
 
+One 503 is not restart-fixable: `large_owner_present`, another process holding
+a Whisper or Parakeet model. The usual cause is a child that survived kill:
+the restart for `worker_did_not_exit` drops the abandoned list, and the new
+service process then finds the child in the process list. While idle, `/health`
+checks the process list itself, so it reports this at once after a restart
+and clears when the process exits; requests are refused meanwhile and do not
+add to `consecutive_failures`. The keeper leaves this reason alone instead of
+restarting every four minutes, while Doctor and Uptime Kuma keep showing it
+down. Find the process with `ps -axo pid,command | grep -i -e whisper -e
+parakeet` and end it; one stuck in the kernel needs a Mac restart.
+
 Retry receipts keep the copied upload and both model results owner-only. They
 are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
 volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path

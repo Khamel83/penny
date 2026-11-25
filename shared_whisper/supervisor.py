@@ -37,6 +37,14 @@ _STATUS_LOCK_TIMEOUT_SECONDS = 3.0
 # macOS memory pressure is transient and a restart cannot clear it; doctor
 # alarms on it separately, so it does not count toward an unhealthy /health.
 _MEMORY_PRESSURE_REASON = "macOS memory pressure is too high"
+# Another process holds a Whisper/Parakeet model: a stuck worker that outlived
+# the previous service process, or a retired owner. A restart cannot clear it,
+# so it does not count as a restart-fixable failure; /health reports it as its
+# own reason, which the keeper leaves alone and Kuma and doctor still show.
+_LARGE_OWNER_REASON = "another large Whisper owner is present"
+# status() re-checks for another owner only while idle. It skips the check
+# rather than wait behind a busy request.
+_OWNER_PROBE_LOCK_TIMEOUT_SECONDS = 0.2
 
 
 class SupervisorState(StrEnum):
@@ -133,11 +141,16 @@ class SharedWhisperSupervisor:
         self._preemption_count = 0
         self._worker_started_at = 0.0
         # Workers that survived terminate and kill. Never load another model
-        # while one of these is alive; /health reports it so launchd restarts.
+        # while one of these is alive; /health reports it so launchd restarts
+        # once. The new process sees the survivor as a large owner instead.
         self._abandoned_workers: list[WorkerHandle] = []
         self._consecutive_failures = 0
         self._last_failure_reason: str | None = None
         self._last_success_at_epoch: float | None = None
+        self._large_owner_present = False
+        # Counts worker starts, so an idle owner probe is discarded when our
+        # own worker started while the probe ran.
+        self._worker_generation = 0
 
     def status(self) -> dict[str, Any]:
         """Return an allowlisted, secret-free operational snapshot.
@@ -147,6 +160,7 @@ class SharedWhisperSupervisor:
         service and Uptime Kuma alerts.
         """
 
+        self._refresh_large_owner()
         if not self._condition.acquire(timeout=_STATUS_LOCK_TIMEOUT_SECONDS):
             return {
                 "state": "unresponsive",
@@ -183,10 +197,50 @@ class SharedWhisperSupervisor:
         finally:
             self._condition.release()
 
+    def _refresh_large_owner(self) -> None:
+        """Re-check for another model owner while idle, without the lock.
+
+        A stuck worker left by the previous service process is invisible to
+        this one until it looks. Checking while idle makes /health report it
+        right after a restart, and clear once it exits. While our own worker
+        runs, the check would find that worker, so it is skipped.
+        """
+
+        if not self._condition.acquire(timeout=_OWNER_PROBE_LOCK_TIMEOUT_SECONDS):
+            return
+        try:
+            if self._job is not None or _safe_is_alive(self._worker):
+                return
+            generation = self._worker_generation
+        finally:
+            self._condition.release()
+        try:
+            present = bool(self._memory_guard.has_existing_large_owner())
+        except Exception:  # noqa: BLE001 - an unreadable process list fails closed
+            present = True
+        if not self._condition.acquire(timeout=_OWNER_PROBE_LOCK_TIMEOUT_SECONDS):
+            return
+        try:
+            if (
+                generation == self._worker_generation
+                and self._job is None
+                and not _safe_is_alive(self._worker)
+            ):
+                self._set_large_owner_locked(present)
+        finally:
+            self._condition.release()
+
+    def _set_large_owner_locked(self, present: bool) -> None:
+        self._large_owner_present = present
+        if present:
+            self._last_failure_reason = _LARGE_OWNER_REASON
+
     def _unhealthy_reason_locked(self, now: float) -> str | None:
         if any(_safe_is_alive(worker) for worker in self._abandoned_workers):
             return "worker_did_not_exit"
         self._abandoned_workers = []
+        if self._large_owner_present:
+            return "large_owner_present"
         job = self._job
         if job is not None:
             if now - job.started_at > job.deadline_seconds + _STUCK_JOB_SLACK_SECONDS:
@@ -359,9 +413,10 @@ class SharedWhisperSupervisor:
             self._record_failure_locked("Whisper worker did not exit")
             raise WhisperUnavailable("Whisper worker did not exit")
         self._abandoned_workers = []
-        if self._memory_guard.has_existing_large_owner():
-            self._record_failure_locked("another large Whisper owner is present")
-            raise WhisperUnavailable("another large Whisper owner is present")
+        large_owner = self._memory_guard.has_existing_large_owner()
+        self._set_large_owner_locked(large_owner)
+        if large_owner:
+            raise WhisperUnavailable(_LARGE_OWNER_REASON)
         if self._memory_guard.pressure_high():
             self._last_failure_reason = _MEMORY_PRESSURE_REASON
             raise WhisperUnavailable(_MEMORY_PRESSURE_REASON)
@@ -382,6 +437,7 @@ class SharedWhisperSupervisor:
             self._record_failure_locked("Whisper worker failed to start")
             raise WhisperUnavailable("Whisper worker failed to start")
         self._worker = worker
+        self._worker_generation += 1
         self._worker_started_at = self._clock()
         self._last_used_at = self._clock()
         return worker
