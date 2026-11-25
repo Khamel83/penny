@@ -710,3 +710,9 @@ Previous dated checkpoints: [historical handoff](https://github.com/Khamel83/pen
 ## Fleet CI cancellation - source checkpoint (October 16, 2026)
 
 Prepared source on `feat/fleet-ci-cancellation-20261016` adds PR-only concurrency cancellation to `.github/workflows/test.yml`. Native CI, review, and normal merge remain pending. No runtime or deployment change is claimed.
+
+## November 25 session status
+
+The automatic-release source and Shared Whisper fix merged. The November 25 session reported that Omar activated the Shared Whisper release; automatic-release installation and natural release evidence need separate verification. The release-record PR is tracked independently.
+
+GitHub readback November 25: [#195](https://github.com/Khamel83/penny/pull/195): merged; [#196](https://github.com/Khamel83/penny/pull/196): merged; [#197](https://github.com/Khamel83/penny/pull/197): merged; [#182](https://github.com/Khamel83/penny/issues/182): open. Recheck before action.
