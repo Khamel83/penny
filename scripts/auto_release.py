@@ -243,6 +243,19 @@ def _keep_terminal(memory: dict, detail: str, otherwise: dict) -> dict:
     return otherwise
 
 
+def _already_tried(result: dict, record: dict) -> dict | None:
+    """What a run reports for a revision it does not deploy again on its own."""
+    outcome = record.get('outcome')
+    if outcome == 'released':
+        # The agents left a revision that was already released (a rollback
+        # by hand or restored plists). Do not fight it: report it.
+        return {**result, 'state': 'diverged', 'reason': 'running_left_released_revision'}
+    if outcome in {'failed', 'partial'}:
+        # Each revision is tried once; a new merge or a manual deploy moves on.
+        return {**result, 'state': outcome, 'reason': record.get('reason', 'unknown')}
+    return None
+
+
 def _unchanged(before: dict[str, dict], after: dict[str, dict]) -> bool:
     return all(after.get(label, {}).get('loaded') == item.get('loaded')
                and after.get(label, {}).get('revision') == item.get('revision')
@@ -330,14 +343,9 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
         return {**result, 'state': 'current', 'reason': 'no_release_paths'}
 
     if not retry:
-        outcome = record.get('outcome')
-        if outcome == 'released':
-            # The agents left a revision that was already released (a rollback
-            # by hand or restored plists). Do not fight it: report it.
-            return {**result, 'state': 'diverged', 'reason': 'running_left_released_revision'}
-        if outcome in {'failed', 'partial'}:
-            # Each revision is tried once; a new merge or a manual deploy moves on.
-            return {**result, 'state': outcome, 'reason': record.get('reason', 'unknown')}
+        tried = _already_tried(result, record)
+        if tried is not None:
+            return tried
 
     if busy_fn():
         # Nothing was tried: keep a status that needs a person (a --retry of a
@@ -361,6 +369,13 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
     if moved:
         git(repo, 'reset', '--quiet', '--keep', head)
     if error in RETRYABLE_DEPLOY_ERRORS:
+        tried = _already_tried(result, record) if retry else None
+        if tried is not None:
+            # A --retry that the deploy refused changed nothing, like a busy
+            # shared ASR before it: the record stays, so no scheduled run
+            # deploys this revision on its own (a rollback is not fought), and
+            # the status that needs a person stays, with ``detail`` saying why.
+            return _keep_terminal(memory, error, {**tried, 'detail': error})
         retries = 1 if retry else int(record.get('retries', 0)) + 1
         attempts[target] = {'outcome': 'waiting', 'reason': error, 'retries': retries}
         if retries < RETRY_LIMIT:

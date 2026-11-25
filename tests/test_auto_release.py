@@ -479,6 +479,38 @@ def test_busy_retry_keeps_a_terminal_status(repos, tmp_path, monkeypatch, leave,
     assert doctor_release(tmp_path, monkeypatch) == ('ready', 'ok')
 
 
+@pytest.mark.parametrize('error', sorted(release.RETRYABLE_DEPLOY_ERRORS))
+@pytest.mark.parametrize(('leave', 'expected'), [
+    (_leave_failed, ('failed', 'command_failed:backup_penny.py', 'degraded', 'release_failed')),
+    (_leave_diverged, ('diverged', 'running_left_released_revision', 'degraded', 'release_diverged')),
+])
+def test_retry_refused_by_the_deploy_keeps_the_record(repos, tmp_path, monkeypatch, leave, expected, error):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    leave(work, checkout, tmp_path, agents)
+    before = status(tmp_path)
+    running = dict(agents.revisions)
+    deploy = Deploy(agents, result='failed', error=error)
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], outcome['reason'], outcome['detail']) == (1, *expected[:2], error)
+    assert deploy.calls == 1 and agents.revisions == running
+    saved = status(tmp_path)
+    assert (saved['state'], saved['reason'], saved['detail']) == (*expected[:2], error)
+    assert saved['target_revision'] == before['target_revision']
+    assert doctor_release(tmp_path, monkeypatch) == expected[2:]
+    # Scheduled runs do not deploy the revision on their own: a failed commit
+    # stays failed and a rollback is not fought.
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason'], outcome.get('detail')) == (1, *expected[:2], None)
+    assert deploy.calls == 1 and agents.revisions == running
+    # Another --retry deploys.
+    deploy.result = 'activated'
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert doctor_release(tmp_path, monkeypatch) == ('ready', 'ok')
+
+
 def test_hold_after_a_good_release_reports_held(repos, tmp_path, monkeypatch):
     work, checkout, _ = repos
     agents = Agents(git(checkout, 'rev-parse', 'HEAD'))

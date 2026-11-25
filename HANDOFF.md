@@ -45,8 +45,15 @@ loaded; the new agent's first run replaces it. A refused `--install`
 (`DeploymentError` from an export agent that does not validate) now prints a
 `failed` JSON line and exits 1 instead of a traceback.
 
+Sixth review round (after `4cb8685`): a `--retry` that the deploy refused
+(`shared_whisper_busy` or `pushed_revision_mismatch`) no longer turns a failed
+or diverged commit into `waiting`. The status and the record stay, with
+`detail` set to the error, so the next scheduled run does not deploy that
+commit on its own (a rollback by hand is not fought); another `--retry` still
+deploys.
+
 Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
-(138 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+(143 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
 needs Flask and fails the same way on main in this sandbox).
 
 Not proven: that `git fetch` and `git ls-remote origin` work under launchd on

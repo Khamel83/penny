@@ -42,7 +42,10 @@ on a partial release, and reports `disabled` while the agent is not installed.
 While the hold file exists, `origin` cannot be fetched or the shared ASR is
 busy (also on `--retry`), a failed, blocked, partial or diverged status stays
 as it was (with `detail` set to `hold_file_present`, `fetch_failed` or
-`shared_whisper_busy`), so the alert does not clear itself.
+`shared_whisper_busy`), so the alert does not clear itself. A `--retry` that
+the deploy itself refuses (`shared_whisper_busy`, `pushed_revision_mismatch`)
+also keeps a failed or diverged status, with that `detail`, and keeps the
+record, so later scheduled runs do not deploy that commit on their own.
 Pause with `touch ~/.penny/release/hold`; retry a failed, partial or diverged
 commit with `--retry`; remove with `--uninstall` (releases are manual again).
 `--install` and `--uninstall` refuse while a release runs
