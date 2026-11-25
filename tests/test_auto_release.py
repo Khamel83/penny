@@ -245,9 +245,10 @@ def test_retry_from_a_partial_state_that_fails_again_stays_partial(repos, tmp_pa
     commit(work, 'watcher.py', 'v2\n')
     deploy = Deploy(agents, result='partial', error='command_failed:launchctl')
     run(checkout, tmp_path, agents, deploy)
-    # Busy owner: the retry waits; the next scheduled run is still partial.
+    # Busy owner: the retry starts nothing and the status stays partial.
     code, outcome = run(checkout, tmp_path, agents, deploy, busy=True, retry=True)
-    assert (code, outcome['state'], deploy.calls) == (0, 'waiting', 1)
+    assert (code, outcome['state'], outcome['detail'], deploy.calls) == (
+        1, 'partial', 'shared_whisper_busy', 1)
     code, outcome = run(checkout, tmp_path, agents, deploy)
     assert (code, outcome['state']) == (1, 'partial')
     # A retry whose deploy changes nothing still leaves the agents mixed.
@@ -423,6 +424,35 @@ def test_fetch_failure_or_hold_keeps_a_terminal_status(repos, tmp_path, monkeypa
     assert outcome.get('detail') is None and status(tmp_path)['detail'] is None
 
 
+@pytest.mark.parametrize(('leave', 'expected'), [
+    (_leave_failed, ('failed', 'command_failed:backup_penny.py', 'degraded', 'release_failed')),
+    (_leave_partial, ('partial', 'command_failed:launchctl', 'unready', 'release_partial')),
+    (_leave_diverged, ('diverged', 'running_left_released_revision', 'degraded', 'release_diverged')),
+])
+def test_busy_retry_keeps_a_terminal_status(repos, tmp_path, monkeypatch, leave, expected):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    leave(work, checkout, tmp_path, agents)
+    before = status(tmp_path)
+    deploy = Deploy(agents)
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy, busy=True, retry=True)
+        assert (code, outcome['state'], outcome['reason'], outcome['detail']) == (
+            1, *expected[:2], 'shared_whisper_busy')
+    saved = status(tmp_path)
+    assert (saved['state'], saved['reason'], saved['detail']) == (*expected[:2], 'shared_whisper_busy')
+    assert saved['target_revision'] == before['target_revision']
+    assert doctor_release(tmp_path, monkeypatch) == expected[2:]
+    assert deploy.calls == 0
+    # A scheduled run without --retry reports the same state afresh.
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (outcome['state'], outcome.get('detail')) == (expected[0], None)
+    # Once the owner is free, --retry deploys and the status clears.
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 1)
+    assert doctor_release(tmp_path, monkeypatch) == ('ready', 'ok')
+
+
 def test_hold_after_a_good_release_reports_held(repos, tmp_path, monkeypatch):
     work, checkout, _ = repos
     agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
@@ -589,7 +619,7 @@ def test_install_reuses_the_export_guard_without_secrets(tmp_path, monkeypatch):
     release.install(launchctl)
     assert 'bootout' in launchctl.calls
 
-    (home / '.penny/release').mkdir(parents=True)
+    (home / '.penny/release').mkdir(parents=True, exist_ok=True)
     (home / '.penny/release/status.json').write_text('{}')
     assert release.uninstall(launchctl)['status'] == 'uninstalled'
     assert not path.exists()
@@ -662,3 +692,69 @@ def test_uninstall_waits_for_a_release_in_progress(tmp_path, monkeypatch):
             release.uninstall(launchctl, sleep=lambda seconds: None)
     assert launchctl.calls == [] and launchctl.loaded
     assert plist.exists() and status_file.exists()
+
+
+def _export_agent(tmp_path, monkeypatch) -> Path:
+    home = tmp_path / 'home'
+    agents_dir = home / 'Library/LaunchAgents'
+    agents_dir.mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    export = {
+        'Label': 'com.penny.export',
+        'ProgramArguments': [str(ROOT / 'venv/bin/python'), str(ROOT / 'scripts/backup_penny.py')],
+        'WorkingDirectory': str(ROOT),
+        'EnvironmentVariables': {'PATH': '/usr/bin:/bin'},
+    }
+    (agents_dir / 'com.penny.export.plist').write_bytes(plistlib.dumps(export))
+    return agents_dir / 'com.penny.release.plist'
+
+
+def test_install_refuses_while_a_release_runs(tmp_path, monkeypatch):
+    path = _export_agent(tmp_path, monkeypatch)
+    path.write_bytes(plistlib.dumps({'Label': 'com.penny.release', 'old': True}))
+    launchctl = Launchctl()
+    launchctl.loaded = True
+    lock_file = tmp_path / 'home/.penny/release/release.lock'
+    lock_file.parent.mkdir(parents=True)
+    with open(lock_file, 'a') as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(release.ReleaseError, match='release_in_progress'):
+            release.install(launchctl, sleep=lambda seconds: None)
+    # Nothing was booted out or rewritten.
+    assert launchctl.calls == [] and launchctl.loaded
+    assert plistlib.loads(path.read_bytes()) == {'Label': 'com.penny.release', 'old': True}
+    assert release.install(launchctl, sleep=lambda seconds: None)['status'] == 'installed'
+    assert launchctl.calls[:3] == ['print', 'bootout', 'print']
+
+
+def test_install_waits_until_the_old_agent_is_unloaded(tmp_path, monkeypatch):
+    _export_agent(tmp_path, monkeypatch)
+
+    class SlowUnload(Launchctl):
+        prints_left = 3
+
+        def __call__(self, *args):
+            if args[0] == 'print' and self.calls.count('bootout') and self.prints_left:
+                self.prints_left -= 1
+                self.calls.append('print')
+                return subprocess.CompletedProcess(args, 0, '', '')
+            return super().__call__(*args)
+
+    launchctl = SlowUnload(bootout_unloads=True)
+    launchctl.loaded = True
+    naps = []
+    assert release.install(launchctl, sleep=naps.append)['status'] == 'installed'
+    assert len(naps) == 3
+    assert launchctl.calls.index('bootstrap') > launchctl.calls.index('bootout') + 3
+    # The lock is free again, so the new agent's first run can take it.
+    with open(tmp_path / 'home/.penny/release/release.lock', 'a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_install_does_not_load_a_second_agent_while_the_old_one_stays(tmp_path, monkeypatch):
+    _export_agent(tmp_path, monkeypatch)
+    launchctl = Launchctl(bootout_unloads=False)
+    launchctl.loaded = True
+    with pytest.raises(release.ReleaseError, match='agent_still_loaded'):
+        release.install(launchctl, sleep=lambda seconds: None)
+    assert 'bootstrap' not in launchctl.calls

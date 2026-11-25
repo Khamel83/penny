@@ -39,14 +39,16 @@ drops out of launchd after a clean release is reported `diverged`
 Status is `~/.penny/release/status.json`; Doctor's `release` component turns
 degraded on blocked, failed, diverged or a status older than one hour, unready
 on a partial release, and reports `disabled` while the agent is not installed.
-While the hold file exists or `origin` cannot be fetched, a failed, blocked,
-partial or diverged status stays as it was (with `detail` set to
-`hold_file_present` or `fetch_failed`), so the alert does not clear itself.
+While the hold file exists, `origin` cannot be fetched or the shared ASR is
+busy (also on `--retry`), a failed, blocked, partial or diverged status stays
+as it was (with `detail` set to `hold_file_present`, `fetch_failed` or
+`shared_whisper_busy`), so the alert does not clear itself.
 Pause with `touch ~/.penny/release/hold`; retry a failed, partial or diverged
 commit with `--retry`; remove with `--uninstall` (releases are manual again).
-`--uninstall` refuses while a release runs (`release_in_progress`) and, if
-launchd still has the agent after bootout (`agent_still_loaded`), keeps the
-plist and status file so Doctor keeps reporting the job.
+`--install` and `--uninstall` refuse while a release runs
+(`release_in_progress`) and wait until launchd no longer has the old agent
+(`agent_still_loaded` otherwise: install loads nothing new, uninstall keeps the
+plist and status file so Doctor keeps reporting the job).
 
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 

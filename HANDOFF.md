@@ -30,8 +30,15 @@ new merge. `--uninstall` takes the release lock (refuses with
 `release_in_progress`), checks with `launchctl print` that the agent is gone,
 and keeps the plist and status file with `agent_still_loaded` if it is not.
 
+Fourth review round (after `45f9c94`): a busy shared ASR no longer replaces a
+failed, partial or diverged status with `waiting` (also on `--retry`); the
+status stays with `detail` `shared_whisper_busy`. `--install` now takes the
+release lock too (refuses with `release_in_progress`), waits until launchd no
+longer has the old agent before loading the new one, and releases the lock
+before bootstrap so the new agent's first run can take it.
+
 Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
-(127 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+(133 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
 needs Flask and fails the same way on main in this sandbox).
 
 Not proven: that `git fetch` and `git ls-remote origin` work under launchd on

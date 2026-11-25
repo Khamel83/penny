@@ -26,15 +26,21 @@ current only while every installed agent is loaded on that revision; an agent
 that is not loaded is reported ``diverged`` (``agent_not_loaded:<label>``), and
 a new merge does not reload it: only ``--retry`` or a deploy by hand does. A
 partial release stays ``partial`` while the agents differ; only ``--retry`` or
-a deploy by hand converges them. While the hold file exists or ``origin`` cannot be
-fetched, the last failed, blocked, partial or diverged status stays in place
-with a ``detail`` naming why the run stopped, so the alert does not clear.
+a deploy by hand converges them. While the hold file exists, ``origin`` cannot be
+fetched or the shared-ASR owner is busy (also on ``--retry``), the last failed,
+blocked, partial or diverged status stays in place with a ``detail`` naming why
+the run stopped, so the alert does not clear.
+
+``--install`` and ``--uninstall`` take the same lock, so neither unloads the
+agent while a release runs (``release_in_progress``), and both wait until
+launchd no longer has the old agent (``agent_still_loaded`` otherwise).
 
 Prints one JSON line per run with no command output, plist or credential.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -46,7 +52,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -326,7 +332,10 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
             return {**result, 'state': outcome, 'reason': record.get('reason', 'unknown')}
 
     if busy_fn():
-        return {**result, 'state': 'waiting', 'reason': 'shared_whisper_busy'}
+        # Nothing was tried: keep a status that needs a person (a --retry of a
+        # partial, failed, blocked or diverged release) instead of "waiting".
+        return _keep_terminal(memory, 'shared_whisper_busy',
+                              {**result, 'state': 'waiting', 'reason': 'shared_whisper_busy'})
     write_status({**result, 'state': 'running', 'reason': 'deploying'})
     moved = head != target
     if moved:
@@ -448,7 +457,66 @@ def agent_plist(home: Path | None = None) -> tuple[dict, Path | None]:
     return data, log
 
 
-def install(launchctl: Callable[..., subprocess.CompletedProcess] = _launchctl) -> dict:
+UNLOAD_CHECKS = 20
+UNLOAD_CHECK_SECONDS = 0.25
+
+
+@contextmanager
+def _release_lock() -> Iterator[None]:
+    """Hold the lock a release run holds; refuse while a run is in progress."""
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = open(directory / 'release.lock', 'a')
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ReleaseError('release_in_progress') from None
+        yield
+    finally:
+        lock.close()
+
+
+def _unload(launchctl: Callable[..., subprocess.CompletedProcess],
+            sleep: Callable[[float], None], target: str) -> None:
+    """Boot the agent out and wait until ``launchctl print`` no longer finds it.
+
+    bootout's own exit code is not trusted either way.
+    """
+    if launchctl('print', target).returncode:
+        return
+    launchctl('bootout', target)
+    for _ in range(UNLOAD_CHECKS):
+        if launchctl('print', target).returncode:
+            return
+        sleep(UNLOAD_CHECK_SECONDS)
+    raise ReleaseError('agent_still_loaded')
+
+
+def install(launchctl: Callable[..., subprocess.CompletedProcess] | None = None,
+            sleep: Callable[[float], None] | None = None) -> dict:
+    """Write the agent plist and (re)load it.
+
+    Holds the release lock while the plist is replaced and the old agent is
+    booted out, so a reinstall never cuts off a release in progress (exit with
+    ``release_in_progress`` and try again), and waits until launchd no longer
+    has the old agent. The lock is released before the new agent is loaded, so
+    its first run (RunAtLoad) can take it.
+    """
+    launchctl = launchctl or _launchctl
+    sleep = sleep or time.sleep
+    target = f'gui/{os.getuid()}/{LABEL}'
+    with _release_lock():
+        path = _write_plist()
+        _unload(launchctl, sleep, target)
+    if launchctl('bootstrap', f'gui/{os.getuid()}', str(path)).returncode:
+        raise ReleaseError('bootstrap_failed')
+    if launchctl('print', target).returncode:
+        raise ReleaseError('agent_not_loaded')
+    return {'status': 'installed', 'label': LABEL, 'start_interval_seconds': START_INTERVAL_SECONDS}
+
+
+def _write_plist() -> Path:
     home = Path.home()
     data, log = agent_plist(home)
     if log is not None:
@@ -465,18 +533,7 @@ def install(launchctl: Callable[..., subprocess.CompletedProcess] = _launchctl) 
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    target = f'gui/{os.getuid()}/{LABEL}'
-    if launchctl('print', target).returncode == 0:
-        launchctl('bootout', target)
-    if launchctl('bootstrap', f'gui/{os.getuid()}', str(path)).returncode:
-        raise ReleaseError('bootstrap_failed')
-    if launchctl('print', target).returncode:
-        raise ReleaseError('agent_not_loaded')
-    return {'status': 'installed', 'label': LABEL, 'start_interval_seconds': START_INTERVAL_SECONDS}
-
-
-UNLOAD_CHECKS = 20
-UNLOAD_CHECK_SECONDS = 0.25
+    return path
 
 
 def uninstall(launchctl: Callable[..., subprocess.CompletedProcess] | None = None,
@@ -492,30 +549,13 @@ def uninstall(launchctl: Callable[..., subprocess.CompletedProcess] | None = Non
     """
     launchctl = launchctl or _launchctl
     sleep = sleep or time.sleep
-    directory = state_dir()
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock = open(directory / 'release.lock', 'a')
-    try:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ReleaseError('release_in_progress') from None
-        target = f'gui/{os.getuid()}/{LABEL}'
-        if launchctl('print', target).returncode == 0:
-            launchctl('bootout', target)
-            for _ in range(UNLOAD_CHECKS):
-                if launchctl('print', target).returncode:
-                    break
-                sleep(UNLOAD_CHECK_SECONDS)
-            else:
-                raise ReleaseError('agent_still_loaded')
+    with _release_lock():
+        _unload(launchctl, sleep, f'gui/{os.getuid()}/{LABEL}')
         path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
         path.unlink(missing_ok=True)
         # Without a status file Doctor reports release as manual ("disabled").
-        (directory / 'status.json').unlink(missing_ok=True)
+        (state_dir() / 'status.json').unlink(missing_ok=True)
         return {'status': 'uninstalled', 'label': LABEL}
-    finally:
-        lock.close()
 
 
 def main(argv: list[str] | None = None) -> int:
