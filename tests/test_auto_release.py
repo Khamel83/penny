@@ -483,17 +483,60 @@ def test_a_new_merge_after_a_divergence_is_released(repos, tmp_path):
     assert set(agents.revisions.values()) == {fixed}
 
 
+def test_an_agent_unloaded_after_a_clean_release_is_reported_not_current(repos, tmp_path, monkeypatch):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    target = commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents)
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'released'
+    # No partial attempt is remembered; the agent dropped out of launchd later.
+    agents.unloaded = {'com.penny.export'}
+    for _ in range(2):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason']) == (
+            1, 'diverged', 'agent_not_loaded:com.penny.export')
+        assert outcome['running_revision'] == target
+    assert deploy.calls == 1
+    assert doctor_release(tmp_path, monkeypatch) == ('degraded', 'release_diverged')
+    # A new merge does not reload it on its own.
+    commit(work, 'watcher.py', 'v3\n')
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], deploy.calls) == (1, 'diverged', 1)
+    # --retry deploys and loads every agent again.
+    code, outcome = run(checkout, tmp_path, agents, deploy, retry=True)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert not agents.unloaded
+
+
+def test_an_unloaded_agent_is_not_current_on_a_docs_only_merge(repos, tmp_path):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    agents.unloaded = {'com.penny.shared-whisper'}
+    commit(work, 'docs/note.md', 'note\n')
+    deploy = Deploy(agents)
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], outcome['reason']) == (
+        1, 'diverged', 'agent_not_loaded:com.penny.shared-whisper')
+    assert deploy.calls == 0
+    assert status(tmp_path)['state'] == 'diverged'
+
+
 class Launchctl:
-    def __init__(self):
+    def __init__(self, bootout_unloads: bool = True, bootout_code: int = 0):
         self.calls, self.loaded = [], False
+        self.bootout_unloads, self.bootout_code = bootout_unloads, bootout_code
 
     def __call__(self, *args):
         self.calls.append(args[0])
+        code = 0
         if args[0] == 'bootstrap':
             self.loaded = True
         elif args[0] == 'bootout':
-            self.loaded = False
-        code = 0 if args[0] != 'print' or self.loaded else 113
+            if self.bootout_unloads:
+                self.loaded = False
+            code = self.bootout_code
+        elif args[0] == 'print' and not self.loaded:
+            code = 113
         return subprocess.CompletedProcess(args, code, '', '')
 
 
@@ -564,3 +607,58 @@ def test_install_refuses_an_unvalidated_export_agent(tmp_path, monkeypatch):
     with pytest.raises(deploy_penny.DeploymentError):
         release.install(Launchctl())
     assert not (home / 'Library/LaunchAgents/com.penny.release.plist').exists()
+
+
+def _installed_release(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    (home / 'Library/LaunchAgents').mkdir(parents=True)
+    (home / '.penny/release').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    plist = home / 'Library/LaunchAgents/com.penny.release.plist'
+    plist.write_bytes(plistlib.dumps({'Label': 'com.penny.release'}))
+    status_file = home / '.penny/release/status.json'
+    status_file.write_text('{"state": "current"}')
+    return plist, status_file
+
+
+def test_uninstall_keeps_the_agent_files_while_launchd_still_has_it(tmp_path, monkeypatch):
+    plist, status_file = _installed_release(tmp_path, monkeypatch)
+    launchctl = Launchctl(bootout_unloads=False, bootout_code=5)
+    launchctl.loaded = True
+    naps = []
+    with pytest.raises(release.ReleaseError, match='agent_still_loaded'):
+        release.uninstall(launchctl, sleep=naps.append)
+    assert plist.exists() and status_file.exists()
+    assert len(naps) == release.UNLOAD_CHECKS
+
+
+def test_uninstall_prints_a_failure_when_the_agent_stays_loaded(tmp_path, monkeypatch, capsys):
+    plist, status_file = _installed_release(tmp_path, monkeypatch)
+    stuck = Launchctl(bootout_unloads=False)
+    stuck.loaded = True
+    monkeypatch.setattr(release, '_launchctl', stuck)
+    monkeypatch.setattr(release.time, 'sleep', lambda seconds: None)
+    assert release.main(['--uninstall']) == release.EXIT_PROBLEM
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed == {'status': 'failed', 'error': 'agent_still_loaded'}
+    assert plist.exists() and status_file.exists()
+
+
+def test_uninstall_trusts_launchctl_print_over_bootout_exit_code(tmp_path, monkeypatch):
+    plist, status_file = _installed_release(tmp_path, monkeypatch)
+    launchctl = Launchctl(bootout_code=36)  # unloaded, but bootout reported an error
+    launchctl.loaded = True
+    assert release.uninstall(launchctl, sleep=lambda seconds: None)['status'] == 'uninstalled'
+    assert not plist.exists() and not status_file.exists()
+
+
+def test_uninstall_waits_for_a_release_in_progress(tmp_path, monkeypatch):
+    plist, status_file = _installed_release(tmp_path, monkeypatch)
+    launchctl = Launchctl()
+    launchctl.loaded = True
+    with open(tmp_path / 'home/.penny/release/release.lock', 'a') as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(release.ReleaseError, match='release_in_progress'):
+            release.uninstall(launchctl, sleep=lambda seconds: None)
+    assert launchctl.calls == [] and launchctl.loaded
+    assert plist.exists() and status_file.exists()

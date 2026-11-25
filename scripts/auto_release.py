@@ -21,9 +21,12 @@ agent on its old revision returns the checkout to that revision.
 
 A revision that was released (by this job, or seen running) is never deployed
 again on its own: agents that later run another revision are reported
-``diverged`` until a new merge, a deploy by hand or ``--retry``. A partial
-release stays ``partial`` while the agents differ; only ``--retry`` or a deploy
-by hand converges them. While the hold file exists or ``origin`` cannot be
+``diverged`` until a new merge, a deploy by hand or ``--retry``. The release is
+current only while every installed agent is loaded on that revision; an agent
+that is not loaded is reported ``diverged`` (``agent_not_loaded:<label>``), and
+a new merge does not reload it: only ``--retry`` or a deploy by hand does. A
+partial release stays ``partial`` while the agents differ; only ``--retry`` or
+a deploy by hand converges them. While the hold file exists or ``origin`` cannot be
 fetched, the last failed, blocked, partial or diverged status stays in place
 with a ``detail`` naming why the run stopped, so the alert does not clear.
 
@@ -42,6 +45,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Callable
 from urllib.request import urlopen
 
@@ -267,15 +271,20 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
     attempts = memory.setdefault('attempts', {})
     record = attempts.get(target, {})
 
-    # A partial attempt leaves agents on different revisions (or one agent
-    # unloaded). Only --retry, or a deploy by hand, converges them; a new
-    # merge does not, and the status stays partial until then.
+    # Settled means every installed agent is loaded on one revision. A partial
+    # attempt leaves agents on different revisions (or one agent unloaded),
+    # and an agent can also drop out of launchd after a clean release. Only
+    # --retry, or a deploy by hand, converges them; a new merge does not, and
+    # the status stays partial or diverged until then.
     partial = _remembered_partial(attempts, target, revisions)
-    unsettled = running is None or (partial is not None and not _all_at(before, running))
+    unsettled = running is None or not _all_at(before, running)
     if unsettled and not retry:
         if partial is not None:
             return {**result, 'state': 'partial', 'reason': partial.get('reason', 'unknown')}
-        raise ReleaseError('running_revision_mixed')
+        if running is None:
+            raise ReleaseError('running_revision_mixed')
+        unloaded = sorted(label for label, item in before.items() if not item.get('loaded'))
+        return {**result, 'state': 'diverged', 'reason': 'agent_not_loaded:' + unloaded[0]}
     if running == target and not unsettled:
         # Seen running: never deploy this revision again on its own.
         if record.get('outcome') != 'released':
@@ -466,15 +475,47 @@ def install(launchctl: Callable[..., subprocess.CompletedProcess] = _launchctl) 
     return {'status': 'installed', 'label': LABEL, 'start_interval_seconds': START_INTERVAL_SECONDS}
 
 
-def uninstall(launchctl: Callable[..., subprocess.CompletedProcess] = _launchctl) -> dict:
-    target = f'gui/{os.getuid()}/{LABEL}'
-    if launchctl('print', target).returncode == 0:
-        launchctl('bootout', target)
-    path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
-    path.unlink(missing_ok=True)
-    # Without a status file Doctor reports release as manual ("disabled").
-    (state_dir() / 'status.json').unlink(missing_ok=True)
-    return {'status': 'uninstalled', 'label': LABEL}
+UNLOAD_CHECKS = 20
+UNLOAD_CHECK_SECONDS = 0.25
+
+
+def uninstall(launchctl: Callable[..., subprocess.CompletedProcess] | None = None,
+              sleep: Callable[[float], None] | None = None) -> dict:
+    """Unload the agent, then remove its plist and status file.
+
+    Takes the release lock first, so a release in progress is never cut off
+    (exit with ``release_in_progress`` and try again) and no run starts while
+    the agent is removed. ``launchctl print`` decides whether the agent is
+    gone; bootout's own exit code is not trusted either way. If the agent is
+    still loaded, the plist and status.json stay, so Doctor keeps reporting
+    the release job instead of treating releases as manual.
+    """
+    launchctl = launchctl or _launchctl
+    sleep = sleep or time.sleep
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = open(directory / 'release.lock', 'a')
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ReleaseError('release_in_progress') from None
+        target = f'gui/{os.getuid()}/{LABEL}'
+        if launchctl('print', target).returncode == 0:
+            launchctl('bootout', target)
+            for _ in range(UNLOAD_CHECKS):
+                if launchctl('print', target).returncode:
+                    break
+                sleep(UNLOAD_CHECK_SECONDS)
+            else:
+                raise ReleaseError('agent_still_loaded')
+        path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
+        path.unlink(missing_ok=True)
+        # Without a status file Doctor reports release as manual ("disabled").
+        (directory / 'status.json').unlink(missing_ok=True)
+        return {'status': 'uninstalled', 'label': LABEL}
+    finally:
+        lock.close()
 
 
 def main(argv: list[str] | None = None) -> int:

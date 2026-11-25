@@ -23,8 +23,15 @@ of reporting ready; a partial release stays `partial` (Doctor
 now deploys from the mixed state (`deploy_penny.py` reloads every agent at
 HEAD whatever each ran before).
 
+Second review round (after `b9dec60`): an agent that drops out of launchd after
+a clean release is no longer reported current; it is `diverged`
+(`agent_not_loaded:<label>`) until `--retry` or a deploy by hand, also after a
+new merge. `--uninstall` takes the release lock (refuses with
+`release_in_progress`), checks with `launchctl print` that the agent is gone,
+and keeps the plist and status file with `agent_still_loaded` if it is not.
+
 Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
-(121 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+(127 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
 needs Flask and fails the same way on main in this sandbox).
 
 Not proven: that `git fetch` and `git ls-remote origin` work under launchd on

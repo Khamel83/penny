@@ -32,7 +32,10 @@ A partial release (agents left on different revisions, or one unloaded) stays
 `origin/main` to every agent or the deploy is run by hand. A revision that was
 released, or seen running, is never deployed again on its own: if the agents
 later run an older revision (a rollback by hand, restored plists) the status is
-`diverged` until a new merge, a deploy by hand or `--retry`.
+`diverged` until a new merge, a deploy by hand or `--retry`. The release counts
+as current only while every agent is loaded on one revision: an agent that
+drops out of launchd after a clean release is reported `diverged`
+(`agent_not_loaded:<label>`), and only `--retry` or a deploy by hand reloads it.
 Status is `~/.penny/release/status.json`; Doctor's `release` component turns
 degraded on blocked, failed, diverged or a status older than one hour, unready
 on a partial release, and reports `disabled` while the agent is not installed.
@@ -41,6 +44,9 @@ partial or diverged status stays as it was (with `detail` set to
 `hold_file_present` or `fetch_failed`), so the alert does not clear itself.
 Pause with `touch ~/.penny/release/hold`; retry a failed, partial or diverged
 commit with `--retry`; remove with `--uninstall` (releases are manual again).
+`--uninstall` refuses while a release runs (`release_in_progress`) and, if
+launchd still has the agent after bootout (`agent_still_loaded`), keeps the
+plist and status file so Doctor keeps reporting the job.
 
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 
