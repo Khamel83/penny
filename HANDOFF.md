@@ -1,3 +1,67 @@
+## Issue #182 — automatic release on merge, source only, November 25
+
+Why Penny stopped deploying after November 10: releases were only ever run by
+hand on the Mac; nothing ran `deploy_penny.py --apply` after a merge. The first
+attempt at #182 was rejected because it had no caller and its path exclusions
+did not match INFRA.md.
+
+Done in source: `scripts/auto_release.py` with `--install`, `--uninstall` and
+`--retry`; the `com.penny.release` agent (every five minutes) runs the existing
+deploy unchanged, so its guards stay (clean pushed main, backup first, shared
+ASR busy check, per-agent reload and readback). Release paths live in INFRA.md
+between `release-paths` markers and a test compares them with the code. Status
+goes to `~/.penny/release/status.json`; Doctor's new `release` component makes
+a blocked, failed, partial, diverged or stale release visible through the existing
+`/ready` check that Infra already watches. Not installed: reports `disabled`.
+
+Review fixes on PR #195 (after `09ea493`): a released revision that the agents
+later leave is reported `diverged` (Doctor `release_diverged`, degraded) and is
+not redeployed without `--retry` or a new merge; a held run or failed fetch
+keeps the last failed/blocked/partial/diverged status with a `detail` instead
+of reporting ready; a partial release stays `partial` (Doctor
+`release_partial`, unready) on later runs and after new merges, and `--retry`
+now deploys from the mixed state (`deploy_penny.py` reloads every agent at
+HEAD whatever each ran before).
+
+Second review round (after `b9dec60`): an agent that drops out of launchd after
+a clean release is no longer reported current; it is `diverged`
+(`agent_not_loaded:<label>`) until `--retry` or a deploy by hand, also after a
+new merge. `--uninstall` takes the release lock (refuses with
+`release_in_progress`), checks with `launchctl print` that the agent is gone,
+and keeps the plist and status file with `agent_still_loaded` if it is not.
+
+Fourth review round (after `45f9c94`): a busy shared ASR no longer replaces a
+failed, partial or diverged status with `waiting` (also on `--retry`); the
+status stays with `detail` `shared_whisper_busy`. `--install` now takes the
+release lock too (refuses with `release_in_progress`), waits until launchd no
+longer has the old agent before loading the new one, and releases the lock
+before bootstrap so the new agent's first run can take it.
+
+Fifth review round (after `0a857c4`): `--install` and `--uninstall` set the
+status to `blocked` (`install_incomplete`, `uninstall_incomplete`) before they
+unload the agent, so a reinstall whose bootstrap fails or that is killed after
+the unload leaves Doctor `release` degraded instead of ready with no agent
+loaded; the new agent's first run replaces it. A refused `--install`
+(`DeploymentError` from an export agent that does not validate) now prints a
+`failed` JSON line and exits 1 instead of a traceback.
+
+Sixth review round (after `4cb8685`): a `--retry` that the deploy refused
+(`shared_whisper_busy` or `pushed_revision_mismatch`) no longer turns a failed
+or diverged commit into `waiting`. The status and the record stay, with
+`detail` set to the error, so the next scheduled run does not deploy that
+commit on its own (a rollback by hand is not fought); another `--retry` still
+deploys.
+
+Focused tests: `python3 -m pytest -q tests/test_auto_release.py tests/test_doctor.py tests/test_deploy_penny.py tests/test_reliability_contracts.py`
+(143 passed; the one failure, `test_doctor_separates_liveness_from_readiness`,
+needs Flask and fails the same way on main in this sandbox).
+
+Not proven: that `git fetch` and `git ls-remote origin` work under launchd on
+the Mac (credentials of the user agent). If the first run reports
+`fetch_failed` or `pushed_revision_mismatch`, check the remote's credential
+helper for the launch agent. Next: review, merge, then the install step in
+TODO.md on the Mac.
+
 ## Issue #169 — backup retention, source only, November 10
 
 Done in this worktree: newest two verified sets, verification before removal,

@@ -1,3 +1,63 @@
+## Release — automatic on merge (source only, November 25, 2026)
+
+Not installed yet. `scripts/auto_release.py --install`, run once on the Mac
+runtime checkout, adds the `com.penny.release` launch agent. Every five minutes
+it fetches `origin/main`, compares it with the revision the five agents run, and
+when a release path changed it fast-forwards the checkout and runs
+`scripts/deploy_penny.py --apply` unchanged (clean pushed main, backup first,
+shared-ASR busy check, per-agent reload and readback). It reuses the export
+agent's interpreter, SSD guard and storage environment, copies no credential,
+and logs to `release.system.log` beside the export log.
+
+Which changed paths start a release (checked against the code by
+`tests/test_auto_release.py`):
+
+<!-- release-paths:begin -->
+- `docs/**`: not a release
+- `tests/**`: not a release
+- `.github/**`: not a release
+- `*.md`: not a release (repository root only)
+- `requirements.txt`: blocks the release
+- `requirements-asr.lock`: blocks the release
+- every other path: release
+<!-- release-paths:end -->
+
+A dependency change is blocked because the deploy does not install packages:
+install them, then run the deploy by hand. Each commit is tried once. While
+the shared ASR serves a client the run waits without starting; a deploy refused
+because the ASR became busy or `origin/main` moved is retried up to six times.
+A failure that left every agent on its old revision puts the checkout back.
+A partial release (agents left on different revisions, or one unloaded) stays
+`partial` on every run, also after a new merge, until `--retry` deploys
+`origin/main` to every agent or the deploy is run by hand. A revision that was
+released, or seen running, is never deployed again on its own: if the agents
+later run an older revision (a rollback by hand, restored plists) the status is
+`diverged` until a new merge, a deploy by hand or `--retry`. The release counts
+as current only while every agent is loaded on one revision: an agent that
+drops out of launchd after a clean release is reported `diverged`
+(`agent_not_loaded:<label>`), and only `--retry` or a deploy by hand reloads it.
+Status is `~/.penny/release/status.json`; Doctor's `release` component turns
+degraded on blocked, failed, diverged or a status older than one hour, unready
+on a partial release, and reports `disabled` while the agent is not installed.
+While the hold file exists, `origin` cannot be fetched or the shared ASR is
+busy (also on `--retry`), a failed, blocked, partial or diverged status stays
+as it was (with `detail` set to `hold_file_present`, `fetch_failed` or
+`shared_whisper_busy`), so the alert does not clear itself. A `--retry` that
+the deploy itself refuses (`shared_whisper_busy`, `pushed_revision_mismatch`)
+also keeps a failed or diverged status, with that `detail`, and keeps the
+record, so later scheduled runs do not deploy that commit on their own.
+Pause with `touch ~/.penny/release/hold`; retry a failed, partial or diverged
+commit with `--retry`; remove with `--uninstall` (releases are manual again).
+`--install` and `--uninstall` refuse while a release runs
+(`release_in_progress`) and wait until launchd no longer has the old agent
+(`agent_still_loaded` otherwise: install loads nothing new, uninstall keeps the
+plist so Doctor keeps reporting the job). Before the unload both set the
+status to `blocked` (`install_incomplete` or `uninstall_incomplete`); only the
+new agent's first run replaces it. A reinstall whose bootstrap fails or that is
+cut off midway therefore shows Doctor `release` degraded, not ready while no
+agent is loaded. A refused `--install` (for example an export agent that does
+not validate) prints one `failed` line, exits 1 and changes nothing.
+
 ## iCloud Markdown projection — deployed October 26, 2026 UTC
 
 Exact merged source b4181aa is installed through the documented deployment;
