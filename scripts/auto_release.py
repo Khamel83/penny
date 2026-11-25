@@ -321,6 +321,9 @@ def _release(repo: Path, directory: Path, memory: dict, write_status: Callable[[
     result['release_paths'] = (manual + release)[:20]
     if manual:
         return {**result, 'state': 'blocked', 'reason': 'manual_release_required'}
+    # This return comes before the "released" check below on purpose: a target
+    # with no release paths is current on every run, although the agents still
+    # run the older revision, so it is never reported as one they left.
     if not release and not unsettled:
         if record.get('outcome') != 'released':
             attempts[target] = {'outcome': 'released', 'reason': 'no_release_paths'}

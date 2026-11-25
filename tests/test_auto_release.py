@@ -126,6 +126,32 @@ def test_docs_only_merge_is_not_a_release(repos, tmp_path):
     assert deploy.calls == 0
     assert git(checkout, 'rev-parse', 'HEAD') == head
     assert status(tmp_path)['state'] == 'current'
+    # Later runs on the same target stay current: the agents never ran it, so
+    # this is not a released revision they left.
+    for _ in range(2):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason']) == (0, 'current', 'no_release_paths')
+    assert deploy.calls == 0
+
+
+def test_docs_only_merge_after_a_release_stays_current(repos, tmp_path, monkeypatch):
+    work, checkout, _ = repos
+    agents = Agents(git(checkout, 'rev-parse', 'HEAD'))
+    released = commit(work, 'watcher.py', 'v2\n')
+    deploy = Deploy(agents)
+    assert run(checkout, tmp_path, agents, deploy)[1]['state'] == 'released'
+    docs = commit(work, 'docs/note.md', 'note\n')
+    for _ in range(3):
+        code, outcome = run(checkout, tmp_path, agents, deploy)
+        assert (code, outcome['state'], outcome['reason']) == (0, 'current', 'no_release_paths')
+        assert (outcome['target_revision'], outcome['running_revision']) == (docs, released)
+    assert deploy.calls == 1
+    assert doctor_release(tmp_path, monkeypatch) == ('ready', 'ok')
+    # The next code merge is released as usual.
+    code_merge = commit(work, 'watcher.py', 'v3\n')
+    code, outcome = run(checkout, tmp_path, agents, deploy)
+    assert (code, outcome['state'], deploy.calls) == (0, 'released', 2)
+    assert set(agents.revisions.values()) == {code_merge}
 
 
 def test_code_merge_fast_forwards_and_deploys(repos, tmp_path):
