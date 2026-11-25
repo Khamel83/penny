@@ -48,14 +48,16 @@ deployment complete. If `/health` shows 503, the reason field says which hang it
 saw. Issues #186 and #192 were closed as completed on November 25 (about 20:51
 UTC) on the readback above.
 
-## Runtime deployed at current source — November 10, 2026
+## Runtime release of November 10, 2026 (superseded)
 
 Superseded November 25: `deploy_penny.py` reports all five labels `current` at
 `1f6df02` (section above); Doctor and `/ready` at that revision are not yet read.
+The current acceptance check is the open TODO line for `1f6df02`, not the `89cd0be`
+check below.
 
-`scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
-`~/.penny/deployments/20261110T214053Z`). Check `deploy_penny.py` reports `current` for
-all five services and `/ready` 200 with `source_revision` `89cd0be`. This supersedes
+History: `scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
+`~/.penny/deployments/20261110T214053Z`). Its acceptance check was `deploy_penny.py` reporting
+`current` for all five services and `/ready` 200 with `source_revision` `89cd0be`. That superseded
 earlier notes that the runtime loaded `b4181aa`: `/ready` had reported the old revision because
 launchd pinned `PENNY_SOURCE_REVISION` and the later `doctor.py` change had not been deployed.
 Lesson: after any code change merged to main, run the deploy; docs-only commits do not need it.
