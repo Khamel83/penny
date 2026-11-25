@@ -12,7 +12,7 @@ runtime, then on the homelab confirm the set count is at most 2 and `/` is not
 shrinking because of Penny. A missing `/mnt/main2` mount must stay a failure;
 do not mkdir it on the boot disk.
 
-## Issues #186 and #192 — Shared Whisper fails loudly, deployed November 25
+## Issues #186 and #192 — Shared Whisper fails loudly, released November 25, not yet accepted
 
 Merged as [#196](https://github.com/Khamel83/penny/pull/196) (`1f6df02`): workers send a
 ready message and a request fails after 180 seconds with no start
@@ -30,7 +30,7 @@ Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_share
 (simulated-hang and owner-check tests and the keeper tests; the server and Parakeet
 adapter tests need Flask, which this sandbox lacks, so CI runs them).
 
-Deployed November 25, about 20:50 UTC. The Mac checkout `/Users/macmini/penny` was
+Released November 25, about 20:50 UTC. The Mac checkout `/Users/macmini/penny` was
 on the stale branch `docs/deploy-current-89cd0be-20261110` (PR #168's head, already
 squash-merged), so the first `--apply` refused with `checkout_not_main`. After
 `git switch main` and a fast-forward to `1f6df02`, `deploy_penny.py --apply`
@@ -41,13 +41,17 @@ worker; `launchctl print` showed `PENNY_SOURCE_REVISION`
 `com.penny.shared-whisper-keeper`. The original keeper plist is saved at
 `~/.penny/deployments/keeper-before-1f6df02.plist`.
 
-Not yet observed: Doctor under the installed service configuration, and one real
-request on the new code (`last_success_at` was null at readback). If `/health`
-shows 503, the reason field says which hang it saw.
+Not yet observed: Doctor under the installed service configuration, `/ready`, and
+one real request on the new code (`last_success_at` was null at readback). Until
+Doctor and `/ready` are read, docs/macmini-deployment.md does not count this
+deployment complete. If `/health` shows 503, the reason field says which hang it
+saw. Issues #186 and #192 were closed as completed on November 25 (about 20:51
+UTC) on the readback above.
 
 ## Runtime deployed at current source — November 10, 2026
 
-Superseded November 25: all five services now run `1f6df02` (section above).
+Superseded November 25: `deploy_penny.py` reports all five labels `current` at
+`1f6df02` (section above); Doctor and `/ready` at that revision are not yet read.
 
 `scripts/deploy_penny.py --apply` was run at `89cd0be` (receipt
 `~/.penny/deployments/20261110T214053Z`). Check `deploy_penny.py` reports `current` for
