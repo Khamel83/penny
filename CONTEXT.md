@@ -12,8 +12,10 @@ Shared Whisper `/health` now means "can finish work", not only "process
 answers": it returns 503 when the service is wedged, so the keeper restarts it
 and Doctor/Uptime Kuma show it down. When another process holds the model, a
 restart cannot help, so `/health` reports `large_owner_present` and the keeper
-leaves it alone; a person ends that process. Not deployed; the last recorded
-release is November 10.
+leaves it alone; a person identifies and ends that process. A process list that
+cannot be read is `owner_check_failed`, not an owner: loading stays refused and
+the keeper restarts as for any 503. Not deployed; the last recorded release is
+November 10.
 
 ## Current Factory voice acceptance — November8 local / November9 UTC
 

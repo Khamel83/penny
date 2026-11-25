@@ -7,6 +7,7 @@
 
 - [x] Source: 180-second start limit with a worker ready message, non-raising worker stop, and `/health` 503 with `unhealthy_reason` when nothing can finish, so the existing keeper restarts it. Simulated-hang tests in `tests/test_shared_whisper_hangs.py`.
 - [x] Source: another process holding a model reports `large_owner_present` (checked while idle, not counted as a failure) and the keeper does not restart for it, so a child that outlives a restart cannot cause a restart loop.
+- [x] Source: a process list that cannot be read reports `owner_check_failed`, not an owner; loading stays refused and the keeper restarts for it. The operator doc lists exactly the matched processes before anything is ended.
 - [ ] After merge, release to the Mac, reinstall only the keeper (docs/macmini-deployment.md), and read back Shared Whisper `/health` (`healthy: true`) and the loaded `PENNY_SOURCE_REVISION` of both `com.penny.shared-whisper` and the keeper (`launchctl print`); then close #186 and #192 with that receipt.
 
 ## Current Factory voice acceptance — November8 local / November9 UTC

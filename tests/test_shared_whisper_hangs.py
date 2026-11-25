@@ -13,7 +13,7 @@ import shared_whisper.supervisor as supervisor_module
 from shared_whisper.parakeet_process import ParakeetWorker
 from shared_whisper.protocol import ClientKind, WhisperResult, WhisperUnavailable
 from shared_whisper.supervisor import SharedWhisperSupervisor
-from shared_whisper.worker import SubprocessWorker
+from shared_whisper.worker import MacMemoryGuard, SubprocessWorker
 
 
 MODEL_ID = "mlx-community/whisper-large-v3-turbo"
@@ -396,13 +396,42 @@ def test_owner_probe_is_discarded_when_our_worker_starts_during_it():
     assert status["healthy"] is True
 
 
-def test_unreadable_process_list_reports_large_owner_present():
-    supervisor = _supervisor(Factory(), [0.0], guard=OwnerGuard(error=True))
+def test_unreadable_process_list_is_reported_as_a_failed_check_not_an_owner():
+    """penny#196 review: ps failing is not proof of another owner. Loading
+    stays refused, but /health names the failed check, which the keeper
+    counts as a normal strike, and it clears once ps reads again."""
+    factory = Factory()
+    guard = OwnerGuard(error=True)
+    supervisor = _supervisor(factory, [0.0], guard=guard)
 
     status = supervisor.status()
     assert status["healthy"] is False
-    assert status["unhealthy_reason"] == "large_owner_present"
+    assert status["unhealthy_reason"] == "owner_check_failed"
+    assert "process list" in status["last_failure_reason"]
     assert status["consecutive_failures"] == 0
+
+    with pytest.raises(WhisperUnavailable, match="could not read the process list"):
+        supervisor.handle_request(ClientKind.ATLAS, audio_path="a.wav", options={})
+    assert factory.workers == []  # still fails closed: no model loaded
+    assert supervisor.status()["unhealthy_reason"] == "owner_check_failed"
+
+    guard.error = False
+    assert supervisor.status()["healthy"] is True
+
+
+@pytest.mark.parametrize(
+    ("reader", "reason"),
+    [
+        (lambda: None, "owner_check_failed"),  # ps exited nonzero or timed out
+        (lambda: "", None),
+        (lambda: "4242 Penny Shared Whisper Worker (large-v3-turbo)\n", "large_owner_present"),
+    ],
+)
+def test_mac_guard_tells_a_failed_check_from_an_owner(reader, reason):
+    guard = MacMemoryGuard(process_reader=reader, pressure_reader=lambda: "free percentage: 50%")
+    supervisor = _supervisor(Factory(), [0.0], guard=guard)
+
+    assert supervisor.status()["unhealthy_reason"] == reason
 
 
 def test_errors_from_a_running_model_are_not_counted_as_an_outage():

@@ -36,6 +36,12 @@ _LARGE_OWNER_MARKERS = (
 )
 
 
+# Result of the process-list check for another large model owner.
+OWNER_PRESENT = "present"
+OWNER_ABSENT = "absent"
+OWNER_UNKNOWN = "unknown"
+
+
 def _is_large_owner_line(line: str) -> bool:
     """Classify only large Whisper owners, not the protected tiny service."""
 
@@ -120,14 +126,32 @@ class MacMemoryGuard:
         self._pressure_reader = pressure_reader or _read_memory_pressure
         self._min_free_percent = max(1, min(50, int(min_free_percent)))
 
-    def has_existing_large_owner(self) -> bool:
-        try:
-            output = self._process_reader()
-        except Exception:
-            return True
+    def large_owner_lines(self) -> list[str]:
+        """Return the process-list lines that hold a large model.
+
+        Raises ``OSError`` when the process list cannot be read, so a caller
+        can tell "no other owner" from "could not check".
+        """
+
+        output = self._process_reader()
         if output is None:
-            return True
-        return any(_is_large_owner_line(line) for line in output.splitlines())
+            raise OSError("could not read the process list")
+        return [
+            line.strip() for line in output.splitlines() if _is_large_owner_line(line)
+        ]
+
+    def large_owner_state(self) -> str:
+        """``present``, ``absent``, or ``unknown`` when ps cannot be read."""
+
+        try:
+            lines = self.large_owner_lines()
+        except Exception:  # noqa: BLE001 - any probe failure is "unknown"
+            return OWNER_UNKNOWN
+        return OWNER_PRESENT if lines else OWNER_ABSENT
+
+    def has_existing_large_owner(self) -> bool:
+        # Fail closed: a process list that cannot be read blocks a load.
+        return self.large_owner_state() != OWNER_ABSENT
 
     def pressure_high(self) -> bool:
         try:

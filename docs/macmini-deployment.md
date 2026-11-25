@@ -160,7 +160,9 @@ canonical SQLite ledger.
 failures it kickstarts `com.penny.shared-whisper` (or bootstraps it when it is
 not loaded) and writes one syslog line tagged `penny-shared-whisper-keeper`.
 A 503 whose `unhealthy_reason` is `large_owner_present` is not a strike: another
-process holds the model and a restart cannot clear it.
+process holds the model and a restart cannot clear it (identify and end it as
+[shared-parakeet.md](shared-parakeet.md) says). `owner_check_failed`, a process
+list that could not be read, is a normal strike.
 It uses macOS system tools on the internal disk and an empty strike directory
 inside the owner-only Darwin temporary directory, so it also covers a reboot
 where the SSD mounts late. State roots, state and strikes reject symlinks,

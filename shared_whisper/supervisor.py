@@ -42,6 +42,14 @@ _MEMORY_PRESSURE_REASON = "macOS memory pressure is too high"
 # so it does not count as a restart-fixable failure; /health reports it as its
 # own reason, which the keeper leaves alone and Kuma and doctor still show.
 _LARGE_OWNER_REASON = "another large Whisper owner is present"
+# The process list could not be read, so nobody knows whether another owner
+# is there. Loading stays refused (fail closed), but /health names this as its
+# own reason: it is not proof of an owner, and the keeper treats it as a normal
+# strike, since a restart may clear a fault in this process (penny#196).
+_OWNER_CHECK_FAILED_REASON = "could not read the process list to check for another Whisper owner"
+_OWNER_PRESENT = "present"
+_OWNER_ABSENT = "absent"
+_OWNER_UNKNOWN = "unknown"
 # status() re-checks for another owner only while idle. It skips the check
 # rather than wait behind a busy request.
 _OWNER_PROBE_LOCK_TIMEOUT_SECONDS = 0.2
@@ -62,6 +70,9 @@ class MemoryGuard(Protocol):
     def has_existing_large_owner(self) -> bool: ...
 
     def pressure_high(self) -> bool: ...
+
+    # Optional: ``present``, ``absent`` or ``unknown``. A guard without it is
+    # read through has_existing_large_owner (see _check_large_owner).
 
 
 class WorkerHandle(Protocol):
@@ -147,7 +158,7 @@ class SharedWhisperSupervisor:
         self._consecutive_failures = 0
         self._last_failure_reason: str | None = None
         self._last_success_at_epoch: float | None = None
-        self._large_owner_present = False
+        self._owner_check = _OWNER_ABSENT
         # Counts worker starts, so an idle owner probe is discarded when our
         # own worker started while the probe ran.
         self._worker_generation = 0
@@ -214,10 +225,7 @@ class SharedWhisperSupervisor:
             generation = self._worker_generation
         finally:
             self._condition.release()
-        try:
-            present = bool(self._memory_guard.has_existing_large_owner())
-        except Exception:  # noqa: BLE001 - an unreadable process list fails closed
-            present = True
+        owner_check = _check_large_owner(self._memory_guard)
         if not self._condition.acquire(timeout=_OWNER_PROBE_LOCK_TIMEOUT_SECONDS):
             return
         try:
@@ -226,21 +234,25 @@ class SharedWhisperSupervisor:
                 and self._job is None
                 and not _safe_is_alive(self._worker)
             ):
-                self._set_large_owner_locked(present)
+                self._set_owner_check_locked(owner_check)
         finally:
             self._condition.release()
 
-    def _set_large_owner_locked(self, present: bool) -> None:
-        self._large_owner_present = present
-        if present:
+    def _set_owner_check_locked(self, owner_check: str) -> None:
+        self._owner_check = owner_check
+        if owner_check == _OWNER_PRESENT:
             self._last_failure_reason = _LARGE_OWNER_REASON
+        elif owner_check == _OWNER_UNKNOWN:
+            self._last_failure_reason = _OWNER_CHECK_FAILED_REASON
 
     def _unhealthy_reason_locked(self, now: float) -> str | None:
         if any(_safe_is_alive(worker) for worker in self._abandoned_workers):
             return "worker_did_not_exit"
         self._abandoned_workers = []
-        if self._large_owner_present:
+        if self._owner_check == _OWNER_PRESENT:
             return "large_owner_present"
+        if self._owner_check == _OWNER_UNKNOWN:
+            return "owner_check_failed"
         job = self._job
         if job is not None:
             if now - job.started_at > job.deadline_seconds + _STUCK_JOB_SLACK_SECONDS:
@@ -413,10 +425,12 @@ class SharedWhisperSupervisor:
             self._record_failure_locked("Whisper worker did not exit")
             raise WhisperUnavailable("Whisper worker did not exit")
         self._abandoned_workers = []
-        large_owner = self._memory_guard.has_existing_large_owner()
-        self._set_large_owner_locked(large_owner)
-        if large_owner:
+        owner_check = _check_large_owner(self._memory_guard)
+        self._set_owner_check_locked(owner_check)
+        if owner_check == _OWNER_PRESENT:
             raise WhisperUnavailable(_LARGE_OWNER_REASON)
+        if owner_check != _OWNER_ABSENT:
+            raise WhisperUnavailable(_OWNER_CHECK_FAILED_REASON)
         if self._memory_guard.pressure_high():
             self._last_failure_reason = _MEMORY_PRESSURE_REASON
             raise WhisperUnavailable(_MEMORY_PRESSURE_REASON)
@@ -594,6 +608,25 @@ class SharedWhisperSupervisor:
             ):
                 self._stop_worker_locked()
                 self._last_used_at = None
+
+
+def _check_large_owner(guard: MemoryGuard) -> str:
+    """Return ``present``, ``absent`` or ``unknown`` for another model owner.
+
+    Uses the guard's ``large_owner_state`` when it has one, so a failed
+    process-list read is reported as unknown rather than as an owner.
+    """
+
+    probe = getattr(guard, "large_owner_state", None)
+    try:
+        if probe is not None:
+            state = probe()
+            if state in (_OWNER_PRESENT, _OWNER_ABSENT, _OWNER_UNKNOWN):
+                return state
+            return _OWNER_UNKNOWN
+        return _OWNER_PRESENT if guard.has_existing_large_owner() else _OWNER_ABSENT
+    except Exception:  # noqa: BLE001 - a probe that fails cannot rule an owner out
+        return _OWNER_UNKNOWN
 
 
 def _safe_is_alive(worker: WorkerHandle | None) -> bool:

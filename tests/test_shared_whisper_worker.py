@@ -1,3 +1,5 @@
+import pytest
+
 from shared_whisper.protocol import WhisperResult
 from shared_whisper.worker import (
     MacMemoryGuard,
@@ -82,6 +84,30 @@ def test_memory_guard_fails_closed_when_process_probe_raises():
     )
 
     assert guard.has_existing_large_owner() is True
+    assert guard.large_owner_state() == "unknown"
+
+
+def test_memory_guard_reports_an_unreadable_process_list_as_unknown():
+    guard = MacMemoryGuard(process_reader=lambda: None)
+
+    assert guard.has_existing_large_owner() is True  # admission fails closed
+    assert guard.large_owner_state() == "unknown"
+    with pytest.raises(OSError):
+        guard.large_owner_lines()
+
+
+def test_memory_guard_lists_only_the_lines_that_hold_a_large_model():
+    guard = MacMemoryGuard(
+        process_reader=lambda: (
+            "100 /usr/bin/python3 -m shared_whisper.server\n"
+            "  4242 Penny Shared Whisper Worker (large-v3-turbo)\n"
+            "82401 agent-cli-server-whisper --model tiny\n"
+        )
+    )
+
+    assert guard.large_owner_lines() == ["4242 Penny Shared Whisper Worker (large-v3-turbo)"]
+    assert guard.large_owner_state() == "present"
+    assert MacMemoryGuard(process_reader=lambda: "").large_owner_state() == "absent"
 
 
 def test_worker_maps_openai_form_fields_to_supported_mlx_options():

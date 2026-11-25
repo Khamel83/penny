@@ -243,10 +243,19 @@ def test_another_model_owner_is_left_alone_because_a_restart_cannot_clear_it(tmp
     assert not (_state(tmp_path) / "strike").exists()
 
 
-def test_other_unhealthy_reasons_still_restart_after_two_checks(tmp_path):
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "consecutive_failures",
+        # An unreadable process list is not proof of another owner; a
+        # restart may clear it, so it is a normal strike (penny#196).
+        "owner_check_failed",
+    ],
+)
+def test_other_unhealthy_reasons_still_restart_after_two_checks(tmp_path, reason):
     body = (
         '{"healthy":false,"service":"penny-shared-whisper",'
-        '"unhealthy_reason":"consecutive_failures"}'
+        f'"unhealthy_reason":"{reason}"' + '}'
     )
     _run(tmp_path, health=body, http_status=503)
     result, calls, logs = _run(tmp_path, health=body, http_status=503)

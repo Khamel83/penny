@@ -22,10 +22,12 @@ failures in a row, a child that survived kill, a job stuck past its limit, or
 a stuck supervisor lock. Another process holding a model (often a child that
 outlived a restart) is its own 503, `large_owner_present`: checked while idle,
 not counted as a failure, and left alone by the keeper, which otherwise counts
-a 503 as a strike. The keeper template changed for that one case.
-[Details](docs/shared-parakeet.md).
+a 503 as a strike. The keeper template changed for that one case. If `ps`
+cannot be read, `/health` says `owner_check_failed` instead: loading stays
+refused, and the keeper restarts as for any other 503.
+[Details and how to identify the owner before ending it](docs/shared-parakeet.md).
 Tests: `python3 -m pytest -q tests/test_shared_whisper_hangs.py tests/test_shared_whisper_supervisor.py tests/test_shared_whisper_worker.py tests/test_shared_whisper_keeper.py`
-(17 simulated-hang tests and 2 new keeper tests; the server and Parakeet
+(simulated-hang and owner-check tests and the keeper tests; the server and Parakeet
 adapter tests need Flask, which this sandbox lacks, so CI runs them).
 
 Not done: no runtime deploy. Next: review and merge, release to the Mac
