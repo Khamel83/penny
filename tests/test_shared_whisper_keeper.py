@@ -34,8 +34,12 @@ def test_keeper_runs_every_two_minutes_without_the_ssd():
     assert "telegram" not in script.lower()
 
 
-def _run(tmp_path, *, health=HEALTHY, kickstart_status=0, bootstrap_status=0):
-    """Run the keeper with host calls stubbed and real private state handling."""
+def _run(tmp_path, *, health=HEALTHY, http_status=200, kickstart_status=0, bootstrap_status=0):
+    """Run the keeper with host calls stubbed and real private state handling.
+
+    ``curl -f`` fails on a non-200 status as real curl does; plain ``-s``
+    still prints the body.
+    """
     stubs = tmp_path / "bin"
     stubs.mkdir(exist_ok=True)
     temp_root = tmp_path / "private-temp"
@@ -46,7 +50,10 @@ def _run(tmp_path, *, health=HEALTHY, kickstart_status=0, bootstrap_status=0):
     health_file = tmp_path / "health"
     health_file.write_text(health or "")
     scripts = {
-        "curl": f"cat {shlex.quote(str(health_file))}\nexit {0 if health is not None else 7}",
+        "curl": (
+            f"case \" $* \" in *\" -sf \"*) [ {http_status} = 200 ] || exit 22;; esac\n"
+            f"cat {shlex.quote(str(health_file))}\nexit {0 if health is not None else 7}"
+        ),
         "getconf": f"printf '%s\\n' {shlex.quote(str(temp_root))}",
         "launchctl": (
             f"printf '%s\\n' \"$*\" >> {shlex.quote(str(calls))}\n"
@@ -216,3 +223,44 @@ def test_normal_job_age_clears_strike(tmp_path, age):
     assert result.returncode == 0
     assert calls == []
     assert not (_state(tmp_path) / "strike").exists()
+
+
+LARGE_OWNER = (
+    '{"healthy":false,"service":"penny-shared-whisper",'
+    '"unhealthy_reason":"large_owner_present"}'
+)
+
+
+def test_another_model_owner_is_left_alone_because_a_restart_cannot_clear_it(tmp_path):
+    """penny#196: a stuck worker from an earlier process must not cause a
+    restart every four minutes. The 503 still shows in Kuma and doctor."""
+    _run(tmp_path, health=None)  # an earlier strike
+    for _ in range(3):
+        result, calls, logs = _run(tmp_path, health=LARGE_OWNER, http_status=503)
+        assert result.returncode == 0
+    assert calls == []
+    assert "recovery" not in logs
+    assert not (_state(tmp_path) / "strike").exists()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "consecutive_failures",
+        # An unreadable process list is not proof of another owner; a
+        # restart may clear it, so it is a normal strike (penny#196).
+        "owner_check_failed",
+    ],
+)
+def test_other_unhealthy_reasons_still_restart_after_two_checks(tmp_path, reason):
+    body = (
+        '{"healthy":false,"service":"penny-shared-whisper",'
+        f'"unhealthy_reason":"{reason}"' + '}'
+    )
+    _run(tmp_path, health=body, http_status=503)
+    result, calls, logs = _run(tmp_path, health=body, http_status=503)
+
+    assert result.returncode == 0
+    assert len(calls) == 1
+    assert calls[0].startswith("kickstart -k gui/")
+    assert "recovery requested" in logs

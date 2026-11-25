@@ -1,3 +1,5 @@
+import pytest
+
 from shared_whisper.protocol import WhisperResult
 from shared_whisper.worker import (
     MacMemoryGuard,
@@ -82,6 +84,30 @@ def test_memory_guard_fails_closed_when_process_probe_raises():
     )
 
     assert guard.has_existing_large_owner() is True
+    assert guard.large_owner_state() == "unknown"
+
+
+def test_memory_guard_reports_an_unreadable_process_list_as_unknown():
+    guard = MacMemoryGuard(process_reader=lambda: None)
+
+    assert guard.has_existing_large_owner() is True  # admission fails closed
+    assert guard.large_owner_state() == "unknown"
+    with pytest.raises(OSError):
+        guard.large_owner_lines()
+
+
+def test_memory_guard_lists_only_the_lines_that_hold_a_large_model():
+    guard = MacMemoryGuard(
+        process_reader=lambda: (
+            "100 /usr/bin/python3 -m shared_whisper.server\n"
+            "  4242 Penny Shared Whisper Worker (large-v3-turbo)\n"
+            "82401 agent-cli-server-whisper --model tiny\n"
+        )
+    )
+
+    assert guard.large_owner_lines() == ["4242 Penny Shared Whisper Worker (large-v3-turbo)"]
+    assert guard.large_owner_state() == "present"
+    assert MacMemoryGuard(process_reader=lambda: "").large_owner_state() == "absent"
 
 
 def test_worker_maps_openai_form_fields_to_supported_mlx_options():
@@ -138,6 +164,7 @@ def test_worker_bounds_cache_and_releases_it_after_success_and_failure(monkeypat
     requests.put(None)
     _worker_main(requests, results, "/pinned/model", MODEL_ID, REVISION)
     assert events == [("limit", 100 * 1024 * 1024)] + ["transcribe", "sync", "clear"] * 3
+    assert results.get_nowait() == ("ready", None)
     first, failed, last = [results.get_nowait() for _ in range(3)]
     assert first[0] == last[0] == "ok"
     assert first[1].text == last[1].text == "hello"
@@ -145,3 +172,42 @@ def test_worker_bounds_cache_and_releases_it_after_success_and_failure(monkeypat
     assert all(options == {"path_or_hf_repo": "/pinned/model", "language": "en",
                            "word_timestamps": True} for _, options in calls)
 
+
+
+def _process_title(module_file: str) -> str:
+    """The setproctitle() title a Shared Whisper process gives itself."""
+
+    from pathlib import Path
+    import re
+
+    source = (Path(__file__).resolve().parents[1] / "shared_whisper" / module_file).read_text()
+    titles = re.findall(r'setproctitle\("([^"]+)"\)', source)
+    assert len(titles) == 1, module_file
+    return titles[0]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # penny#186/#196: a Parakeet child that survived kill must count as an
+        # owner after a restart, by its title or by its command line when
+        # setproctitle is unavailable. Titles are read from the source, so a
+        # rename that the markers miss fails here.
+        f"4242 {_process_title('parakeet_worker.py')}",
+        "4242 /opt/penny/venv/bin/python3 -m shared_whisper.parakeet_worker /models/parakeet",
+        f"4243 {_process_title('worker.py')}",
+    ],
+)
+def test_memory_guard_counts_each_penny_model_worker_as_an_owner(line):
+    assert MacMemoryGuard(process_reader=lambda: line).large_owner_state() == "present"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"100 {_process_title('server.py')}",
+        "100 /opt/penny/venv/bin/python3 -m shared_whisper.server",
+    ],
+)
+def test_memory_guard_does_not_count_the_service_itself(line):
+    assert MacMemoryGuard(process_reader=lambda: line).large_owner_state() == "absent"

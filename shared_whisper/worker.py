@@ -22,6 +22,9 @@ from .protocol import (
 # Bound reusable Metal buffers without changing model weights or decoding.
 MLX_CACHE_LIMIT_BYTES = 100 * 1024 * 1024
 
+# Errors the child reports before it can take a request.
+_STARTUP_ERRORS = frozenset({"offline_mode_required", "mlx_import_failed"})
+
 
 _FREE_PERCENT_RE = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
 _LARGE_OWNER_MARKERS = (
@@ -31,6 +34,12 @@ _LARGE_OWNER_MARKERS = (
     "penny shared parakeet worker",
     "shared_whisper.parakeet_worker",
 )
+
+
+# Result of the process-list check for another large model owner.
+OWNER_PRESENT = "present"
+OWNER_ABSENT = "absent"
+OWNER_UNKNOWN = "unknown"
 
 
 def _is_large_owner_line(line: str) -> bool:
@@ -117,14 +126,32 @@ class MacMemoryGuard:
         self._pressure_reader = pressure_reader or _read_memory_pressure
         self._min_free_percent = max(1, min(50, int(min_free_percent)))
 
-    def has_existing_large_owner(self) -> bool:
-        try:
-            output = self._process_reader()
-        except Exception:
-            return True
+    def large_owner_lines(self) -> list[str]:
+        """Return the process-list lines that hold a large model.
+
+        Raises ``OSError`` when the process list cannot be read, so a caller
+        can tell "no other owner" from "could not check".
+        """
+
+        output = self._process_reader()
         if output is None:
-            return True
-        return any(_is_large_owner_line(line) for line in output.splitlines())
+            raise OSError("could not read the process list")
+        return [
+            line.strip() for line in output.splitlines() if _is_large_owner_line(line)
+        ]
+
+    def large_owner_state(self) -> str:
+        """``present``, ``absent``, or ``unknown`` when ps cannot be read."""
+
+        try:
+            lines = self.large_owner_lines()
+        except Exception:  # noqa: BLE001 - any probe failure is "unknown"
+            return OWNER_UNKNOWN
+        return OWNER_PRESENT if lines else OWNER_ABSENT
+
+    def has_existing_large_owner(self) -> bool:
+        # Fail closed: a process list that cannot be read blocks a load.
+        return self.large_owner_state() != OWNER_ABSENT
 
     def pressure_high(self) -> bool:
         try:
@@ -154,6 +181,7 @@ class SubprocessWorker:
         self._model_path = str(model_path)
         self._model_id = model_id
         self._model_revision = model_revision
+        self._ready = False
         self._process = self._context.Process(
             target=_worker_main,
             args=(
@@ -184,6 +212,12 @@ class SubprocessWorker:
             kind, value = self._results.get(timeout=timeout)
         except queue.Empty:
             return None
+        if kind == "error" and value in _STARTUP_ERRORS:
+            return WhisperUnavailable("Whisper worker failed to start")
+        # Any other message proves the child started.
+        self._ready = True
+        if kind == "ready":
+            return None
         if kind == "ok":
             return value
         if kind == "quality_review":
@@ -194,6 +228,11 @@ class SubprocessWorker:
                 model_id=value["model_id"],
             )
         return WhisperUnavailable("Whisper worker failed while transcribing")
+
+    def is_ready(self) -> bool:
+        """True once the child has imported MLX and can take a request."""
+
+        return self._ready
 
     def terminate(self) -> None:
         if self._process.is_alive():
@@ -234,6 +273,9 @@ def _worker_main(
         results.put(("error", "mlx_import_failed"))
         return
 
+    # Tell the supervisor the child started; a child that never gets here
+    # fails its job at the start timeout (penny#192).
+    results.put(("ready", None))
     while True:
         request = requests.get()
         if request is None:

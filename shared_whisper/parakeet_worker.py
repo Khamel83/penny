@@ -124,6 +124,9 @@ def main() -> None:
         model = load(path, lazy=True, model_type="parakeet")
     model.set_dtype(mx.bfloat16)
     mx.eval(model.parameters())
+    # Start signal: the supervisor fails a child that never sends this
+    # within its start timeout (penny#192).
+    print(json.dumps({"ready": True}), flush=True)
     for line in sys.stdin:
         request = json.loads(line)
         try:

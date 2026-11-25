@@ -55,6 +55,66 @@ even with HTTP 200, and requests service recovery after two consecutive strikes.
 This backstop also applies to legitimately long jobs; the fixed keeper bound
 can interrupt one after 30 minutes plus the strike interval.
 
+A worker that never starts is caught sooner (penny#192). Both workers send a
+ready message once the model process is up. If none arrives within
+`PENNY_SHARED_WHISPER_START_TIMEOUT_SECONDS` (default 180, bounded 30–1800),
+the request fails with `worker_start_timeout` and the child is stopped. A
+stop never raises: a child that survives kill is kept on an abandoned list, so
+no second model loads while it lives (penny#186).
+
+`/health` returns 503 (with the same JSON plus `healthy: false` and
+`unhealthy_reason`) when the service cannot finish work: three failures in a
+row that a restart can fix (`consecutive_failures`), an abandoned child still
+alive (`worker_did_not_exit`), a job 120 seconds past its deadline or start
+limit (`job_past_deadline`, `worker_start_timeout`), or a supervisor lock that
+does not answer within 3 seconds (`supervisor_unresponsive`). One success
+clears the count. Memory-pressure refusals and errors returned by a running
+model do not count. The keeper's `curl -sf` treats the 503 as a strike, so
+launchd restarts the service after two strikes; Doctor and Uptime Kuma show it
+down meanwhile. `consecutive_failures`, `last_failure_reason` and
+`last_success_at` are in the payload. While `/health` is 503 the deploy
+scripts refuse to proceed until the keeper has recovered the service.
+
+Two 503 reasons come from the process-list check that runs before a model
+loads. While idle, `/health` runs that check itself, so both show at once after
+a restart and clear on their own; requests are refused meanwhile and do not add
+to `consecutive_failures`.
+
+- `large_owner_present`: the check found another process holding a Whisper or
+  Parakeet model. The usual cause is a child that survived kill: the restart
+  for `worker_did_not_exit` drops the abandoned list, and the new service
+  process then finds the child. A restart cannot clear it, so the keeper
+  leaves this reason alone instead of restarting every four minutes, while
+  Doctor and Uptime Kuma keep showing it down.
+- `owner_check_failed`: `ps` failed or timed out, so nobody knows whether
+  another owner is there. Loading stays refused, but this is not proof of an
+  owner, so the keeper counts it as a normal strike and restarts after two
+  checks. If it keeps coming back, find out why `ps` fails on the Mac. Do not
+  end any process for it.
+
+To clear `large_owner_present`, identify the owner before ending anything. In
+the runtime checkout:
+
+1. `curl -s http://127.0.0.1:10311/health` must show `unhealthy_reason`
+   `large_owner_present`. For any other reason, end nothing.
+2. List exactly the processes the check matched (each line is a PID and its
+   command; an error means `ps` could not be read, so end nothing):
+
+   ```sh
+   venv/bin/python -c 'from shared_whisper.worker import MacMemoryGuard; print(*MacMemoryGuard().large_owner_lines(), sep="\n")'
+   ```
+
+3. For each PID, run `ps -o ppid=,etime=,command= -p <pid>`. A worker left by
+   an earlier service process has parent PID 1, because its parent is gone. A
+   parent equal to the `pid` that
+   `launchctl print gui/$(id -u)/com.penny.shared-whisper` shows means it is
+   the running service's own worker: leave it. A command starting
+   `agent-cli-` is another service, not a stuck worker: stop it through its
+   own launchd job, not with `kill`.
+4. `kill <pid>`. If `ps -p <pid>` still shows it ten seconds later, use
+   `kill -9 <pid>`. One that survives `kill -9` is stuck in the kernel and
+   needs a Mac restart. `/health` clears once the process is gone.
+
 Retry receipts keep the copied upload and both model results owner-only. They
 are written under `/Volumes/2TB_SSD/penny-asr-runtime/asr-retries` while that
 volume is mounted; `PENNY_ASR_RETRY_DIR` must be an absolute physical path

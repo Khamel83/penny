@@ -6,6 +6,17 @@ not `~/backups/penny` on the boot SSD. The six-hour export job verifies before
 removal and Doctor alerts on a failed or eight-hour-overdue verification.
 Homelab `ls`/`df` and deploy were not run from this worktree.
 
+## Issues #186 and #192 — Shared Whisper health, source only, November 25
+
+Shared Whisper `/health` now means "can finish work", not only "process
+answers": it returns 503 when the service is wedged, so the keeper restarts it
+and Doctor/Uptime Kuma show it down. When another process holds the model, a
+restart cannot help, so `/health` reports `large_owner_present` and the keeper
+leaves it alone; a person identifies and ends that process. A process list that
+cannot be read is `owner_check_failed`, not an owner: loading stays refused and
+the keeper restarts as for any 503. Not deployed; the last recorded release is
+November 10.
+
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
 Natural Penny823 → Drop2030 → INF-354 → implementation356/review is verified.

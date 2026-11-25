@@ -11,6 +11,11 @@ consecutive failures, kickstarts the agent (or bootstraps it if it is not
 loaded). The server is threaded, so /health answers during transcription and
 a healthy busy worker is left alone.
 
+A 503 with unhealthy_reason large_owner_present means another process holds
+the model, such as a stuck worker that outlived an earlier restart. A restart
+cannot clear it, so the keeper leaves the service alone and clears its strike;
+the 503 still shows in Uptime Kuma and doctor (penny#196).
+
 The keeper uses only macOS system tools on the internal disk, so it works
 while the enrolled SSD is still mounting. Its empty strike directory lives in
 the validated owner-only Darwin temporary directory; it never opens a shared
@@ -47,6 +52,12 @@ state="${temp_root%/}/penny-shared-whisper-keeper"
 private_dir "$state" || fail "unsafe keeper state directory"
 mark="$state/strike"
 job="gui/$uid/com.penny.shared-whisper"
+clear_strike() {
+    if [ -e "$mark" ] || [ -L "$mark" ]; then
+        private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"
+    fi
+    exit 0
+}
 if health=$(/usr/bin/curl -sf -m 5 http://127.0.0.1:10311/health) &amp;&amp;
     printf '%s' "$health" | /usr/bin/tr '\r\n' '  ' | /usr/bin/grep -Eq '"service"[[:space:]]*:[[:space:]]*"penny-shared-whisper"' &amp;&amp;
     printf '%s' "$health" | /usr/bin/awk '
@@ -59,10 +70,11 @@ if health=$(/usr/bin/curl -sf -m 5 http://127.0.0.1:10311/health) &amp;&amp;
         }
         END { exit stale }
     '; then
-    if [ -e "$mark" ] || [ -L "$mark" ]; then
-        private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"
-    fi
-    exit 0
+    clear_strike
+fi
+if /usr/bin/curl -s -m 5 http://127.0.0.1:10311/health | /usr/bin/tr '\r\n' '  ' |
+    /usr/bin/grep -Eq '"unhealthy_reason"[[:space:]]*:[[:space:]]*"large_owner_present"'; then
+    clear_strike
 fi
 if /bin/mkdir "$mark" 2&gt;/dev/null; then exit 0; fi
 private_dir "$mark" &amp;&amp; /bin/rmdir "$mark" || fail "unsafe keeper strike"

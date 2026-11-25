@@ -17,6 +17,7 @@ from .worker import build_result
 class ParakeetWorker:
     def __init__(self, *, model_path: Path, python_path: str):
         self._results = queue.Queue()
+        self._ready = threading.Event()
         self._request_id = None
         self._process = subprocess.Popen(
             [python_path, "-m", "shared_whisper.parakeet_worker", str(model_path)],
@@ -42,43 +43,56 @@ class ParakeetWorker:
         self._process.stdin.flush()
 
     def _read(self):
-        for line in self._process.stdout:
-            try:
-                payload = json.loads(line)
-                if "ok" not in payload:
-                    reason = payload.get("error")
-                    if reason not in {
-                        "invalid_parakeet_token_time",
-                        "backwards_parakeet_token_time",
-                        "empty_parakeet_output",
-                        "parakeet_translation_not_supported",
-                        "audio_duration_out_of_bounds",
-                    }:
-                        reason = "parakeet_output_invalid"
-                    raise WhisperProtocolError(
-                        reason,
-                        code="quality_review",
-                        timing_context=payload.get("timing_context"),
-                        model_id=PARAKEET_ID,
-                    )
-                self._results.put(
-                    build_result(
-                        request_id=self._request_id,
-                        response=payload["ok"],
-                        model_id=PARAKEET_ID,
-                        model_revision=PARAKEET_REVISION,
-                    )
+        try:
+            for line in self._process.stdout:
+                self._handle_line(line)
+        except (OSError, ValueError):
+            return  # the pipe closed while terminating
+
+    def _handle_line(self, line):
+        try:
+            payload = json.loads(line)
+            # Any reply proves the child verified and loaded the model.
+            self._ready.set()
+            if payload == {"ready": True}:
+                return  # start signal only (penny#192)
+            if "ok" not in payload:
+                reason = payload.get("error")
+                if reason not in {
+                    "invalid_parakeet_token_time",
+                    "backwards_parakeet_token_time",
+                    "empty_parakeet_output",
+                    "parakeet_translation_not_supported",
+                    "audio_duration_out_of_bounds",
+                }:
+                    reason = "parakeet_output_invalid"
+                raise WhisperProtocolError(
+                    reason,
+                    code="quality_review",
+                    timing_context=payload.get("timing_context"),
+                    model_id=PARAKEET_ID,
                 )
-            except WhisperProtocolError as exc:
-                self._results.put(exc)
-            except Exception:
-                self._results.put(
-                    WhisperProtocolError(
-                        "Parakeet output needs retry",
-                        code="quality_review",
-                        model_id=PARAKEET_ID,
-                    )
+            self._results.put(
+                build_result(
+                    request_id=self._request_id,
+                    response=payload["ok"],
+                    model_id=PARAKEET_ID,
+                    model_revision=PARAKEET_REVISION,
                 )
+            )
+        except WhisperProtocolError as exc:
+            self._results.put(exc)
+        except Exception:
+            self._results.put(
+                WhisperProtocolError(
+                    "Parakeet output needs retry",
+                    code="quality_review",
+                    model_id=PARAKEET_ID,
+                )
+            )
+
+    def is_ready(self):
+        return self._ready.is_set()
 
     def poll(self, timeout):
         try:
@@ -95,9 +109,18 @@ class ParakeetWorker:
                 self._process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self._process.kill()
-                self._process.wait(timeout=2)
+                try:
+                    self._process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Stuck even after SIGKILL. Leave the pipes open: closing
+                    # stdout would block on the reader thread. The supervisor
+                    # sees is_alive() and refuses to load a second model.
+                    return
         for stream in (self._process.stdin, self._process.stdout):
-            stream.close()
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
 
     def is_alive(self):
         return self._process.poll() is None

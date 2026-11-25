@@ -143,3 +143,22 @@ def test_transcription_maps_shared_worker_errors(error, status, code):
 
     assert response.status_code == status
     assert response.get_json()["error"]["code"] == code
+
+
+def test_health_returns_503_when_the_supervisor_cannot_finish_work():
+    """penny#186/#192: a wedged worker must not keep /health green."""
+
+    class WedgedSupervisor(FakeSupervisor):
+        def status(self):
+            payload = super().status()
+            payload.update(healthy=False, unhealthy_reason="consecutive_failures")
+            return payload
+
+    flask_app = create_app(WedgedSupervisor(), auth_token="shared-secret")
+    flask_app.config["TESTING"] = True
+
+    response = flask_app.test_client().get("/health")
+
+    assert response.status_code == 503
+    assert response.get_json()["unhealthy_reason"] == "consecutive_failures"
+    assert response.get_json()["model_revision"] == REVISION
