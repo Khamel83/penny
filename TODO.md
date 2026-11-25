@@ -9,7 +9,7 @@
 - [x] Source: another process holding a model reports `large_owner_present` (checked while idle, not counted as a failure) and the keeper does not restart for it, so a child that outlives a restart cannot cause a restart loop.
 - [x] Source: a process list that cannot be read reports `owner_check_failed`, not an owner; loading stays refused and the keeper restarts for it. The operator doc lists exactly the matched processes before anything is ended.
 - [x] After merge, release to the Mac, reinstall only the keeper (docs/macmini-deployment.md), and read back Shared Whisper `/health` (`healthy: true`) and the loaded `PENNY_SOURCE_REVISION` of both `com.penny.shared-whisper` and the keeper (`launchctl print`); then close #186 and #192 with that receipt. Done November 25 (about 20:50 UTC): `deploy_penny.py --apply` activated [#196](https://github.com/Khamel83/penny/pull/196) at `1f6df02`, the status run reported `current` for all five labels, `/health` read `"healthy": true`, and both labels showed `PENNY_SOURCE_REVISION` `1f6df026bae992a2744d0fcb1ebc3db89b062200`.
-- [ ] Run `venv/bin/python scripts/penny_doctor.py` under the installed service configuration on the Mac, and read back one real request after the November 25 release (`last_success_at` set on `/health`). Neither was observed at the release readback.
+- [ ] On the Mac, read back Doctor through the running service, `curl -s http://127.0.0.1:5678/ready` (200, `source_revision` `1f6df02`), and one real request after the November 25 release (`last_success_at` set on Shared Whisper `/health`). Neither was observed at the release readback.
 
 ## Current Factory voice acceptance — November8 local / November9 UTC
 
